@@ -1,0 +1,141 @@
+/*
+ * AFTERLIFE — design tokens. FROZEN FILE (architect-owned).
+ *
+ * Art direction: a contemporary natural-history observatory crossed with a
+ * precision musical instrument. Deep ink ground, luminous ivory type, a small
+ * set of spectral accents whose meanings NEVER drift. See DESIGN.md.
+ *
+ * Tailwind v4 CSS-first config: everything below is a real Tailwind theme
+ * token, so `bg-ink-900`, `text-ivory-100`, `text-accent-life`,
+ * `font-display`, `rounded-md`, `shadow-raise`, `duration-base` all work.
+ * Tailwind's default palette is intentionally NOT used as our design language.
+ */
+
+@theme {
+  /* ---- Ground: near-black with a blue-green cast (observatory dusk) ---- */
+  --color-ink-900: oklch(0.16 0.018 195);
+  --color-ink-800: oklch(0.21 0.019 196);
+  --color-ink-700: oklch(0.26 0.020 197);
+  --color-ink-600: oklch(0.33 0.021 198);
+  --color-ink-500: oklch(0.44 0.020 199);
+
+  /* ---- Figure: warm luminous ivory, never pure white ---- */
+  --color-ivory-100: oklch(0.96 0.014 92);
+  --color-ivory-200: oklch(0.88 0.017 90);
+  --color-ivory-300: oklch(0.74 0.016 90);
+
+  /* ---- Semantic accents. Each colour means exactly one thing. ---- */
+  --color-accent-life: oklch(0.87 0.155 155);      /* living cells, populated */
+  --color-accent-age: oklch(0.79 0.130 78);        /* cell age / persistence */
+  --color-accent-activity: oklch(0.72 0.185 25);   /* recent change, heat */
+  --color-accent-time: oklch(0.78 0.120 235);      /* timeline, scrubbing, sculpture */
+  --color-accent-branch-a: oklch(0.80 0.115 300);  /* branch A in comparisons */
+  --color-accent-branch-b: oklch(0.83 0.130 195);  /* branch B in comparisons */
+  --color-accent-diff: oklch(0.85 0.170 330);      /* differing cells */
+  --color-accent-warn: oklch(0.80 0.150 60);       /* destructive / attention */
+
+  /* ---- Surfaces & lines derived from the ground ---- */
+  --color-surface: oklch(0.19 0.018 196);
+  --color-surface-raised: oklch(0.23 0.019 197);
+  --color-line: oklch(0.32 0.018 198);
+  --color-line-strong: oklch(0.44 0.020 199);
+  --color-focus: oklch(0.86 0.100 200);
+
+  /* ---- Typography. Self-hosted via @fontsource-variable, no network. ---- */
+  --font-display: 'Fraunces Variable', 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-micro: 0.6875rem;   /* 11px — labels, axis ticks */
+  --text-micro--line-height: 1.25;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.8125rem;      /* 13px — the default UI size */
+  --text-sm--line-height: 1.5;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.4;
+  --text-display: 1.75rem;
+  --text-display--line-height: 1.15;
+  --text-display-lg: 2.75rem;
+  --text-display-lg--line-height: 1.05;
+
+  /* ---- Spacing: 4px base, tight enough for instrument density ---- */
+  --spacing: 0.25rem;
+
+  /* ---- Radius: small and architectural. Nothing pill-shaped but toggles. -- */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --radius-full: 999px;
+
+  /* ---- Elevation: shadow plus a hairline, never a glow ---- */
+  --shadow-hairline: 0 0 0 1px oklch(0.32 0.018 198 / 0.9);
+  --shadow-raise: 0 1px 2px oklch(0 0 0 / 0.5), 0 8px 24px -12px oklch(0 0 0 / 0.7);
+  --shadow-float: 0 2px 6px oklch(0 0 0 / 0.55), 0 24px 56px -20px oklch(0 0 0 / 0.8);
+  --shadow-inset: inset 0 1px 0 oklch(1 0 0 / 0.05);
+
+  /* ---- Motion: short, mechanical, never bouncy ---- */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-entrance: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-base: 220ms;
+  --duration-slow: 400ms;
+
+  /* ---- Layout: the world dominates; controls hold a slim perimeter ---- */
+  --size-hud: 3rem;         /* top HUD bar height */
+  --size-timeline: 4.5rem;  /* bottom timeline height */
+  --size-drawer: 15rem;     /* left drawer width */
+  --size-panel: 19rem;      /* right panel width */
+  --z-canvas: 0;
+  --z-chrome: 10;
+  --z-overlay: 40;
+  --z-toast: 60;
+}
+
+/* Tabular numerals for every readout: counters must not jitter. */
+@utility tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+  letter-spacing: -0.01em;
+}
+
+/*
+ * Fraunces is tuned deliberately, not dropped in at defaults:
+ * opsz pushed toward the display master, SOFT lifted slightly so terminals
+ * stay humane on dark ground, and a touch of WONK for natural-history
+ * plate character. Never used below --text-lg.
+ */
+@utility display-face {
+  font-family: var(--font-display);
+  font-variation-settings: 'SOFT' 28, 'WONK' 1, 'opsz' 88;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+
+@utility display-face-tight {
+  font-family: var(--font-display);
+  font-variation-settings: 'SOFT' 12, 'WONK' 0, 'opsz' 42;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+/* The single focus treatment used by every primitive. */
+@utility focus-ring {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}

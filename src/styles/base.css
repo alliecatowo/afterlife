@@ -1,0 +1,110 @@
+/*
+ * AFTERLIFE — base layer. FROZEN FILE (architect-owned).
+ * Imports Tailwind v4, our theme, and the self-hosted variable fonts
+ * (bundled by Vite — zero runtime network requests).
+ */
+@import 'tailwindcss';
+
+/* Self-hosted variable typefaces. Order matters: fonts before theme use. */
+@import '@fontsource-variable/fraunces/full.css';
+@import '@fontsource-variable/inter/index.css';
+@import '@fontsource-variable/jetbrains-mono/index.css';
+
+@import './tokens.css';
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  * {
+    margin: 0;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-ink-900);
+    color: var(--color-ivory-200);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    font-variation-settings: 'opsz' 16;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow: hidden; /* the observatory is a fixed viewport, never scrolled */
+    overscroll-behavior: none;
+    touch-action: none;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    font-variation-settings: 'SOFT' 28, 'WONK' 1, 'opsz' 88;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    color: var(--color-ivory-100);
+  }
+
+  h1 { font-size: var(--text-display-lg); line-height: var(--text-display-lg--line-height); }
+  h2 { font-size: var(--text-display); line-height: var(--text-display--line-height); }
+  h3 { font-size: var(--text-lg); line-height: var(--text-lg--line-height); }
+
+  canvas {
+    display: block;
+    touch-action: none;
+  }
+
+  button, input, select, textarea {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent-time);
+    color: var(--color-ink-900);
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border: 3px solid var(--color-ink-900);
+    border-radius: var(--radius-full);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-line-strong); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
