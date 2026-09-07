@@ -95,18 +95,35 @@ export function initSession(): Session {
   function flushEdits(atGen: number): void {
     if (queuedEdits.length === 0) return;
     const cellCount = queuedEdits.reduce((n, op) => n + op.cells.length, 0);
-    history.record(atGen, queuedEdits);
-    bus.emit('edit:committed', { gen: atGen, cellCount });
+    const edits = queuedEdits;
     queuedEdits = [];
+
+    // Editing behind `maxGen` (only possible while paused, after scrubbing
+    // back) is the ENTIRE "alternate futures" feature (ARCHITECTURE.md
+    // § Atomic edit commit): fork instead of truncating. During normal play
+    // `atGen` is always `maxGen`, so this never triggers mid-playback.
+    if (atGen < history.maxGen) {
+      const newId = history.branchFrom(atGen, edits);
+      bus.emit('branch:created', { id: newId, fromGen: atGen, name: newId });
+      bus.emit('toast', { message: 'Branched — the original future is kept too.', tone: 'success' });
+      bus.emit('branch:switched', { id: newId });
+    } else {
+      history.record(atGen, edits);
+      bus.emit('edit:committed', { gen: atGen, cellCount });
+    }
   }
 
   input.onGestureEnd(() => {
     const op = input.commit();
     if (!op) return;
-    if (readState().playing) {
-      queuedEdits.push(op);
-    } else {
+    queuedEdits.push(op);
+    if (!readState().playing) {
+      // Applied straight to the live engine (see `history.record`'s
+      // gen === engine.gen fast path) — re-announce `gen:changed` so the
+      // population readout and empty/extinct overlays feel the edit
+      // immediately, not only on the next real step.
       flushEdits(engine.gen);
+      bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
     }
   });
 
@@ -120,9 +137,22 @@ export function initSession(): Session {
   const loop = createSimLoop(step);
   loop.setSpeed(readState().speed);
 
+  // `history.ts` is a pure core module — it never touches the bus, so a
+  // successful `goto()`/`switchBranch()` moves `engine.gen` without anyone
+  // re-announcing it. Every caller below MUST call this after a successful
+  // scrub or the HUD/timeline readouts (and the empty/extinct overlay) go
+  // stale, frozen at whatever `gen:changed` last reported.
+  function announceGen(): void {
+    bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
+  }
+
   // ---- playback intents ----------------------------------------------------
-  bus.on('playback:play', () => loop.start());
-  bus.on('playback:pause', () => loop.stop());
+  // `playing` is a store flag other UI reads (HUD icon state, etc.), but the
+  // bus event is the single source of truth — it can be triggered from the
+  // HUD button, from `input.ts`'s Space handler, or anywhere else, and must
+  // stay in sync regardless of origin.
+  bus.on('playback:play', () => { loop.start(); useAppStore.getState().setPlaying(true); });
+  bus.on('playback:pause', () => { loop.stop(); useAppStore.getState().setPlaying(false); });
   bus.on('playback:speed', ({ speed }) => loop.setSpeed(speed));
   bus.on('playback:step', ({ by }) => {
     if (readState().playing) return;
@@ -130,13 +160,13 @@ export function initSession(): Session {
       loop.stepOnce(Math.max(1, by));
     } else {
       const target = Math.max(history.windowStart, engine.gen + by);
-      history.goto(target).catch(() => {});
+      history.goto(target).then(announceGen).catch(() => {});
     }
   });
 
   // ---- timeline scrubbing: goto() is self-cancelling, so rapid-fire is fine --
   bus.on('playback:scrub', ({ gen }) => {
-    history.goto(gen).catch((err: unknown) => {
+    history.goto(gen).then(announceGen).catch((err: unknown) => {
       if (err instanceof HistoryWindowError) {
         bus.emit('toast', { message: 'That generation has fallen out of the retained window.', tone: 'warn' });
       }
@@ -152,6 +182,7 @@ export function initSession(): Session {
     history.switchBranch(id).then(() => {
       useAppStore.getState().setActiveBranch(id);
       syncBranches();
+      announceGen();
     }).catch(() => {
       bus.emit('toast', { message: `Could not switch to that branch.`, tone: 'warn' });
     });
@@ -174,8 +205,15 @@ export function initSession(): Session {
     bus.emit('edit:committed', { gen: engine.gen, cellCount: inverse.cells.length });
   });
 
-  // ---- audio + presentation + lens: mirror intents onto the live modules ---
+  // ---- lens: mirror the bus intent onto the live renderer -----------------
   bus.on('lens:changed', ({ lens }) => renderer.setLens(lens));
+
+  // ---- grid: `input.ts`'s own 'g' shortcut calls `renderer.setShowGrid`
+  // directly, but the Drawer/Settings checkboxes only write to the store —
+  // mirror any store change onto the renderer so every entry point agrees. --
+  useAppStore.subscribe((state, prev) => {
+    if (state.showGrid !== prev.showGrid) renderer.setShowGrid(state.showGrid);
+  });
 
   // ---- time sculpture --------------------------------------------------------
   const MAX_SCULPTURE_SLICES = 256;
@@ -205,7 +243,7 @@ export function initSession(): Session {
     showSculptureCanvas(false);
   });
   bus.on('sculpture:sliceSelected', ({ gen }) => {
-    history.goto(gen).catch(() => {});
+    history.goto(gen).then(announceGen).catch(() => {});
   });
 
   session = {

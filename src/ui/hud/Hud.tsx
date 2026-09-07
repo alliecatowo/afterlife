@@ -8,12 +8,13 @@ import { useEffect, useRef, useState } from 'react';
 import { bus } from '@/ui/bus';
 import { useAppStore } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
+import { getSession } from '@/ui/session';
 import { subscribeReadout } from '@/ui/hooks/useSimulationReadout';
 import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/primitives';
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
-  DrawerIcon,
+  DrawerIcon, ClockIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
 
@@ -34,7 +35,6 @@ export function Hud() {
   const popRef = useRef<HTMLSpanElement>(null);
 
   const playing = useAppStore((s) => s.playing);
-  const setPlaying = useAppStore((s) => s.setPlaying);
   const speed = useAppStore((s) => s.speed);
   const setSpeed = useAppStore((s) => s.setSpeed);
   const lens = useAppStore((s) => s.lens);
@@ -45,6 +45,8 @@ export function Hud() {
   const setPresentation = useAppStore((s) => s.setPresentation);
   const drawerOpen = useAppStore((s) => s.drawerOpen);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
+  const sculptureOpen = useAppStore((s) => s.sculptureOpen);
+  const selection = useAppStore((s) => s.selection);
 
   const rightPanel = useUIState((s) => s.rightPanel);
   const toggleRightPanel = useUIState((s) => s.toggleRightPanel);
@@ -60,10 +62,11 @@ export function Hud() {
   const [everToggled, setEverToggled] = useState(false);
 
   const togglePlay = () => {
-    const next = !playing;
-    setPlaying(next);
+    // Emit the intent only — `session.ts` is the single source of truth that
+    // flips `store.playing` in response, whether triggered from here, from
+    // `input.ts`'s Space handler, or anywhere else.
     setEverToggled(true);
-    bus.emit(next ? 'playback:play' : 'playback:pause', undefined);
+    bus.emit(playing ? 'playback:pause' : 'playback:play', undefined);
   };
 
   const step = (by: number) => {
@@ -157,6 +160,21 @@ export function Hud() {
       <div className="flex-1" />
 
       <div className="flex shrink-0 items-center gap-1">
+        <Tooltip content={sculptureOpen ? 'Return to the living plane' : selection ? 'Open the Time Sculpture for this selection' : 'Select a region on the world to sculpt its history'}>
+          <IconButton
+            label={sculptureOpen ? 'Close time sculpture' : 'Open time sculpture'}
+            icon={<ClockIcon />}
+            pressed={sculptureOpen}
+            disabled={!sculptureOpen && !selection}
+            onClick={() => {
+              const session = getSession();
+              if (!session) return;
+              if (sculptureOpen) session.closeSculpture();
+              else session.openSculpture();
+            }}
+          />
+        </Tooltip>
+        <Divider orientation="vertical" className="h-6" />
         <Tooltip content="Branches">
           <IconButton label="Branches" icon={<BranchIcon />} pressed={rightPanel === 'branches'} onClick={() => toggleRightPanel('branches')} />
         </Tooltip>

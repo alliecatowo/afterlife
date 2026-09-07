@@ -8,7 +8,7 @@ export interface ReadoutProps extends HTMLAttributes<HTMLDivElement> {
   /** Character-width reserved for the value so digits never reflow. */
   digits?: number;
   /** Paints the value in the given accent when the concept genuinely is that accent. */
-  accent?: 'life' | 'age' | 'activity' | 'time' | 'warn' | null;
+  accent?: 'life' | 'age' | 'activity' | 'time' | 'warn' | 'diff' | 'branch-a' | 'branch-b' | null;
   size?: 'sm' | 'md';
 }
 
@@ -18,6 +18,9 @@ const accentClass: Record<string, string> = {
   activity: 'text-accent-activity',
   time: 'text-accent-time',
   warn: 'text-accent-warn',
+  diff: 'text-accent-diff',
+  'branch-a': 'text-accent-branch-a',
+  'branch-b': 'text-accent-branch-b',
 };
 
 /**

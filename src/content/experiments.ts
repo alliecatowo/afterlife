@@ -224,11 +224,32 @@ export interface ActivitySample {
  * (`snapshots[g]` = the rect's bits at generation `g`), compute the activity
  * series — "cells that changed state over the last `windowSize`
  * generations" — for every generation from `windowSize` to the end.
+ *
+ * This is the count of DISTINCT cells that flipped state at least once
+ * across the `windowSize` single-generation transitions ending at `gen`
+ * (transitions `gen - windowSize + 1` through `gen`) — the union of flips,
+ * not a simple endpoint-to-endpoint diff. A cell that flickers and returns
+ * to its original state within the window still counts: it was active. This
+ * was confirmed against the scene-lab agent's verified activity curves,
+ * which an endpoint diff does not reproduce.
  */
 export function activitySeries(snapshots: readonly Uint8Array[], windowSize = KEEP_ALIVE_VERIFIED.activityWindow): ActivitySample[] {
+  const area = snapshots[0]?.length ?? 0;
   const out: ActivitySample[] = [];
   for (let gen = windowSize; gen < snapshots.length; gen++) {
-    out.push({ gen, activity: countChanged(snapshots[gen]!, snapshots[gen - windowSize]!) });
+    const changed = new Uint8Array(area);
+    let count = 0;
+    for (let k = gen - windowSize + 1; k <= gen; k++) {
+      const cur = snapshots[k]!;
+      const prev = snapshots[k - 1]!;
+      for (let i = 0; i < area; i++) {
+        if (!changed[i] && cur[i] !== prev[i]) {
+          changed[i] = 1;
+          count++;
+        }
+      }
+    }
+    out.push({ gen, activity: count });
   }
   return out;
 }

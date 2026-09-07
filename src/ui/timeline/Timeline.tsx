@@ -183,6 +183,9 @@ export function Timeline() {
       default: return;
     }
     e.preventDefault();
+    // `@/interact/input.ts` also binds arrow keys globally (camera pan). Stop
+    // native propagation so a focused ribbon scrubs time, not the camera.
+    e.stopPropagation();
     commitScrub(next, true);
   }, [commitScrub, dragGen]);
 

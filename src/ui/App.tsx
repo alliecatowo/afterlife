@@ -21,6 +21,7 @@ import '@/styles/motion.css';
 import { useAppStore, type Tool } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
 import { bus } from '@/ui/bus';
+import { initSession } from '@/ui/session';
 import { Hud } from '@/ui/hud/Hud';
 import { Drawer } from '@/ui/drawer/Drawer';
 import { PanelRight } from '@/ui/panels/PanelRight';
@@ -30,9 +31,7 @@ import { WorldHint } from '@/ui/WorldHint';
 import { WorldStateOverlay } from '@/ui/WorldStateOverlay';
 import { ShortcutsDialog } from '@/ui/dialogs/ShortcutsDialog';
 import { ToastLayer, TooltipProvider } from '@/ui/primitives';
-import type { RenderLens } from '@/core/types';
 
-const LENS_CYCLE: RenderLens[] = ['life', 'age', 'activity'];
 const TOOL_KEYS: Record<string, Tool> = { d: 'draw', e: 'erase', p: 'pan', s: 'select' };
 
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -59,13 +58,8 @@ export function App() {
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const presentation = useAppStore((s) => s.presentation);
   const setPresentation = useAppStore((s) => s.setPresentation);
-  const playing = useAppStore((s) => s.playing);
-  const setPlaying = useAppStore((s) => s.setPlaying);
   const setTool = useAppStore((s) => s.setTool);
   const showGrid = useAppStore((s) => s.showGrid);
-  const setShowGrid = useAppStore((s) => s.setShowGrid);
-  const lens = useAppStore((s) => s.lens);
-  const setLens = useAppStore((s) => s.setLens);
   const drawerOpen = useAppStore((s) => s.drawerOpen);
   const rightPanel = useUIState((s) => s.rightPanel);
   const setRightPanel = useUIState((s) => s.setRightPanel);
@@ -101,8 +95,17 @@ export function App() {
     return () => root.removeEventListener('pointerdown', onPointerDown, { capture: true });
   }, [dismissTitle, setWorldTouched]);
 
-  // Global keyboard shortcuts. Ignored while typing (branch rename, etc.) or
-  // while a dialog already owns focus.
+  // Wire the now-implemented core/render/interact modules into a running
+  // universe once the canvases exist. See `@/ui/session` — idempotent, so
+  // StrictMode's double-invoke is harmless.
+  useEffect(() => {
+    if (supported) initSession();
+  }, [supported]);
+
+  // Global keyboard shortcuts NOT already owned by `@/interact/input.ts`
+  // (which handles Space, arrows [camera pan], 1/2/3 [lens], g [grid],
+  // r/f [stamp rotate/flip], +/-/=/_ [zoom], ., [, ], z once attached by
+  // `initSession()`). Ignored while typing or while a dialog owns focus.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target) || shortcutsOpen) {
@@ -111,37 +114,21 @@ export function App() {
       }
       if (e.key === '?') { setShortcutsOpen(true); return; }
       if (e.key === 'Escape') {
-        if (presentation) setPresentation(false);
+        if (presentation) { setPresentation(false); bus.emit('presentation:toggle', { on: false }); }
         else if (rightPanel) setRightPanel(null);
         return;
       }
-      if (e.key === ' ') {
-        e.preventDefault();
-        const next = !playing;
-        setPlaying(next);
-        bus.emit(next ? 'playback:play' : 'playback:pause', undefined);
-        return;
-      }
-      if (e.key === 'ArrowRight' && !playing) { bus.emit('playback:step', { by: 1 }); return; }
-      if (e.key === 'ArrowLeft' && !playing) { bus.emit('playback:step', { by: -1 }); return; }
       const lower = e.key.toLowerCase();
       if (lower in TOOL_KEYS) { setTool(TOOL_KEYS[lower]!); return; }
-      if (lower === 'g') { setShowGrid(!showGrid); return; }
-      if (lower === 'f') {
+      if (lower === 'v') {
         const next = !presentation;
         setPresentation(next);
         bus.emit('presentation:toggle', { on: next });
-        return;
-      }
-      if (lower === 'l') {
-        const next = LENS_CYCLE[(LENS_CYCLE.indexOf(lens) + 1) % LENS_CYCLE.length]!;
-        setLens(next);
-        bus.emit('lens:changed', { lens: next });
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [playing, presentation, rightPanel, lens, showGrid, shortcutsOpen, setPlaying, setPresentation, setRightPanel, setTool, setShowGrid, setLens, setShortcutsOpen]);
+  }, [presentation, rightPanel, shortcutsOpen, setPresentation, setRightPanel, setTool, setShortcutsOpen]);
 
   if (!supported) return <UnsupportedShell />;
 

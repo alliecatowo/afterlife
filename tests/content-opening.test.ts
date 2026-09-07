@@ -30,16 +30,27 @@ describe('content: opening scene', () => {
     const w = OPENING_SCENE.world.width;
     const h = OPENING_SCENE.world.height;
 
-    const travellerCells = OPENING_SCENE.cells.filter((c) => c.y >= 55);
-    const restCells = OPENING_SCENE.cells.filter((c) => c.y < 55);
-    expect(travellerCells.length + restCells.length).toBe(250);
+    // Each traveller must be its own independent group — simulating them
+    // together as one "travellers" engine would silently model their mutual
+    // collision as if it were the composite's own behaviour (they'd interact
+    // identically either way), masking exactly the interaction under test.
+    // Splitting every one of gun, garden and BOTH travellers apart is what
+    // the scene-lab agent's own verification methodology did.
+    const gliderA: ReadonlyArray<[number, number]> = [[91, 64], [92, 65], [90, 66], [91, 66], [92, 66]];
+    const gliderB: ReadonlyArray<[number, number]> = [[154, 60], [153, 61], [153, 62], [154, 62], [155, 62]];
+    const isTraveller = (x: number, y: number) =>
+      gliderA.some(([tx, ty]) => tx === x && ty === y) || gliderB.some(([tx, ty]) => tx === x && ty === y);
+    const restCells = OPENING_SCENE.cells.filter((c) => !isTraveller(c.x, c.y));
+    expect(restCells.length + gliderA.length + gliderB.length).toBe(250);
 
     const composite = createEngine({ width: w, height: h });
     const rest = createEngine({ width: w, height: h });
-    const travellers = createEngine({ width: w, height: h });
+    const a = createEngine({ width: w, height: h });
+    const b = createEngine({ width: w, height: h });
     for (const c of OPENING_SCENE.cells) composite.set(c.x, c.y, true);
     for (const c of restCells) rest.set(c.x, c.y, true);
-    for (const c of travellerCells) travellers.set(c.x, c.y, true);
+    for (const [x, y] of gliderA) a.set(x, y, true);
+    for (const [x, y] of gliderB) b.set(x, y, true);
 
     let firstDivergenceGen = -1;
     let firstDivergentCell: { x: number; y: number } | null = null;
@@ -48,7 +59,7 @@ describe('content: opening scene', () => {
       for (let y = 0; y < h && firstDivergenceGen === -1; y++) {
         for (let x = 0; x < w; x++) {
           const c = composite.get(x, y);
-          const independentUnion = rest.get(x, y) || travellers.get(x, y);
+          const independentUnion = rest.get(x, y) || a.get(x, y) || b.get(x, y);
           if (c !== independentUnion) {
             firstDivergenceGen = gen;
             firstDivergentCell = { x, y };
@@ -59,7 +70,8 @@ describe('content: opening scene', () => {
       if (firstDivergenceGen === -1) {
         composite.step();
         rest.step();
-        travellers.step();
+        a.step();
+        b.step();
       }
     }
 

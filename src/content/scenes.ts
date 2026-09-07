@@ -295,7 +295,18 @@ export const KEEP_ALIVE_VERIFIED = {
   editBudget: 3,
   measurementRect: { x: 84, y: 56, w: 171 - 84 + 1, h: 103 - 56 + 1 } satisfies Rect,
   activityWindow: 8,
+  /** Raw fact: the last generation any cell inside the rect changes state, untouched. */
   baselineDeathGen: 85,
+  /** Activity ("cells changed over the last 8 generations") at gens 8,16,...,152. Untouched world. */
+  baselineActivityCurve: {
+    gens: [8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152],
+    activity: [103, 102, 92, 106, 134, 142, 186, 166, 90, 34, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  },
+  /** Same curve, with the verified solution applied at generation 0. */
+  solutionActivityCurve: {
+    gens: [8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152],
+    activity: [111, 117, 107, 121, 149, 157, 201, 181, 105, 49, 15, 15, 15, 15, 15, 15, 15, 15, 15],
+  },
   /** The minimal verified fix: completes a headless glider. */
   solution: { edits: [{ x: 129, y: 60, from: false, to: true }], name: 'complete-the-glider' },
   solutionMinActivity: 15,

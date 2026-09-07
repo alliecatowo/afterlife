@@ -12,7 +12,7 @@ import {
   type BucketAggregate, type DroneParams,
 } from './mapper';
 import {
-  BUCKET_SECONDS, LOOKAHEAD_SECONDS, VoicePool, bucketFloor, nextBucketBoundary,
+  BUCKET_SECONDS, LOOKAHEAD_SECONDS, VoicePool, bucketFloor,
   type NoteRequest, type ScheduledNote,
 } from './scheduler';
 
@@ -155,8 +155,18 @@ export class SoundscapeBrain {
       this.#lastFlushedBoundary = bucketFloor(now) - BUCKET_SECONDS;
     }
 
-    let boundary = nextBucketBoundary(this.#lastFlushedBoundary);
-    while (boundary <= horizon) {
+    // Advance by direct addition, never by re-deriving from `bucketFloor`
+    // each step: repeatedly doing `floor(boundary / BUCKET_SECONDS) *
+    // BUCKET_SECONDS` can, under floating-point rounding, occasionally fail
+    // to advance a full step and stall the loop forever. A fixed positive
+    // increment is guaranteed to eventually exceed any finite `horizon`. The
+    // iteration cap below is a hard backstop in case that guarantee is ever
+    // violated some other way.
+    let boundary = this.#lastFlushedBoundary + BUCKET_SECONDS;
+    let guard = 0;
+    const GUARD_MAX = Math.ceil(MAX_CATCHUP_SECONDS / BUCKET_SECONDS) + 4;
+    while (boundary <= horizon && guard < GUARD_MAX) {
+      guard++;
       // Churn notes for the bucket that just closed (suppressed while
       // scrubbing unless audition mode — audition uses its own sparse path).
       if (!this.#scrubbing) {
@@ -181,7 +191,7 @@ export class SoundscapeBrain {
       }
       this.#agg = emptyAggregate(this.#agg.gen, this.#agg.population);
       this.#lastFlushedBoundary = boundary;
-      boundary = nextBucketBoundary(boundary);
+      boundary = boundary + BUCKET_SECONDS;
     }
 
     this.#lastDrone = mapDrone(this.#agg.population, this.#lastDronePan);

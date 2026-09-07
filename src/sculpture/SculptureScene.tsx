@@ -9,7 +9,7 @@
  * is chunked across animation frames and is cancellable (an effect cleanup
  * bumps a token that the in-flight loop checks before touching the mesh).
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import * as THREE from 'three';
@@ -74,7 +74,12 @@ export function SculptureScene(params: SceneParams) {
   // Chunked, cancellable (re)build of the instance matrices/colours. Runs
   // whenever the placement list itself changes (a fresh `open()`), and again
   // — cheaply, same code path — when the plane/depth/decorations change.
-  useEffect(() => {
+  // `useLayoutEffect`, not `useEffect`: this MUST populate `instanceColor`
+  // before R3F's own requestAnimationFrame loop ever renders the freshly
+  // created InstancedMesh. If a colourless frame renders first, three.js
+  // decides then whether to include instance colours in the compiled
+  // shader, and every instance can end up solid black forever after.
+  useLayoutEffect(() => {
     const mesh = meshRef.current;
     if (!mesh || placements.length === 0) return;
     const myToken = ++buildToken.current;
@@ -108,15 +113,11 @@ export function SculptureScene(params: SceneParams) {
       mesh2.instanceMatrix.needsUpdate = true;
       if (mesh2.instanceColor) {
         mesh2.instanceColor.needsUpdate = true;
-        // `setColorAt` allocates `instanceColor` lazily. Three.js decides at
-        // shader-compile time whether to read per-instance colour, based on
-        // whether `instanceColor` existed THEN — if the very first WebGL
-        // frame renders before this effect's first `setColorAt` call, the
-        // program compiles without the instancing-colour path and is cached,
-        // so every instance silently reads a nonexistent vertex colour (0)
-        // forever after — solid black, positions still correct. Forcing a
-        // material version bump makes three.js re-derive that shader
-        // variant against the *current* (now non-null) `instanceColor`.
+        // Defensive: `setColorAt` allocates `instanceColor` lazily, and a
+        // WebGLProgram compiled before that allocation can in principle fail
+        // to pick up the instancing-colour path. Bumping the material
+        // version costs nothing once the program is already correct, and
+        // guards against that class of stale-shader bug.
         material.needsUpdate = true;
       }
       onBuildProgress?.(i, placements.length);
@@ -126,13 +127,6 @@ export function SculptureScene(params: SceneParams) {
     }
     step();
     return () => { buildToken.current++; };
-    // `decorations` doesn't change any placement/colour math — it's a dep
-    // here ONLY because toggling it changes whether `<fog>` is attached to
-    // the scene, which changes the `fog` shader define for every material
-    // and forces three.js to fetch a different cached WebGLProgram. That
-    // program lookup is what makes `needsUpdate` matter again (see above);
-    // without re-running this effect on that toggle too, the instancing
-    // colour path can silently drop out a second time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placements, planeSlot, oldestVisible, sliceCount, timePast, timePresent, timeHighlight, depth, material, decorations]);
 

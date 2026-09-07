@@ -428,7 +428,7 @@ export function scan(engine: LifeEngine, rect: Rect): ScanResult {
   const boxes = connectedComponents(local);
   const clusters: RecognizedCluster[] = boxes.map((b, i) => {
     const others = boxes.filter((_, j) => j !== i);
-    const nearOther = others.some((o) => boxDistance(b, o) < ISOLATION_MARGIN);
+    const nearOther = others.some((o) => boxDistance(b, o) <= ISOLATION_MARGIN);
     const nearEdge = b.x < ISOLATION_MARGIN || b.y < ISOLATION_MARGIN || local.w - (b.x + b.w) < ISOLATION_MARGIN || local.h - (b.y + b.h) < ISOLATION_MARGIN;
     const clean = !nearOther && !nearEdge;
     return classify(local, b, rect, engine.spec.width, engine.spec.height, clean);

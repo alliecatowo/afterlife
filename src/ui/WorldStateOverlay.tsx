@@ -18,21 +18,15 @@ type Phase = 'empty' | 'extinct' | 'none';
 export function WorldStateOverlay() {
   const [phase, setPhase] = useState<Phase>('empty');
   const everAlive = useRef(false);
-  const firstTick = useRef(true);
   // Held back until the title plate has faded, so the opening moment never
   // shows two competing centred messages at once.
   const titleDismissed = useUIState((s) => s.titleDismissed);
   const scrubbing = useAppStore((s) => s.scrubbing);
+  const branches = useAppStore((s) => s.branches);
   const setTool = useAppStore((s) => s.setTool);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
 
   useEffect(() => subscribeReadout((r) => {
-    if (firstTick.current) {
-      firstTick.current = false;
-      if (r.gen > 0) {
-        bus.emit('toast', { message: `Restored to generation ${r.gen}.`, tone: 'info' });
-      }
-    }
     if (r.population > 0) {
       everAlive.current = true;
       setPhase('none');
@@ -42,6 +36,16 @@ export function WorldStateOverlay() {
       setPhase('empty');
     }
   }), []);
+
+  // "Restored": a real discontinuity signal (jumping onto another branch),
+  // never a guess from the first `gen:changed` tick — `gen:changed` only
+  // ever fires for gen >= 1 (it fires from inside `step()`), so "first
+  // observed gen > 0" is true on every ordinary first play and cannot tell
+  // "resumed" apart from "just started playing".
+  useEffect(() => bus.on('branch:switched', ({ id }) => {
+    const name = branches.find((b) => b.id === id)?.name ?? (id === 'root' ? 'the original' : id);
+    bus.emit('toast', { message: `Restored — now on "${name}".`, tone: 'info' });
+  }).dispose, [branches]);
 
   const beginDrawing = () => {
     setTool('draw');
