@@ -18,6 +18,7 @@ import { Fallback2D, WebGLUnsupportedNotice } from './Fallback2D';
 import { isWebGLAvailable } from './webgl';
 import { exportSculpturePng, type ExportAnnotation } from './export';
 import { prefersReducedMotion, resolveCssColorString } from './tokens';
+import { isDialogOpen, isTypingTarget } from '@/interact/globalShortcutGuard';
 
 export interface SculptureController {
   setSlicePlane(t: number): void;
@@ -78,7 +79,10 @@ export function SculptureApp({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') returnToLivingPlane();
+      // Don't close the sculpture out from under someone renaming a save or
+      // dismissing an unrelated dialog with the SAME Escape keystroke — see
+      // `@/interact/globalShortcutGuard.ts`.
+      if (e.key === 'Escape' && !isTypingTarget(e.target) && !isDialogOpen()) returnToLivingPlane();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

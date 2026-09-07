@@ -30,9 +30,16 @@ const LENS_LEGEND: Record<RenderLens, { swatch: string; label: string }[]> = {
   ],
 };
 
+/** How often the throttled live region (below) may announce gen/population
+ *  changes to a screen reader. `gen:changed` can fire up to 60x/sec — an
+ *  `aria-live` region re-announcing at that rate would be unusable, talking
+ *  over itself constantly instead of reading as an occasional status update. */
+const LIVE_REGION_THROTTLE_MS = 4000;
+
 export function Hud() {
   const genRef = useRef<HTMLSpanElement>(null);
   const popRef = useRef<HTMLSpanElement>(null);
+  const liveRegionRef = useRef<HTMLDivElement>(null);
 
   const playing = useAppStore((s) => s.playing);
   const speed = useAppStore((s) => s.speed);
@@ -57,6 +64,31 @@ export function Hud() {
     if (popRef.current) popRef.current.textContent = String(r.population);
   }), []);
 
+  // A polite, THROTTLED live region — a screen-reader-only companion to the
+  // visual gen/pop readouts above, which are plain DOM-ref writes with no
+  // `aria-live` of their own and so are otherwise silent to assistive tech
+  // until explicitly navigated to. Values are sampled on every `gen:changed`
+  // (cheap — a ref write, no render) but only pushed into the live region,
+  // and only when they actually changed, on a slow timer: announcing at
+  // simulation speed (up to 60/sec) would be unusable noise, not a status
+  // update. Runs regardless of the "pop" readout's own responsive visibility
+  // (see below) — the announcement doesn't depend on what's on screen.
+  useEffect(() => {
+    let sample = { gen: 0, population: 0 };
+    const unsubscribe = subscribeReadout((r) => { sample = r; });
+    let announced = { gen: -1, population: -1 };
+    const announce = () => {
+      if (sample.gen === announced.gen && sample.population === announced.population) return;
+      announced = sample;
+      if (liveRegionRef.current) {
+        liveRegionRef.current.textContent =
+          `Generation ${sample.gen.toLocaleString()}. Population ${sample.population.toLocaleString()} living cells.`;
+      }
+    };
+    const id = window.setInterval(announce, LIVE_REGION_THROTTLE_MS);
+    return () => { unsubscribe(); window.clearInterval(id); };
+  }, []);
+
   // A quiet, one-time invitation near the transport controls: "pause time".
   // Dismissed permanently the first time playback is actually toggled.
   const [everToggled, setEverToggled] = useState(false);
@@ -74,10 +106,23 @@ export function Hud() {
     bus.emit('playback:step', { by });
   };
 
+  // Screen-reader-only, throttled (see the effect above) — present in every
+  // branch below, including presentation mode, since that's when the visual
+  // readouts are at their sparsest.
+  const liveRegion = (
+    <div ref={liveRegionRef} className="sr-only" role="status" aria-live="polite" aria-atomic="true" />
+  );
+
   if (presentation) {
     return (
       <div className="flex h-full items-center justify-between px-4">
-        <span className="display-face-tight text-sm text-ivory-100">AFTERLIFE</span>
+        {liveRegion}
+        {/* The app's one, persistent `<h1>` — always in the DOM (both HUD
+            variants), unlike `TitlePlate`'s big display heading, which is a
+            transient restatement demoted to a `<p>` for exactly this reason:
+            a heading that vanishes/hides after the title fades would leave
+            the page with no level-one heading at all. */}
+        <h1 className="display-face-tight text-sm text-ivory-100">AFTERLIFE</h1>
         <div className="flex items-center gap-3">
           <Readout label="gen" value={<span ref={genRef}>0</span>} digits={6} />
           <IconButton label="Exit presentation" icon={<CompressIcon />} onClick={() => { setPresentation(false); bus.emit('presentation:toggle', { on: false }); }} />
@@ -88,7 +133,8 @@ export function Hud() {
 
   return (
     <div className="flex h-full items-center gap-3 overflow-x-auto px-3">
-      <span className="display-face-tight shrink-0 text-sm text-ivory-100">AFTERLIFE</span>
+      {liveRegion}
+      <h1 className="display-face-tight shrink-0 text-sm text-ivory-100">AFTERLIFE</h1>
       <Tooltip content={drawerOpen ? 'Close drawer' : 'Open drawer'}>
         <IconButton
           label={drawerOpen ? 'Close drawer' : 'Open drawer'}
@@ -115,8 +161,16 @@ export function Hud() {
         <Tooltip content="Step forward one generation">
           <IconButton label="Step forward" icon={<StepForwardIcon />} disabled={playing} onClick={() => step(1)} />
         </Tooltip>
+        {/* Hidden below `sm`: on a 390px phone this badge was the single
+            widest item ahead of the gen/pop readouts, and pushed itself
+            (and everything after it) past the viewport edge with no visible
+            scroll affordance — the "PAUSED"/"RUNNING" text read as clipped
+            mid-word. The play/pause STATE itself stays fully legible without
+            colour on mobile too: the IconButton above already swaps icon
+            shape (▶/❚❚) and its own `pressed` treatment (solid fill +
+            stronger border), so nothing is lost, just the redundant label. */}
         <span
-          className="ml-1 rounded-xs px-1.5 py-0.5 text-micro uppercase tracking-[0.18em]"
+          className="ml-1 hidden rounded-xs px-1.5 py-0.5 text-micro uppercase tracking-[0.18em] sm:inline"
           style={{ color: playing ? 'var(--color-accent-life)' : 'var(--color-ivory-300)' }}
         >
           {playing ? '● running' : '❚❚ paused'}
@@ -128,7 +182,17 @@ export function Hud() {
 
       <Divider orientation="vertical" className="h-6" />
       <Readout label="gen" value={<span ref={genRef} data-testid="hud-gen">0</span>} digits={6} />
-      <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
+      {/* Hidden below `sm`: with the play-state badge already gone (see
+          above), "pop" was still the next-widest item forcing the row past a
+          390px viewport — its own text got clipped at the edge. Population
+          isn't lost to screen-reader users on a phone either: the throttled
+          live region below announces gen AND population regardless of which
+          HUD readouts are visually present. A wrapper (not a `className` on
+          `Readout` itself) toggles `display`, so it never fights the
+          component's own hardcoded `flex` utility. */}
+      <div className="hidden sm:block">
+        <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
+      </div>
 
       <Divider orientation="vertical" className="hidden h-6 md:block" />
       <div className="hidden shrink-0 items-center gap-2 md:flex">

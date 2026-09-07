@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { clampScale, createCamera, MAX_SCALE, MIN_SCALE, smoothDamp, zoomAt } from '@/render/camera';
 import { projectScreenToWorld, projectWorldToScreen } from '@/render/renderer';
 
@@ -120,5 +120,50 @@ describe('camera controller', () => {
     expect(x).toBeCloseTo(10, 2);
     const vel2 = { v: 0 };
     expect(smoothDamp(5, 10, vel2, 0.25, 0)).toBe(5);
+  });
+
+  describe('prefers-reduced-motion: follow() snaps instead of easing', () => {
+    // jsdom doesn't implement `matchMedia` at all (calling it throws) — this
+    // is exactly the environment `reducedMotionPreferred()`'s `?.()` guard is
+    // for, and doubles as a check that camera code never crashes here even
+    // though the OTHER tests in this file (no stub installed) exercise the
+    // real, non-reduced easing path throughout.
+    afterEach(() => {
+      // @ts-expect-error test-only cleanup of a property this suite adds
+      delete window.matchMedia;
+    });
+
+    function stubReducedMotion(matches: boolean): void {
+      window.matchMedia = ((query: string) => ({
+        matches,
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent() { return false; },
+      })) as unknown as typeof window.matchMedia;
+    }
+
+    it('jumps straight to the target on the very first tick when the OS prefers reduced motion', () => {
+      stubReducedMotion(true);
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 100, y: -40 });
+      cam.tick(1 / 60); // a single frame — no 240-tick easing run needed
+      expect(cam.camera.x).toBe(100);
+      expect(cam.camera.y).toBe(-40);
+    });
+
+    it('still eases normally once reduced motion is switched back off', () => {
+      stubReducedMotion(false);
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 100, y: 0 });
+      cam.tick(1 / 60);
+      // A single 1/60s tick of a 0.28s-smoothtime damp cannot have arrived yet.
+      expect(cam.camera.x).toBeGreaterThan(0);
+      expect(cam.camera.x).toBeLessThan(100);
+    });
   });
 });

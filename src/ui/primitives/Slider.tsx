@@ -34,7 +34,7 @@ export function Slider({
         <span className="tabular text-xs text-ivory-100">{format(value)}</span>
       </div>
       <RadixSlider.Root
-        className="relative flex h-5 w-full touch-none select-none items-center"
+        className="relative flex h-5 w-full touch-none select-none items-center max-[480px]:h-11"
         min={min}
         max={max}
         step={step}
@@ -50,7 +50,11 @@ export function Slider({
           className={
             'block h-3.5 w-3.5 rounded-full border border-line-strong bg-ivory-100 shadow-[var(--shadow-inset)] ' +
             'transition-colors focus-visible:focus-ring outline-none hover:bg-ivory-200 active:bg-ivory-300 ' +
-            'disabled:bg-ink-500 max-[480px]:h-5 max-[480px]:w-5'
+            // The thumb IS the focusable, keyboard/touch-operable control
+            // (`role="slider"`) — 44px on narrow viewports, not the 20px it
+            // used to grow to, to meet the same touch-target minimum every
+            // other primitive already holds itself to.
+            'disabled:bg-ink-500 max-[480px]:h-11 max-[480px]:w-11'
           }
           aria-label={label}
         />

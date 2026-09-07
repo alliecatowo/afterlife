@@ -14,7 +14,10 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 const base =
   'inline-flex items-center justify-center gap-1.5 rounded-sm font-sans transition-colors ' +
   'duration-[var(--duration-instant)] ease-[var(--ease-standard)] focus-visible:focus-ring outline-none select-none ' +
-  'disabled:cursor-not-allowed disabled:text-ink-500 disabled:opacity-100';
+  'disabled:cursor-not-allowed disabled:text-ink-500 disabled:opacity-100 ' +
+  // Touch targets stay >=44px on narrow viewports even though the visible
+  // control remains compact — same rule `IconButton`/`Toggle` already apply.
+  'max-[480px]:min-h-11';
 
 const variants: Record<ButtonVariant, string> = {
   solid:

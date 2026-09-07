@@ -90,7 +90,16 @@ export function ComparePanel() {
             items={[
               { swatch: 'var(--color-accent-branch-a)', label: `A — ${activeName}` },
               { swatch: 'var(--color-accent-branch-b)', label: `B — ${otherName}` },
-              { swatch: 'var(--color-accent-diff)', label: 'differs between A and B' },
+              // The difference overlay itself never relies on colour alone
+              // to tell A-only from B-only cells (see `renderer.ts`'s
+              // `#drawDiff`: A-only is a solid fill, B-only is a diagonal
+              // hatch) — these two legend rows use the same two fill styles
+              // so the visual key matches what's actually on the canvas.
+              { swatch: 'color-mix(in oklch, var(--color-accent-diff) 60%, transparent)', label: 'A-only (solid)' },
+              {
+                swatch: 'repeating-linear-gradient(45deg, var(--color-accent-diff) 0 2px, color-mix(in oklch, var(--color-accent-diff) 22%, transparent) 2px 4px)',
+                label: 'B-only (hatched)',
+              },
             ]}
           />
           <div className="flex flex-col gap-1.5">

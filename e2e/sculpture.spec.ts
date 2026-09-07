@@ -55,4 +55,51 @@ test.describe('time sculpture', () => {
     await expect(sculptureHost).toHaveClass(/hidden/);
     await expect(canvas).not.toHaveClass(/hidden/);
   });
+
+  // Regression: the flat-plane -> three-quarter camera intro
+  // (`SculptureScene.tsx`'s `CameraRig`) and the OrbitControls' inertia
+  // ("damping") both animate every frame regardless of the OS's
+  // reduce-motion preference before this fix. Verified without trusting
+  // pixels (this sandbox's software WebGL renders slice colour dark
+  // regardless — a known, separate artifact): the test above needs a ~900ms
+  // settle wait for the intro to finish easing before picking a slice
+  // reliably lands on an instanced cell; under reduced motion the camera is
+  // already at its FINAL pose on the very first frame, so the same pick
+  // should succeed immediately, with no settle wait at all.
+  test('camera intro is instant (no settle wait needed) when the OS prefers reduced motion', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openApp(page);
+    await dismissTitle(page);
+    await waitForGen(page, 40, 15_000);
+    await ensurePaused(page);
+
+    await page.keyboard.press('s');
+    const canvas = page.locator('#world-canvas');
+    const box = (await canvas.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2 - 150, box.y + box.height / 2 - 150);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 150, box.y + box.height / 2 + 150, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    await page.getByRole('button', { name: 'Open time sculpture' }).click();
+    const sculptureHost = page.locator('#sculpture-canvas');
+    await expect(sculptureHost.locator('canvas').first()).toBeVisible();
+
+    const before = await realGen(page);
+    const chost = (await sculptureHost.boundingBox())!;
+    let moved = false;
+    // Deliberately NO `waitForTimeout` settle here — that's the point.
+    outer: for (const fx of [0.5, 0.4, 0.6, 0.45, 0.55, 0.35, 0.65]) {
+      for (const fy of [0.5, 0.45, 0.55, 0.4, 0.6]) {
+        await page.mouse.click(chost.x + chost.width * fx, chost.y + chost.height * fy);
+        await page.waitForTimeout(50);
+        if ((await realGen(page)) !== before) { moved = true; break outer; }
+      }
+    }
+    expect(moved, 'with the intro suppressed, the camera should already be at its final pose').toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(sculptureHost).toHaveClass(/hidden/);
+  });
 });

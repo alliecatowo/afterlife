@@ -162,6 +162,31 @@ describe('input: selection move / duplicate / rotate', () => {
     input.dispose();
   });
 
+  it('an Alt-click on a selection with no movement also commits nothing (duplicate-in-place is still a no-op)', () => {
+    // QA2: the old guard only skipped the plain-click case (`!moved && !duplicate`),
+    // so an Alt+click with zero drag fell through and stamped the pattern back
+    // onto itself at identical coordinates — a cell-for-cell no-op that still
+    // burned an undo slot and a `history.record()` entry for nothing.
+    const engine = createEngine({ width: 60, height: 60 });
+    seedShape(engine, 10, 10);
+    const rect: Rect = { x: 9, y: 9, w: 5, h: 4 };
+    useAppStore.getState().setTool('select');
+    useAppStore.getState().setSelection(rect);
+
+    const renderer = makeFakeRenderer();
+    const camera = makeFakeCamera();
+    const input = createInput({ renderer, camera, engine });
+    const canvas = makeCanvas();
+    input.attach(canvas);
+
+    canvas.dispatchEvent(pointerEvent('pointerdown', 10, 10, { altKey: true }));
+    canvas.dispatchEvent(pointerEvent('pointerup', 10, 10, { altKey: true }));
+
+    expect(input.pending).toBeNull();
+    expect(input.canUndo, 'a no-op duplicate must not push an undo entry').toBe(false);
+    input.dispose();
+  });
+
   it('pressing r rotates the selected LIVE contents in place and swaps the selection footprint', () => {
     const engine = createEngine({ width: 60, height: 60 });
     // A 3-wide, 1-tall horizontal line at (10,10)-(12,10).

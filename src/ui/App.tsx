@@ -16,7 +16,7 @@
  * Below `md` the drawer/panel become slide-over sheets instead of grid
  * columns, so the canvas keeps the screen on a 390px phone.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import '@/styles/motion.css';
 import { useAppStore, type Tool } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
@@ -32,13 +32,9 @@ import { WorldStateOverlay } from '@/ui/WorldStateOverlay';
 import { SceneAnnotation } from '@/ui/SceneAnnotation';
 import { ShortcutsDialog } from '@/ui/dialogs/ShortcutsDialog';
 import { ToastLayer, TooltipProvider } from '@/ui/primitives';
+import { shouldIgnoreGlobalShortcut } from '@/interact/globalShortcutGuard';
 
 const TOOL_KEYS: Record<string, Tool> = { d: 'draw', e: 'erase', p: 'pan', s: 'select' };
-
-function isTypingTarget(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false;
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
-}
 
 function UnsupportedShell() {
   return (
@@ -67,7 +63,6 @@ export function App() {
   const setRightPanel = useUIState((s) => s.setRightPanel);
   const dismissTitle = useUIState((s) => s.dismissTitle);
   const setWorldTouched = useUIState((s) => s.setWorldTouched);
-  const shortcutsOpen = useUIState((s) => s.shortcutsOpen);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
 
   const [supported] = useState(() => typeof window === 'undefined' || 'CanvasRenderingContext2D' in window);
@@ -116,10 +111,16 @@ export function App() {
   // Global keyboard shortcuts NOT already owned by `@/interact/input.ts`
   // (which handles Space, arrows [camera pan], 1/2/3 [lens], g [grid],
   // r/f [stamp rotate/flip], +/-/=/_ [zoom], ., [, ], z once attached by
-  // `initSession()`). Ignored while typing or while a dialog owns focus.
+  // `initSession()`). Ignored while typing, while a dialog owns focus, or
+  // while the focused control would consume this key itself — see
+  // `@/interact/globalShortcutGuard.ts`.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target) || shortcutsOpen) {
+      if (shouldIgnoreGlobalShortcut(e.target, e.key)) {
+        // The shortcuts sheet is the one dialog currently in the app;
+        // Radix already closes it on Escape internally (this call is a
+        // harmless no-op otherwise), kept explicit so a future non-Radix
+        // dialog can't leave `shortcutsOpen` stuck true.
         if (e.key === 'Escape') setShortcutsOpen(false);
         return;
       }
@@ -139,7 +140,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [presentation, rightPanel, shortcutsOpen, setPresentation, setRightPanel, setTool, setShortcutsOpen]);
+  }, [presentation, rightPanel, setPresentation, setRightPanel, setTool, setShortcutsOpen]);
 
   if (!supported) return <UnsupportedShell />;
 
@@ -164,9 +165,36 @@ export function App() {
           <Hud />
         </header>
 
-        <main className="relative grid min-h-0 grid-cols-1 md:grid-cols-[var(--size-drawer)_1fr_var(--size-panel)]">
+        <main
+          className="relative grid min-h-0 grid-cols-1 md:grid-cols-[var(--col-drawer)_1fr_var(--col-panel)]"
+          style={
+            {
+              // CSS Grid tracks with an explicit length (the old static
+              // `var(--size-drawer)_1fr_var(--size-panel)` template) never
+              // shrink to fit a narrower child — `#drawer-left`'s collapsed
+              // rail and `#panel-right`'s closed state both set `md:w-auto`/
+              // `md:w-0` on THEMSELVES, but a grid item's own width is
+              // irrelevant once its track has a fixed size; the item just
+              // stretches (or clips) to fill that track regardless. That left
+              // the canvas permanently 240px+304px narrower than the
+              // viewport no matter what was open — collapsing the drawer just
+              // uncovered a dead black column, not more world, which is the
+              // opposite of DESIGN.md's "world dominates" rule.
+              //
+              // The fix drives the TRACK sizes themselves from the same state
+              // that drives each aside's own width: `max-content` lets the
+              // drawer column shrink to exactly the collapsed rail's
+              // intrinsic width, and `0px` truly removes the panel column
+              // (and, in presentation mode, both) instead of merely hiding
+              // content inside a track that still reserves the space.
+              '--col-drawer': presentation ? '0px' : drawerOpen ? 'var(--size-drawer)' : 'max-content',
+              '--col-panel': presentation ? '0px' : rightPanel ? 'var(--size-panel)' : '0px',
+            } as CSSProperties
+          }
+        >
           <aside
             id="drawer-left"
+            aria-label="Specimen drawer"
             data-open={drawerOpen}
             className={
               // Below `md` this is a slide-over sheet, not the desktop rail — width
@@ -176,21 +204,48 @@ export function App() {
               // left almost no world (or room for the pattern tooltips) visible.
               'fixed inset-y-0 left-0 z-[var(--z-overlay)] w-[var(--size-drawer)] max-w-[78vw] -translate-x-full border-r border-line ' +
               'bg-ink-800 transition-transform duration-[var(--duration-base)] ease-[var(--ease-standard)] ' +
-              'data-[open=true]:translate-x-0 md:static md:z-auto md:w-auto md:max-w-none md:translate-x-0 ' +
+              // Explicit column placement, not auto-placement: in
+              // presentation mode this aside AND `#panel-right` both go
+              // `md:hidden`, and a `display:none` grid item is skipped
+              // entirely by auto-placement — without an explicit start, the
+              // world `<section>` below would slide into column 1 (0px) and
+              // `#panel-right` into column 2 (the world's own 1fr track),
+              // leaving the canvas at 0 width. Pinning every child to its
+              // column makes that immune to which siblings are hidden.
+              'data-[open=true]:translate-x-0 md:static md:z-auto md:col-start-1 md:w-auto md:max-w-none md:translate-x-0 ' +
               (presentation ? 'md:hidden' : 'min-h-0 overflow-y-auto md:block')
             }
           >
             <Drawer />
           </aside>
 
-          <section ref={canvasWrapRef} className="relative min-h-0 min-w-0">
+          <section ref={canvasWrapRef} className="relative min-h-0 min-w-0 md:col-start-2">
+            {/* A `<canvas>` is otherwise completely opaque to assistive tech —
+                no text, no DOM structure, nothing but pixels. `role="img"` +
+                `aria-label` gives it a name; `aria-describedby` points at a
+                longer, visually-hidden description of how it's actually
+                operated (the live generation/population summary lives in the
+                HUD's own throttled `aria-live` region instead, so it isn't
+                repeated here). */}
             <canvas
               id="world-canvas"
+              role="img"
+              aria-label="The living world"
+              aria-describedby="world-canvas-description"
               className={'absolute inset-y-0 left-0 h-full ' + (compareWith ? 'w-1/2 border-r border-line' : 'w-full')}
               data-show-grid={showGrid}
             />
+            <p id="world-canvas-description" className="sr-only">
+              A toroidal cellular-automaton grid running Conway&apos;s Life. Draw, erase, pan,
+              select or stamp with the tools in the drawer; play, pause and step from the
+              transport bar; generation and population are announced there periodically. Press
+              the question mark key for the full list of controls.
+            </p>
             <canvas
               id="compare-canvas"
+              role="img"
+              aria-label="Comparison branch B world"
+              aria-hidden={!compareWith}
               className={'absolute inset-y-0 h-full ' + (compareWith ? 'right-0 w-1/2' : 'hidden w-full left-0')}
             />
             <div id="sculpture-canvas" className="absolute inset-0 hidden" aria-hidden="true" />
@@ -202,6 +257,7 @@ export function App() {
 
           <aside
             id="panel-right"
+            aria-label="Inspector panel"
             data-open={Boolean(rightPanel)}
             className={
               // Same "mobile sheet, not a squeezed desktop column" fix as
@@ -210,7 +266,10 @@ export function App() {
               // a sliver of world visible on a phone.
               'fixed inset-y-0 right-0 z-[var(--z-overlay)] w-[var(--size-panel)] max-w-[80vw] translate-x-full border-l border-line ' +
               'bg-ink-800 transition-transform duration-[var(--duration-base)] ease-[var(--ease-standard)] ' +
-              'data-[open=true]:translate-x-0 md:static md:z-auto md:max-w-none md:translate-x-0 ' +
+              // See `#drawer-left`'s comment: explicit column placement so
+              // this aside can never slide into the world's own track just
+              // because `#drawer-left` happens to be `display:none`.
+              'data-[open=true]:translate-x-0 md:static md:z-auto md:col-start-3 md:max-w-none md:translate-x-0 ' +
               (rightPanel ? 'md:w-auto' : 'md:w-0 md:translate-x-0') +
               ' min-h-0 overflow-y-auto ' +
               (presentation ? 'md:hidden' : '')

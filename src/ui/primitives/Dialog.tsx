@@ -30,7 +30,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
             'data-[state=closed]:animate-[dialog-out_var(--duration-fast)_var(--ease-exit)] focus:outline-none'
           }
         >
-          <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
+          {/* A plain `<div>`, not a `<header>`: unlike the app shell's own
+              `#hud-top`, this one sits inside `role="dialog"` content, which
+              does NOT suppress `<header>`'s implicit `banner` landmark role
+              (only article/aside/main/nav/section do) — axe correctly flags
+              the result as a second, indistinguishable banner landmark on
+              the page. The dialog's accessible name still comes from
+              `RadixDialog.Title` regardless of what wraps it. */}
+          <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
             <div>
               <RadixDialog.Title className="display-face-tight text-lg text-ivory-100">{title}</RadixDialog.Title>
               {description ? (
@@ -40,7 +47,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
             <RadixDialog.Close asChild>
               <IconButton label="Close" icon={<CloseIcon />} />
             </RadixDialog.Close>
-          </header>
+          </div>
           <div className="px-5 py-4">{children}</div>
           {footer ? <footer className="flex justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer> : null}
         </RadixDialog.Content>

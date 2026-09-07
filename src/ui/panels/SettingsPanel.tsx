@@ -21,12 +21,12 @@ export function SettingsPanel() {
   return (
     <div className="flex flex-col gap-4">
       <Field label="Sound">
-        <label className="flex items-center gap-2 text-xs text-ivory-200">
+        <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
           <input
             type="checkbox"
             checked={!muted}
             onChange={(e) => { setMuted(!e.target.checked); bus.emit('audio:toggle', { muted: !e.target.checked }); }}
-            className="h-3.5 w-3.5 accent-[var(--color-ivory-100)]"
+            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
           />
           Enable the soundscape
         </label>
@@ -45,12 +45,12 @@ export function SettingsPanel() {
       <Divider />
 
       <Field label="World grid">
-        <label className="flex items-center gap-2 text-xs text-ivory-200">
+        <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
           <input
             type="checkbox"
             checked={showGrid}
             onChange={(e) => setShowGrid(e.target.checked)}
-            className="h-3.5 w-3.5 accent-[var(--color-ivory-100)]"
+            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
           />
           Show cell grid lines
         </label>

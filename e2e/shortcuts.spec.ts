@@ -74,4 +74,65 @@ test.describe('keyboard shortcuts', () => {
     const duration = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--duration-base').trim());
     expect(['0ms', '0s', '0']).toContain(duration);
   });
+
+  // Regression: `@/interact/input.ts`'s window-level keydown listener has no
+  // knowledge of React dialog state, so before `globalShortcutGuard.ts` it
+  // kept processing Space/g/arrows underneath an OPEN dialog — pressing Space
+  // to dismiss a focused control inside the shortcuts sheet, say, would also
+  // toggle playback and pan the camera behind it, invisibly.
+  test('the shortcuts sheet swallows world shortcuts while it is open, not just the ones App.tsx knows about', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+    await ensurePaused(page);
+
+    const initialGrid = await page.locator('#world-canvas').getAttribute('data-show-grid');
+    const camX = () => page.evaluate(
+      () => (window as unknown as { __AFTERLIFE__: { camera: { camera: { x: number } } } }).__AFTERLIFE__.camera.camera.x,
+    );
+    const xBefore = await camX();
+
+    await page.keyboard.press('?');
+    await expect(page.getByText('Keyboard shortcuts')).toBeVisible();
+
+    // Space would normally toggle play/pause; g would toggle the grid;
+    // ArrowRight would pan the camera. None of that should happen while the
+    // dialog owns the keyboard.
+    await page.keyboard.press('Space');
+    await page.keyboard.press('g');
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(100);
+
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible(); // still paused
+    await expect(page.locator('#world-canvas')).toHaveAttribute('data-show-grid', String(initialGrid));
+    expect(await camX()).toBe(xBefore);
+
+    // Sanity: closing the dialog restores normal shortcut handling — this
+    // isn't a guard that got stuck on.
+    await page.keyboard.press('Escape');
+    await expect(page.getByText('Keyboard shortcuts')).toBeHidden();
+    await page.keyboard.press('g');
+    await expect(page.locator('#world-canvas')).toHaveAttribute('data-show-grid', String(initialGrid === 'true' ? 'false' : 'true'));
+  });
+
+  // Regression: Radix's roving-focus widgets (ToggleGroup) call
+  // `preventDefault()` on arrow keys to stop the PAGE from scrolling, but
+  // that doesn't stop propagation — without the guard, arrow-key navigation
+  // between toggle options (e.g. moving focus across the lens toggle) also
+  // panned the world camera underneath it on every press.
+  test('arrow-key navigation inside a focused toggle group does not also pan the camera', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+    await ensurePaused(page);
+
+    const camX = () => page.evaluate(
+      () => (window as unknown as { __AFTERLIFE__: { camera: { camera: { x: number } } } }).__AFTERLIFE__.camera.camera.x,
+    );
+    const xBefore = await camX();
+
+    const lifeRadio = page.getByRole('radio', { name: 'Life' });
+    await lifeRadio.focus();
+    await page.keyboard.press('ArrowRight'); // moves roving focus to "Age", NOT the camera
+    await expect(page.getByRole('radio', { name: 'Age' })).toBeFocused();
+    expect(await camX()).toBe(xBefore);
+  });
 });

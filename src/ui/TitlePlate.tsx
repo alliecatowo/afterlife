@@ -26,7 +26,11 @@ export function TitlePlate() {
       }
       style={dismissed ? { animationFillMode: 'forwards' } : undefined}
     >
-      <h1 className="display-face text-display-lg text-ivory-100">AFTERLIFE</h1>
+      {/* Not the page's `<h1>` — that's the HUD's persistent wordmark
+          (`@/ui/hud/Hud.tsx`), which stays in the DOM after this transient
+          title card fades. Two competing `<h1>`s while both are visible
+          would be a confusing heading structure for no benefit. */}
+      <p className="display-face text-display-lg text-ivory-100">AFTERLIFE</p>
       <p className="max-w-xs text-sm text-ivory-300">Every future leaves a trace.</p>
       <p className="mt-4 text-micro uppercase tracking-[0.22em] text-ivory-300">
         touch the world to begin

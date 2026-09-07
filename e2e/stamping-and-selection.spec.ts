@@ -34,7 +34,13 @@ test.describe('specimen stamping', () => {
     await gliderBtn.click();
     await expect(gliderBtn).toHaveAttribute('aria-pressed', 'true');
 
-    const screen = await worldToScreen(page, EMPTY_X, EMPTY_Y);
+    // Cell CENTRE, not its corner (see `screenshots.spec.ts`'s own comment to
+    // the same effect) — a click exactly on a cell boundary pixel is a
+    // coin-flip between two adjacent cells once fractional scale/rounding is
+    // involved, and this test's target canvas width is no longer fixed now
+    // that `#drawer-left`/`#panel-right` genuinely resize the world (see the
+    // App.tsx grid-track fix), which was masking this pre-existing fragility.
+    const screen = await worldToScreen(page, EMPTY_X + 0.5, EMPTY_Y + 0.5);
     const canvas = page.locator('#world-canvas');
     const box = (await canvas.boundingBox())!;
 

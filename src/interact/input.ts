@@ -29,6 +29,7 @@ import { bus } from '@/ui/bus';
 import { readState, useAppStore } from '@/ui/store';
 import type { WorldRenderer } from '@/render/renderer';
 import type { CameraController } from '@/render/camera';
+import { shouldIgnoreGlobalShortcut } from './globalShortcutGuard';
 
 export interface InputController extends Disposable {
   attach(canvas: HTMLCanvasElement): void;
@@ -493,7 +494,12 @@ class InputControllerImpl implements InputController {
     if (!origin || !pattern || !at) return;
 
     const moved = at.x !== origin.x || at.y !== origin.y;
-    if (!moved && !this.#moveDuplicate) return; // a plain click on the selection — no-op, not an edit.
+    // A plain click on the selection (no movement) is a no-op even with Alt
+    // held: "duplicate" only means something once the copy lands somewhere
+    // NEW. Stamping the pattern back onto itself at identical coordinates
+    // would be a cell-for-cell no-op edit — recording it anyway pollutes
+    // `history` and burns an undo slot for zero visible effect.
+    if (!moved) return;
 
     if (!this.#moveDuplicate) {
       for (let j = 0; j < origin.h; j++) {
@@ -561,8 +567,14 @@ class InputControllerImpl implements InputController {
   // ---- keyboard --------------------------------------------------------
 
   #onKeyDown = (e: KeyboardEvent): void => {
-    const target = e.target as HTMLElement | null;
-    if (target && /^(input|textarea|select)$/i.test(target.tagName)) return;
+    // See `globalShortcutGuard.ts`: skip while typing, while a dialog (e.g.
+    // the shortcuts sheet) owns focus, or while the focused control already
+    // handles this exact key itself (a button on Space, a Radix
+    // Toggle/Slider on arrow keys) — this global handler is on `window` and
+    // fires regardless of what has focus, so without this guard it would
+    // silently double-handle (or override) the focused widget's own keyboard
+    // behaviour instead of yielding to it.
+    if (shouldIgnoreGlobalShortcut(e.target, e.key)) return;
 
     switch (e.key) {
       case ' ': {

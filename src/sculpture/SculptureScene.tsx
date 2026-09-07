@@ -301,7 +301,13 @@ function CameraRig({
     <OrbitControls
       ref={controlsRef}
       makeDefault
-      enableDamping
+      // Damping is inertia: the camera keeps drifting for a beat after the
+      // user stops dragging. That's motion `prefers-reduced-motion` must
+      // suppress just like the camera intro above — `reduceMotion` is
+      // already this component's own resolved flag (prop || live media
+      // query), so switching it off here makes every orbit move stop
+      // exactly where the pointer released it.
+      enableDamping={!reduceMotion}
       dampingFactor={0.08}
       target={target}
       minDistance={span * 0.4}

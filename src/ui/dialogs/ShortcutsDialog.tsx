@@ -26,8 +26,8 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ['Scroll / pinch', 'Zoom at pointer'],
       ['D / E / P / S', 'Draw / erase / pan / select tool'],
       ['G', 'Toggle grid'],
-      ['R', 'Rotate stamp'],
-      ['F', 'Flip stamp'],
+      ['R', 'Rotate stamp (or the selection’s contents, if one is active)'],
+      ['F', 'Flip stamp (or the selection’s contents, if one is active)'],
       ['Z', 'Undo last edit'],
     ],
   },
@@ -37,7 +37,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ['1 / 2 / 3', 'Life / age / activity lens'],
       ['V', 'Presentation mode'],
       ['?', 'This sheet'],
-      ['Esc', 'Close dialog / panel / presentation'],
+      ['Esc', 'Close dialog / panel / presentation, or cancel the current selection / armed stamp'],
     ],
   },
 ];
@@ -52,7 +52,15 @@ export function ShortcutsDialog() {
         {GROUPS.map((g, i) => (
           <div key={g.title}>
             {i > 0 && <Divider className="mb-4" />}
-            <h4 className="mb-2 text-micro uppercase tracking-[0.18em] text-ivory-300">{g.title}</h4>
+            {/* One level below the dialog's own title, which Radix renders
+                as an `<h2>` (`RadixDialog.Title`) — h4 here skipped h3
+                entirely, which axe's `heading-order` rule flags. `font-sans
+                font-normal` explicitly override base.css's `h1,h2,h3` rule
+                (Fraunces, weight 400, tight letter-spacing) — that rule
+                wasn't reachable by the old h4, and this is a micro uppercase
+                label, not a display heading (DESIGN.md bans Fraunces below
+                18px). */}
+            <h3 className="mb-2 font-sans text-micro font-normal uppercase tracking-[0.18em] text-ivory-300">{g.title}</h3>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
               {g.rows.map(([key, desc]) => (
                 <div key={key} className="contents">

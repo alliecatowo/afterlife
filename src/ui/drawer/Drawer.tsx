@@ -43,7 +43,7 @@ export function Drawer() {
     // so it's distinguishable by name from the HUD's separate toggle button,
     // which is also visible at the same time.
     return (
-      <div className="hidden h-full flex-col items-center gap-2 py-3 md:flex">
+      <div className="hidden h-full flex-col items-center gap-2 px-2 py-3 md:flex">
         <IconButton label="Expand drawer" icon={<ChevronIcon direction="right" />} onClick={() => setDrawerOpen(true)} />
       </div>
     );
@@ -64,12 +64,12 @@ export function Drawer() {
           onChange={setTool}
           className="flex-wrap"
         />
-        <label className="mt-3 flex items-center gap-2 text-xs text-ivory-300">
+        <label className="mt-3 flex items-center gap-2 text-xs text-ivory-300 max-[480px]:min-h-11">
           <input
             type="checkbox"
             checked={showGrid}
             onChange={(e) => setShowGrid(e.target.checked)}
-            className="h-3.5 w-3.5 accent-[var(--color-ivory-100)]"
+            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
           />
           <GridIcon className="text-ivory-300" />
           Show grid
@@ -97,6 +97,7 @@ export function Drawer() {
                     className={
                       'flex w-full items-center justify-between rounded-sm border px-2.5 py-1.5 text-left text-xs ' +
                       'transition-colors duration-[var(--duration-instant)] focus-visible:focus-ring outline-none ' +
+                      'max-[480px]:min-h-11 ' +
                       (selectedPatternId === p.id
                         ? 'border-line-strong bg-ink-700 text-ivory-100'
                         : 'border-transparent text-ivory-300 hover:bg-ink-800 hover:text-ivory-100')

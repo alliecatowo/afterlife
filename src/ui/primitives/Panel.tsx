@@ -21,6 +21,11 @@ export function Panel({ title, children, aside, collapsible = false, defaultOpen
   const [open, setOpen] = useState(defaultOpen);
   const bodyId = useId();
 
+  // The non-collapsible title below is one level below the app's single
+  // `<h1>` (the HUD wordmark) — every section title in the drawer/panels
+  // uses this same level, which is fine (repeating a level is valid;
+  // SKIPPING one, e.g. straight to h3/h4, is what axe's `heading-order`
+  // rule flags).
   return (
     <section className={`border-b border-line ${className}`}>
       <header className="flex items-center justify-between gap-2 px-4 py-2.5">
@@ -36,9 +41,9 @@ export function Panel({ title, children, aside, collapsible = false, defaultOpen
             {title}
           </button>
         ) : (
-          <h3 className="display-face-tight text-sm text-ivory-100" style={{ fontSize: 'var(--text-sm)' }}>
+          <h2 className="display-face-tight text-sm text-ivory-100" style={{ fontSize: 'var(--text-sm)' }}>
             {title}
-          </h3>
+          </h2>
         )}
         {aside}
       </header>

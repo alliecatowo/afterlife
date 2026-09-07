@@ -123,6 +123,18 @@ export interface CameraController {
 
 const DEFAULT_FOLLOW_SMOOTH_TIME = 0.28; // seconds; critically damped
 
+/**
+ * `?.()` guards environments with no `matchMedia` at all (this module's own
+ * unit tests run under jsdom, which doesn't implement it — calling it
+ * directly throws there instead of just reporting "not reduced"). Checked
+ * fresh on every `tick()` rather than cached, same as `@/sculpture/tokens`'s
+ * `prefersReducedMotion` — it's one cheap synchronous call, and the OS
+ * setting can change mid-session.
+ */
+function reducedMotionPreferred(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
 class CameraControllerImpl implements CameraController {
   #camera: Camera;
   #viewport: Viewport = { width: 1, height: 1 };
@@ -206,6 +218,16 @@ class CameraControllerImpl implements CameraController {
   tick(dtSeconds: number): void {
     if (!this.#followFn) return;
     const target = this.#followFn();
+    if (reducedMotionPreferred()) {
+      // Snap straight to the target instead of easing — `prefers-reduced-motion`
+      // must suppress this the same as any other motion (scene-beat camera
+      // eases and manual `follow()` calls both flow through here).
+      this.#velX.v = 0;
+      this.#velY.v = 0;
+      this.#camera = { x: target.x, y: target.y, scale: this.#camera.scale };
+      this.#emit();
+      return;
+    }
     const x = smoothDamp(this.#camera.x, target.x, this.#velX, DEFAULT_FOLLOW_SMOOTH_TIME, dtSeconds);
     const y = smoothDamp(this.#camera.y, target.y, this.#velY, DEFAULT_FOLLOW_SMOOTH_TIME, dtSeconds);
     this.#camera = { x, y, scale: this.#camera.scale };
