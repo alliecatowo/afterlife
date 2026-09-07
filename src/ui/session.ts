@@ -1,12 +1,9 @@
 /**
  * App orchestration — wires the now-implemented core/render/interact modules
- * together into one running universe. Per `sculpture.tsx`'s own doc comment
- * ("Mounted into #sculpture-canvas by whoever owns app orchestration (the ui
- * agent)") and `history.ts`'s INTEGRATION-NOTES entry ("whoever wires up
- * SimLoop should call history.advance()"), this composition root belongs to
- * `ui` — the other modules only expose factories and interfaces, not a
- * running app. `App.tsx` calls `initSession()` once, after the canvases in
- * the DOM exist.
+ * together into one running universe, boots the verified opening scene, and
+ * hosts every cross-module integration point (undo, sculpture, branching,
+ * audio, persistence, discoveries). `App.tsx` calls `initSession()` once,
+ * after the canvases in the DOM exist.
  *
  * Two independent loops, on purpose:
  *  - a persistent `requestAnimationFrame` loop that reads camera/engine state
@@ -29,11 +26,18 @@ import { createRenderer, type WorldRenderer } from '@/render/renderer';
 import { createCamera, type CameraController } from '@/render/camera';
 import { createInput, type InputController } from '@/interact/input';
 import { createSculpture, type TimeSculpture } from '@/sculpture/sculpture';
-import type { EditOp, WorldSpec } from '@/core/types';
+import { createSoundscape, type Soundscape } from '@/audio/audio';
+import { createPersistStore, EXPERIMENT_FORMAT_VERSION, STORAGE_PREFIX, type PersistStore } from '@/persist/store';
+import type { ExperimentDoc } from '@/persist/store';
+import { scan, type ScanResult } from '@/content/recognition';
+import { OPENING_SCENE, type SceneDef } from '@/content/scenes';
+import type { EditOp, Rect, WorldSpec } from '@/core/types';
 
-/** The one universe AFTERLIFE observes. 512×512 matches the budget ARCHITECTURE.md
- *  sizes HISTORY_WINDOW against (262kB/keyframe × 64 keyframes ≈ 16MB). */
-export const WORLD_SPEC: WorldSpec = { width: 512, height: 512, boundary: 'torus' };
+/** The one universe AFTERLIFE observes — the same 256x160 torus every curated
+ *  scene (opening tableau, the three experiments) was verified against. */
+export const WORLD_SPEC: WorldSpec = OPENING_SCENE.world;
+
+const AUDIO_PREF_KEY = `${STORAGE_PREFIX}audio`;
 
 export interface Session {
   engine: LifeEngine;
@@ -43,9 +47,35 @@ export interface Session {
   input: InputController;
   loop: SimLoop;
   sculpture: TimeSculpture;
+  soundscape: Soundscape;
+  persist: PersistStore;
   /** Ask the sculpture to open on the current selection (or the whole world). */
   openSculpture(): void;
   closeSculpture(): void;
+  /**
+   * Apply a single edit "now": at `maxGen` this just records it; at a past
+   * generation (after scrubbing back) this forks a branch instead of
+   * truncating the future, exactly like a drawn gesture. Used by anything
+   * that mutates cells outside the pointer gesture path (RLE import, an
+   * experiment's scripted intervention).
+   */
+  applyEdit(op: EditOp): void;
+  /** Scrub to `gen` and re-announce `gen:changed` on success; surfaces a
+   *  toast on `HistoryWindowError` instead of throwing. */
+  gotoGen(gen: number): Promise<void>;
+  /** Seed a fresh universe from a curated `SceneDef`: clears the world,
+   *  resets history to a fresh root branch, and records the scene's cells as
+   *  a real generation-0 `EditOp` (so it replays and persists exactly like
+   *  any other recorded edit — see `@/persist/codec`'s "hand-drawn start"
+   *  note), then frames the establishing camera. */
+  loadScene(scene: SceneDef): void;
+  /** Recognise structures within `rect` right now. Synchronous, bounded. */
+  scanRegion(rect: Rect): ScanResult;
+  /** Serialise the active branch's full recorded history into a portable document. */
+  buildExperimentDoc(title: string): ExperimentDoc;
+  /** Restore a document built by `buildExperimentDoc` (or migrated from disk).
+   *  Rejects (via a toast) if its world shape doesn't match `WORLD_SPEC`. */
+  applyExperimentDoc(doc: ExperimentDoc): boolean;
 }
 
 let session: Session | null = null;
@@ -55,16 +85,13 @@ export function getSession(): Session | null {
   return session;
 }
 
-function isTypingTarget(el: EventTarget | null): boolean {
-  return el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
-}
-
 /** Idempotent: a second call is a no-op (React 18/19 StrictMode double-invokes effects). */
 export function initSession(): Session {
   if (session) return session;
 
   const worldCanvas = document.getElementById('world-canvas') as HTMLCanvasElement;
   const sculptureHost = document.getElementById('sculpture-canvas') as HTMLElement;
+  const compareCanvas = document.getElementById('compare-canvas') as HTMLCanvasElement;
 
   const engine = createEngine({ width: WORLD_SPEC.width, height: WORLD_SPEC.height });
   const history = createTimelineStore({ engine });
@@ -76,6 +103,68 @@ export function initSession(): Session {
   const input = createInput({ renderer, camera, engine });
   input.attach(worldCanvas);
   const sculptureController = createSculpture(sculptureHost);
+  const soundscape = createSoundscape();
+  const persist = createPersistStore();
+
+  // ---- compare view: a real, synchronized second render of another branch --
+  // Shares the main `camera` object (same generation/viewport, painted every
+  // frame from the same `frame()` loop below) so the two canvases genuinely
+  // stay in lockstep — never an independent camera to keep synchronized by
+  // hand. `compareEngine` is refreshed by REAL replay (`cloneBranchAt`),
+  // never fabricated, on a throttle bounded by the keyframe interval (at
+  // most ~64 steps of replay per refresh, regardless of how deep the session
+  // is), so it stays cheap indefinitely.
+  const compareRenderer = createRenderer();
+  compareRenderer.attach(compareCanvas);
+  compareRenderer.setShowGrid(readState().showGrid);
+  compareRenderer.setLens(readState().lens);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => compareRenderer.resize()).observe(compareCanvas);
+  }
+  let compareEngine: LifeEngine | null = null;
+  let compareToken = 0;
+  let lastCompareRefresh = 0;
+  async function refreshCompare(force = false): Promise<void> {
+    const { compareWith } = readState();
+    if (!compareWith) { compareEngine = null; return; }
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && now - lastCompareRefresh < 300) return;
+    lastCompareRefresh = now;
+    const myToken = ++compareToken;
+    try {
+      const clone = await history.cloneBranchAt(compareWith, engine.gen);
+      if (myToken === compareToken) compareEngine = clone;
+    } catch {
+      // e.g. HistoryWindowError — leave the last good compareEngine in place.
+    }
+  }
+  useAppStore.subscribe((state, prev) => {
+    if (state.compareWith !== prev.compareWith) void refreshCompare(true);
+  });
+  bus.on('gen:changed', () => { if (readState().compareWith) void refreshCompare(); });
+  bus.on('branch:switched', () => { if (readState().compareWith) void refreshCompare(true); });
+
+  // ---- persisted audio preference (mute/volume survive a reload) ---------
+  try {
+    const raw = window.localStorage.getItem(AUDIO_PREF_KEY);
+    if (raw) {
+      const pref = JSON.parse(raw) as { muted?: boolean; volume?: number };
+      if (typeof pref.muted === 'boolean') useAppStore.getState().setMuted(pref.muted);
+      if (typeof pref.volume === 'number') useAppStore.getState().setVolume(pref.volume);
+    }
+  } catch {
+    // Corrupt/missing preference — fall back to the store's defaults.
+  }
+  function persistAudioPref(): void {
+    try {
+      const { muted, volume } = readState();
+      window.localStorage.setItem(AUDIO_PREF_KEY, JSON.stringify({ muted, volume }));
+    } catch {
+      // Best-effort only.
+    }
+  }
+  bus.on('audio:toggle', persistAudioPref);
+  bus.on('audio:volume', persistAudioPref);
 
   // ---- rendering: always live, independent of play state -----------------
   let lastFrameTime = 0;
@@ -85,18 +174,53 @@ export function initSession(): Session {
     camera.tick(dt);
     renderer.setCamera(camera.camera);
     renderer.draw(engine);
+    if (compareEngine && readState().compareWith) {
+      compareRenderer.setCamera(camera.camera);
+      compareRenderer.draw(compareEngine);
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
+  // ---- scene beats: quiet camera eases / world-anchored annotations ------
+  // Never a modal, never a cutscene — see `@/content/scenes`' `SceneBeat` doc
+  // and DESIGN.md's "world dominates" rule.
+  let currentScene: SceneDef | null = null;
+  const firedBeats = new Set<number>();
+  let followReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+  let annotationTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function checkBeats(gen: number): void {
+    if (!currentScene) return;
+    currentScene.beats.forEach((beat, i) => {
+      if (firedBeats.has(i) || beat.atGen !== gen) return;
+      firedBeats.add(i);
+      if (beat.kind === 'camera-ease') {
+        const rect = beat.toward;
+        camera.follow({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
+        if (followReleaseTimer) clearTimeout(followReleaseTimer);
+        followReleaseTimer = setTimeout(() => camera.releaseFollow(), 3200);
+        bus.emit('toast', { message: beat.label, tone: 'info', ms: 4200 });
+      } else {
+        bus.emit('scene:annotate', { at: beat.at, label: beat.label });
+        if (annotationTimer) clearTimeout(annotationTimer);
+        annotationTimer = setTimeout(() => bus.emit('scene:annotate', null), 4800);
+      }
+    });
+  }
+
+  /** The one place `gen:changed` is emitted from — also fires scene beats. */
+  function emitGen(): void {
+    bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
+    checkBeats(engine.gen);
+  }
+
   // ---- simulation stepping: edits commit atomically at the boundary ------
   let queuedEdits: EditOp[] = [];
 
-  function flushEdits(atGen: number): void {
-    if (queuedEdits.length === 0) return;
-    const cellCount = queuedEdits.reduce((n, op) => n + op.cells.length, 0);
-    const edits = queuedEdits;
-    queuedEdits = [];
+  function recordOrFork(atGen: number, edits: EditOp[]): void {
+    if (edits.length === 0) return;
+    const cellCount = edits.reduce((n, op) => n + op.cells.length, 0);
 
     // Editing behind `maxGen` (only possible while paused, after scrubbing
     // back) is the ENTIRE "alternate futures" feature (ARCHITECTURE.md
@@ -113,6 +237,13 @@ export function initSession(): Session {
     }
   }
 
+  function flushEdits(atGen: number): void {
+    if (queuedEdits.length === 0) return;
+    const edits = queuedEdits;
+    queuedEdits = [];
+    recordOrFork(atGen, edits);
+  }
+
   input.onGestureEnd(() => {
     const op = input.commit();
     if (!op) return;
@@ -123,7 +254,7 @@ export function initSession(): Session {
       // population readout and empty/extinct overlays feel the edit
       // immediately, not only on the next real step.
       flushEdits(engine.gen);
-      bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
+      emitGen();
     }
   });
 
@@ -131,19 +262,19 @@ export function initSession(): Session {
     flushEdits(engine.gen);
     engine.step();
     history.advance(engine.gen);
-    bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
+    emitGen();
   }
 
   const loop = createSimLoop(step);
   loop.setSpeed(readState().speed);
 
-  // `history.ts` is a pure core module — it never touches the bus, so a
-  // successful `goto()`/`switchBranch()` moves `engine.gen` without anyone
-  // re-announcing it. Every caller below MUST call this after a successful
-  // scrub or the HUD/timeline readouts (and the empty/extinct overlay) go
-  // stale, frozen at whatever `gen:changed` last reported.
-  function announceGen(): void {
-    bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
+  function gotoGen(gen: number): Promise<void> {
+    return history.goto(gen).then(emitGen).catch((err: unknown) => {
+      if (err instanceof HistoryWindowError) {
+        bus.emit('toast', { message: 'That generation has fallen out of the retained window.', tone: 'warn' });
+      }
+      // AbortError = superseded by a newer scrub; not an error worth surfacing.
+    });
   }
 
   // ---- playback intents ----------------------------------------------------
@@ -159,20 +290,12 @@ export function initSession(): Session {
     if (by >= 0) {
       loop.stepOnce(Math.max(1, by));
     } else {
-      const target = Math.max(history.windowStart, engine.gen + by);
-      history.goto(target).then(announceGen).catch(() => {});
+      void gotoGen(Math.max(history.windowStart, engine.gen + by));
     }
   });
 
   // ---- timeline scrubbing: goto() is self-cancelling, so rapid-fire is fine --
-  bus.on('playback:scrub', ({ gen }) => {
-    history.goto(gen).then(announceGen).catch((err: unknown) => {
-      if (err instanceof HistoryWindowError) {
-        bus.emit('toast', { message: 'That generation has fallen out of the retained window.', tone: 'warn' });
-      }
-      // AbortError = superseded by a newer scrub; not an error worth surfacing.
-    });
-  });
+  bus.on('playback:scrub', ({ gen }) => { void gotoGen(gen); });
 
   // ---- branching -----------------------------------------------------------
   function syncBranches(): void {
@@ -182,7 +305,7 @@ export function initSession(): Session {
     history.switchBranch(id).then(() => {
       useAppStore.getState().setActiveBranch(id);
       syncBranches();
-      announceGen();
+      emitGen();
     }).catch(() => {
       bus.emit('toast', { message: `Could not switch to that branch.`, tone: 'warn' });
     });
@@ -195,14 +318,15 @@ export function initSession(): Session {
       bus.emit('toast', { message: 'Could not rename that branch.', tone: 'warn' });
     }
   });
+  bus.on('branch:created', syncBranches);
 
-  // ---- undo: input.ts intentionally leaves 'z' to whoever owns history -----
-  window.addEventListener('keydown', (e) => {
-    if (isTypingTarget(e.target) || e.key.toLowerCase() !== 'z') return;
+  // ---- undo: `@/interact/input.ts`'s 'z' shortcut emits this; it doesn't
+  // own the TimelineStore (see INTEGRATION-NOTES.md) --------------------------
+  bus.on('history:undo', () => {
     const inverse = input.undo();
     if (!inverse) return;
-    history.record(engine.gen, [inverse]);
-    bus.emit('edit:committed', { gen: engine.gen, cellCount: inverse.cells.length });
+    recordOrFork(engine.gen, [inverse]);
+    if (!readState().playing) emitGen();
   });
 
   // ---- lens: mirror the bus intent onto the live renderer -----------------
@@ -242,12 +366,39 @@ export function initSession(): Session {
     sculptureController.close();
     showSculptureCanvas(false);
   });
-  bus.on('sculpture:sliceSelected', ({ gen }) => {
-    history.goto(gen).then(announceGen).catch(() => {});
-  });
+  bus.on('sculpture:sliceSelected', ({ gen }) => { void gotoGen(gen); });
+
+  // ---- scene loading (opening tableau + experiments) ----------------------
+  function loadScene(scene: SceneDef): void {
+    loop.stop();
+    useAppStore.getState().setPlaying(false);
+    engine.clear();
+    history.reset();
+    if (scene.cells.length > 0) {
+      history.record(0, [{ kind: 'set', cells: scene.cells.map((c) => ({ x: c.x, y: c.y, alive: true })) }]);
+    }
+    camera.set({
+      x: scene.cameras.establishing.centerX,
+      y: scene.cameras.establishing.centerY,
+      scale: scene.cameras.establishing.pxPerCell,
+    });
+    useAppStore.getState().setSpeed(scene.defaultSpeed);
+    loop.setSpeed(scene.defaultSpeed);
+    useAppStore.getState().setSelection(null);
+    useAppStore.getState().setCompareWith(null);
+    renderer.setSelection(null);
+    syncBranches();
+    useAppStore.getState().setActiveBranch(history.activeBranch);
+    currentScene = scene;
+    firedBeats.clear();
+    if (followReleaseTimer) { clearTimeout(followReleaseTimer); followReleaseTimer = null; }
+    if (annotationTimer) { clearTimeout(annotationTimer); annotationTimer = null; }
+    bus.emit('scene:annotate', null);
+    emitGen();
+  }
 
   session = {
-    engine, history, camera, renderer, input, loop, sculpture: sculptureController,
+    engine, history, camera, renderer, input, loop, sculpture: sculptureController, soundscape, persist,
     openSculpture() {
       const sel = readState().selection;
       const rect = sel ?? { x: 0, y: 0, w: Math.min(64, WORLD_SPEC.width), h: Math.min(64, WORLD_SPEC.height) };
@@ -258,6 +409,84 @@ export function initSession(): Session {
     closeSculpture() {
       bus.emit('sculpture:close', undefined);
     },
+    applyEdit(op) {
+      recordOrFork(engine.gen, [op]);
+      if (!readState().playing) emitGen();
+    },
+    gotoGen,
+    loadScene,
+    scanRegion(rect) {
+      return scan(engine, rect);
+    },
+    buildExperimentDoc(title) {
+      const activeMeta = history.branches.find((b) => b.id === history.activeBranch);
+      return {
+        version: EXPERIMENT_FORMAT_VERSION,
+        title,
+        createdAt: Date.now(),
+        spec: WORLD_SPEC,
+        seed: 0,
+        density: 0,
+        activeBranch: 'root',
+        branches: [{ id: 'root', name: activeMeta?.name ?? 'Original', parent: null, fromGen: 0, createdAt: activeMeta?.createdAt ?? Date.now() }],
+        edits: { root: history.entries().map((e) => ({ gen: e.gen, ops: e.edits })) },
+        view: { x: camera.camera.x, y: camera.camera.y, scale: camera.camera.scale, gen: engine.gen },
+        lens: readState().lens,
+        bookmarks: [],
+        discoveries: [],
+      };
+    },
+    applyExperimentDoc(doc) {
+      if (doc.spec.width !== WORLD_SPEC.width || doc.spec.height !== WORLD_SPEC.height || doc.spec.boundary !== WORLD_SPEC.boundary) {
+        bus.emit('toast', { message: `That save is a ${doc.spec.width}x${doc.spec.height} world — this build only runs ${WORLD_SPEC.width}x${WORLD_SPEC.height}.`, tone: 'warn' });
+        return false;
+      }
+      loop.stop();
+      useAppStore.getState().setPlaying(false);
+      engine.clear();
+      history.reset();
+      currentScene = null;
+      firedBeats.clear();
+      const rootEdits = doc.edits[doc.activeBranch] ?? doc.edits.root ?? [];
+      const entries = rootEdits.map((e) => ({ gen: e.gen, edits: e.ops }));
+      const maxEditGen = entries.reduce((m, e) => Math.max(m, e.gen), 0);
+      const targetGen = doc.view?.gen ?? maxEditGen;
+      // `loadEntries` also re-simulates the plain (edit-free) steps up to
+      // `targetGen` — a document's edits only cover generations that had an
+      // explicit edit, never the ordinary steps in between, so replaying just
+      // the edits via `record()` would leave the branch's bookkeeping stuck
+      // at the last EDITED generation rather than wherever it was saved from.
+      history.loadEntries(entries, Math.max(targetGen, maxEditGen)).then(() => {
+        if (doc.view) camera.set({ x: doc.view.x, y: doc.view.y, scale: doc.view.scale });
+        if (doc.lens) {
+          useAppStore.getState().setLens(doc.lens);
+          renderer.setLens(doc.lens);
+        }
+        syncBranches();
+        useAppStore.getState().setActiveBranch(history.activeBranch);
+        emitGen();
+      }).catch(() => {
+        bus.emit('toast', { message: 'Could not replay that save to its saved moment.', tone: 'warn' });
+      });
+      return true;
+    },
   };
+
+  loadScene(OPENING_SCENE);
+  // The opening tableau is a live observatory, not a paused diagram — it is
+  // already running by the time the title plate fades (see the HUD's "pause
+  // time anytime" invitation, and DESIGN's "playable observatory" framing).
+  // The verified encounter at generation 123 is reached ~10s after boot at
+  // the default 12 gens/sec exactly because this starts moving immediately.
+  bus.emit('playback:play', undefined);
+
+  // Dev/test-only introspection hook — never referenced by production code,
+  // and dead-code-eliminated from a production build since `import.meta.env.DEV`
+  // is statically `false` there. Exists so `e2e/` can assert on real engine
+  // state (exact live-cell counts inside a bbox) that a screenshot can't.
+  if (import.meta.env.DEV) {
+    (window as unknown as { __AFTERLIFE__?: Session }).__AFTERLIFE__ = session;
+  }
+
   return session;
 }

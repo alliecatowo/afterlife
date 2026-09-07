@@ -305,6 +305,46 @@ export function StampIcon(props: IconProps) {
   );
 }
 
+export function FlaskIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 2h4" />
+      <path d="M6.7 2v4.2L2.9 12A1.5 1.5 0 0 0 4.2 14.4h7.6A1.5 1.5 0 0 0 13.1 12L9.3 6.2V2" />
+      <path d="M4.6 10.5h6.8" />
+    </Svg>
+  );
+}
+
+export function SaveIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 2.5h8l2.5 2.5v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z" />
+      <path d="M5 2.5v3.5h5V2.5" />
+      <path d="M5.5 9.5h5v4h-5z" />
+    </Svg>
+  );
+}
+
+export function DownloadIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5v7.5" />
+      <path d="M4.5 7 8 10.5 11.5 7" />
+      <path d="M2.5 13.5h11" />
+    </Svg>
+  );
+}
+
+export function UploadIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 10.5V3" />
+      <path d="M4.5 6 8 2.5 11.5 6" />
+      <path d="M2.5 13.5h11" />
+    </Svg>
+  );
+}
+
 export function GlobeIcon(props: IconProps) {
   return (
     <Svg {...props}>

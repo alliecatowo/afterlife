@@ -162,6 +162,28 @@ export interface TimelineStore {
 
   /** Drop every branch and entry, resetting to `gen` 0 on the root branch (using the engine's current bits as the new baseline). */
   reset(): void;
+
+  /**
+   * An independent, fully-populated `LifeEngine` holding branch `id`'s REAL
+   * recorded state at `gen` (clamped to that branch's own `maxGen`), built by
+   * replay from its nearest keyframe — never a fabricated or interpolated
+   * state. Used for a synchronized side-by-side view of a second branch
+   * without disturbing the active branch's own `engine`. Rejects with
+   * `HistoryWindowError` if `gen` predates that branch's window.
+   */
+  cloneBranchAt(id: BranchId, gen: Generation, signal?: AbortSignal): Promise<LifeEngine>;
+
+  /**
+   * Restore a persisted document's entries (see `@/persist/codec`) onto the
+   * active branch — call immediately after `reset()`. Unlike `record()`,
+   * this also re-simulates the plain (edit-free) steps up to `toGen` and
+   * genuinely advances `maxGen` to match: a document's `edits` only capture
+   * generations that had an explicit edit, never the ordinary steps in
+   * between, so `record()` alone would leave the branch's bookkeeping
+   * stuck at the last edited generation instead of wherever it was actually
+   * saved from. Leaves `engine` at `toGen`.
+   */
+  loadEntries(entries: readonly HistoryEntry[], toGen: Generation): Promise<void>;
 }
 
 export interface TimelineOptions {
@@ -524,6 +546,28 @@ class TimelineStoreImpl implements TimelineStore {
       out.push(scratch.region(r));
     }
     return out;
+  }
+
+  async cloneBranchAt(id: BranchId, gen: Generation, signal?: AbortSignal): Promise<LifeEngine> {
+    const b = this.branchMap.get(id);
+    if (!b) throw new Error(`cloneBranchAt: unknown branch "${id}"`);
+    if (gen < b.windowStart) throw new HistoryWindowError(gen, b.windowStart);
+    const scratch = this.engine.clone();
+    await this.replayAsync(scratch, b, Math.min(gen, b.maxGen), { signals: [signal] });
+    return scratch;
+  }
+
+  async loadEntries(entries: readonly HistoryEntry[], toGen: Generation): Promise<void> {
+    const b = this.activeBranchRecord();
+    for (const { gen, edits } of entries) {
+      if (edits.length === 0) continue;
+      const existing = b.entries.get(gen) ?? [];
+      b.entries.set(gen, [...existing, ...edits]);
+    }
+    await this.replayAsync(this.engine, b, toGen, {});
+    if (toGen > b.maxGen) b.maxGen = toGen;
+    this.touch(b);
+    this.pruneWindow(b);
   }
 
   reset(): void {

@@ -53,37 +53,40 @@ object3D transforms and instanced matrices. It does not `setState` per frame.
 
 ---
 
-## 3. File ownership — strict
+## 3. File ownership — historical (parallel build phase only)
 
-| Agent | Owns | Notes |
+The table below described the seven-agent parallel-build phase and is now **obsolete**.
+That phase is over: every module listed compiled, typechecked and passed its tests, and a
+single integration agent then had full write access to the entire tree (including every
+file previously listed as frozen) to wire the modules together, resolve the gaps filed in
+`INTEGRATION-NOTES.md`, and add the end-to-end test suite under `e2e/`. There is no longer
+a file-ownership boundary to respect — this is kept only as a map of "who originally wrote
+what", useful context for understanding a module's internal conventions.
+
+| Original agent | Wrote | Notes |
 | --- | --- | --- |
 | **core** | `src/core/**` | engine, history, rng, loop. Pure TS, no DOM, no React. |
 | **render** | `src/render/**`, `src/interact/**` | Canvas2D world renderer, camera, pointer/keyboard input. |
-| **ui** | `src/ui/**` (incl. `src/ui/primitives/**`), `src/styles/**` *(except the two frozen files)* | React chrome + the design-system primitives. |
+| **ui** | `src/ui/**` (incl. `src/ui/primitives/**`), `src/styles/**` | React chrome + the design-system primitives. |
 | **sculpture** | `src/sculpture/**` | R3F Time Sculpture. Mounts into `#sculpture-canvas`. |
-| **content** | `src/content/**` | Pattern library (RLE), discovery detection, editorial copy. |
+| **content** | `src/content/**` | Curated scenes/experiments, specimen corpus, recognition, discoveries. |
 | **audio** | `src/audio/**` | WebAudio soundscape. |
 | **persist** | `src/persist/**` | localStorage, import/export, RLE codec. |
 
-### Frozen after the architect — NOBODY edits these
+The following files were frozen during the parallel phase (architect-owned contracts:
+`src/core/types.ts`, `src/ui/bus.ts`, `src/ui/store.ts`, tooling config, design tokens) and
+are **no longer frozen** — the integration pass added events to `bus.ts` (`history:undo`,
+`scene:annotate`) exactly as `INTEGRATION-NOTES.md` had anticipated, and extended
+`session.ts` to own scene loading, undo, discoveries, experiments and persistence. Treat
+`INTEGRATION-NOTES.md` as a historical record of the handoff, not an open queue.
 
-`package.json` · `package-lock.json` · `tsconfig.json` · `vite.config.ts` · `mise.toml` ·
-`index.html` · `src/core/types.ts` · `src/ui/bus.ts` · `src/ui/store.ts` ·
-`src/ui/hooks/useSimulationReadout.ts` · `src/styles/tokens.css` · `src/styles/base.css` ·
-`ARCHITECTURE.md` · `DESIGN.md`
-
-Need a change (a new dependency, an event, a token, a type)? **Append a request to
-`INTEGRATION-NOTES.md`** with your agent name, the file, and exactly what you need. That
-file is append-only; never rewrite someone else's entry.
-
-Rules of engagement:
-- Never edit a file outside your directories. If you need behaviour from another module,
-  code against its exported interface — the stubs already compile.
-- Never import another module's internals; import only from its entry file
-  (`@/core/engine`, `@/render/renderer`, …) or `@/core/types`.
-- All cross-module communication is `bus` (high-frequency) or `useAppStore` (low-frequency).
-- Keep `npm run typecheck` green at every commit. A stub that still throws is fine; a type
-  error is not.
+Still true and worth keeping:
+- Cross-module communication is `bus` (high-frequency, per-generation signals) or
+  `useAppStore`/`useUIState` (low-frequency app/UI state).
+- Import a module's public entry file (`@/core/engine`, `@/render/renderer`,
+  `@/content` barrel, `@/persist/store`, …) rather than reaching into its internals, unless
+  you're already inside that module.
+- Keep `npm run typecheck`, `npm test` and `npm run build` green at every commit.
 
 ---
 
@@ -203,7 +206,18 @@ mise exec -- npm run typecheck   # tsc --noEmit
 mise exec -- npm test            # vitest run
 mise exec -- npm run build       # tsc + vite build
 mise exec -- npm run dev         # serves on :5173
+mise exec -- npm run e2e         # playwright test — boots the real vite dev server
 ```
 
-Playwright chromium is installed for browser verification (screenshots, interaction
-smoke tests). Screenshot output goes to `screenshots/`, which is gitignored.
+Playwright chromium is installed for browser verification. `playwright.config.ts` defines
+two projects: `desktop` (1440x900, runs every spec under `e2e/`) and `mobile` (390x844,
+runs only `e2e/screenshots.spec.ts`). Screenshot output goes to `screenshots/`, which is
+gitignored — look at them after a run, don't just check the exit code. The dev server is
+started automatically (`webServer` in the Playwright config) unless one is already running
+on :5173, in which case it's reused.
+
+`src/ui/session.ts` exposes a dev-only `window.__AFTERLIFE__` (the live `Session`) when
+`import.meta.env.DEV` is true, dead-code-eliminated from production builds — this is what
+lets `e2e/utils.ts` assert on exact engine/history state (population inside a bbox, the real
+generation bypassing the throttled HUD readout, `screenToWorld`/`worldToScreen`) rather than
+guessing from pixels.

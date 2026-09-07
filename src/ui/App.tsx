@@ -21,7 +21,7 @@ import '@/styles/motion.css';
 import { useAppStore, type Tool } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
 import { bus } from '@/ui/bus';
-import { initSession } from '@/ui/session';
+import { getSession, initSession } from '@/ui/session';
 import { Hud } from '@/ui/hud/Hud';
 import { Drawer } from '@/ui/drawer/Drawer';
 import { PanelRight } from '@/ui/panels/PanelRight';
@@ -29,6 +29,7 @@ import { Timeline } from '@/ui/timeline/Timeline';
 import { TitlePlate } from '@/ui/TitlePlate';
 import { WorldHint } from '@/ui/WorldHint';
 import { WorldStateOverlay } from '@/ui/WorldStateOverlay';
+import { SceneAnnotation } from '@/ui/SceneAnnotation';
 import { ShortcutsDialog } from '@/ui/dialogs/ShortcutsDialog';
 import { ToastLayer, TooltipProvider } from '@/ui/primitives';
 
@@ -61,6 +62,7 @@ export function App() {
   const setTool = useAppStore((s) => s.setTool);
   const showGrid = useAppStore((s) => s.showGrid);
   const drawerOpen = useAppStore((s) => s.drawerOpen);
+  const compareWith = useAppStore((s) => s.compareWith);
   const rightPanel = useUIState((s) => s.rightPanel);
   const setRightPanel = useUIState((s) => s.setRightPanel);
   const dismissTitle = useUIState((s) => s.dismissTitle);
@@ -83,13 +85,22 @@ export function App() {
 
   // First pointer interaction anywhere dismisses the title plate immediately
   // — no click-to-continue gate. A pointer specifically over the world
-  // canvas also marks it "touched" for the quiet drawing invitation.
+  // canvas also marks it "touched" for the quiet drawing invitation. It is
+  // also the one and only real user gesture the soundscape's `AudioContext`
+  // is created from (browsers refuse otherwise) — see `@/audio/audio.ts`'s
+  // doc comment. Muted stays muted; this only makes unmuting later actually
+  // produce sound instead of a silently-blocked context.
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+    let audioInited = false;
     const onPointerDown = (e: PointerEvent) => {
       dismissTitle();
       if (canvasWrapRef.current?.contains(e.target as Node)) setWorldTouched();
+      if (!audioInited) {
+        audioInited = true;
+        void getSession()?.soundscape.init();
+      }
     };
     root.addEventListener('pointerdown', onPointerDown, { capture: true });
     return () => root.removeEventListener('pointerdown', onPointerDown, { capture: true });
@@ -168,12 +179,20 @@ export function App() {
           </aside>
 
           <section ref={canvasWrapRef} className="relative min-h-0 min-w-0">
-            <canvas id="world-canvas" className="absolute inset-0 h-full w-full" data-show-grid={showGrid} />
-            <canvas id="compare-canvas" className="absolute inset-0 hidden h-full w-full" />
+            <canvas
+              id="world-canvas"
+              className={'absolute inset-y-0 left-0 h-full ' + (compareWith ? 'w-1/2 border-r border-line' : 'w-full')}
+              data-show-grid={showGrid}
+            />
+            <canvas
+              id="compare-canvas"
+              className={'absolute inset-y-0 h-full ' + (compareWith ? 'right-0 w-1/2' : 'hidden w-full left-0')}
+            />
             <div id="sculpture-canvas" className="absolute inset-0 hidden" aria-hidden="true" />
             <TitlePlate />
             <WorldHint />
             <WorldStateOverlay />
+            <SceneAnnotation />
           </section>
 
           <aside

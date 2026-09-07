@@ -11,7 +11,7 @@
 import { create } from 'zustand';
 import { IDENTITY_TRANSFORM, type StampTransform } from '@/core/types';
 
-export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | null;
+export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | null;
 
 interface UILocalState {
   rightPanel: RightPanelId;

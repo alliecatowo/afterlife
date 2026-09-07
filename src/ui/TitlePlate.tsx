@@ -17,6 +17,7 @@ export function TitlePlate() {
 
   return (
     <div
+      data-testid="title-plate"
       aria-hidden={dismissed}
       className={
         'pointer-events-none absolute inset-0 z-[var(--z-overlay)] flex flex-col items-center justify-center gap-3 ' +

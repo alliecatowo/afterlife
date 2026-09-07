@@ -530,9 +530,11 @@ class InputControllerImpl implements InputController {
         return;
       case 'z':
       case 'Z':
-        // Intentionally a no-op here: the caller owning the TimelineStore
-        // should call `input.undo()` and record the result. See the
-        // InputController.undo() doc comment.
+        // The bus event, not a direct call: this module doesn't own the
+        // TimelineStore (see the InputController.undo() doc comment) — `@/ui/session`
+        // listens for `history:undo`, calls `input.undo()` itself, and records
+        // the inverse edit.
+        bus.emit('history:undo', undefined);
         return;
       default:
         return;

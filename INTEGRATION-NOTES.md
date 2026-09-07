@@ -91,3 +91,25 @@ Measured perf: 512×512 world, ~1.7ms/step average (Node/V8, no rendering) — w
 33ms budget for 30 gens/sec.
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-07 — integration — resolution pass
+
+All entries above are resolved. Specifically, for **render**'s `history:undo` request: added
+`'history:undo': void` to `AppEvents` in `bus.ts` as proposed; `@/interact/input.ts`'s `z`
+handler now emits it instead of no-op'ing, and `@/ui/session.ts` owns the subscription
+(`input.undo()` + `history.record()`), replacing the interim raw `window` listener. For
+**core**'s `history.advance()` note: `session.ts`'s `step()` calls it immediately after
+`engine.step()`, verified by `e2e/timeline.spec.ts`'s scrub-determinism test.
+
+The parallel-build phase is over. A single integration agent then had full write access to
+every file (including everything listed as frozen above) to wire the modules together, add
+`src/ui/session.ts`'s scene loading / discoveries / experiments / persistence / compare-view
+rendering, fix a real bug in the history ribbon (scrubbing backward left the scrubber unable
+to drag forward again — it was deriving its ceiling from the session-observed `historyRing`
+instead of the authoritative `TimelineStore.maxGen`), fix `sculpture/tokens.ts`'s CSS-oklch
+→ `THREE.Color` resolution (modern Chromium echoes `oklch(...)` back verbatim from both
+`getComputedStyle` and a canvas 2D context's `fillStyle` getter; only rasterising via
+`getImageData` reliably normalises it), and add the `e2e/` Playwright suite. See
+`ARCHITECTURE.md` §3 for the (now historical) file-ownership table.
+**Blocking?** no.
+**Resolution:** done.

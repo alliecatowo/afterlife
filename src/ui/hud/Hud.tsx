@@ -14,7 +14,7 @@ import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/prim
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
-  DrawerIcon, ClockIcon,
+  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
 
@@ -127,8 +127,8 @@ export function Hud() {
       </div>
 
       <Divider orientation="vertical" className="h-6" />
-      <Readout label="gen" value={<span ref={genRef}>0</span>} digits={6} />
-      <Readout label="pop" value={<span ref={popRef}>0</span>} digits={6} accent="life" />
+      <Readout label="gen" value={<span ref={genRef} data-testid="hud-gen">0</span>} digits={6} />
+      <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
 
       <Divider orientation="vertical" className="hidden h-6 md:block" />
       <div className="hidden shrink-0 items-center gap-2 md:flex">
@@ -183,6 +183,12 @@ export function Hud() {
         </Tooltip>
         <Tooltip content="Field guide">
           <IconButton label="Field guide" icon={<BookIcon />} pressed={rightPanel === 'guide'} onClick={() => toggleRightPanel('guide')} />
+        </Tooltip>
+        <Tooltip content="Experiments">
+          <IconButton label="Experiments" icon={<FlaskIcon />} pressed={rightPanel === 'experiments'} onClick={() => toggleRightPanel('experiments')} />
+        </Tooltip>
+        <Tooltip content="Save & export">
+          <IconButton label="Save & export" icon={<SaveIcon />} pressed={rightPanel === 'save'} onClick={() => toggleRightPanel('save')} />
         </Tooltip>
         <Tooltip content="Settings">
           <IconButton label="Settings" icon={<SlidersIcon />} pressed={rightPanel === 'settings'} onClick={() => toggleRightPanel('settings')} />

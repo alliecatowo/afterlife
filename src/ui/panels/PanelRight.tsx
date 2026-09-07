@@ -5,27 +5,53 @@
  * icon buttons.
  */
 import { useUIState } from '@/ui/uiState';
+import { useDiscoveries } from '@/ui/discoveries';
+import { useAppStore } from '@/ui/store';
+import { getSession } from '@/ui/session';
+import { toFieldGuideEntry } from '@/content/discoveries';
 import { IconButton } from '@/ui/primitives';
-import { CloseIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon } from '@/ui/icons';
+import { CloseIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon } from '@/ui/icons';
 import { BranchesPanel } from './BranchesPanel';
 import { ComparePanel } from './ComparePanel';
 import { SettingsPanel } from './SettingsPanel';
 import { FieldGuidePanel } from './FieldGuidePanel';
+import { ExperimentsPanel } from './ExperimentsPanel';
+import { PersistPanel } from './PersistPanel';
 
 const TITLES = {
   branches: { label: 'Branches', icon: <BranchIcon /> },
   compare: { label: 'Compare', icon: <ColumnsIcon /> },
   settings: { label: 'Settings', icon: <SlidersIcon /> },
   guide: { label: 'Field guide', icon: <BookIcon /> },
+  experiments: { label: 'Experiments', icon: <FlaskIcon /> },
+  save: { label: 'Save & export', icon: <SaveIcon /> },
 } as const;
 
 export function PanelRight() {
   const rightPanel = useUIState((s) => s.rightPanel);
   const setRightPanel = useUIState((s) => s.setRightPanel);
+  const items = useDiscoveries((s) => s.items);
+  const rename = useDiscoveries((s) => s.rename);
+  const toggleFollow = useDiscoveries((s) => s.toggleFollow);
+  const goTo = useDiscoveries((s) => s.goTo);
+  const scanRect = useDiscoveries((s) => s.scanRect);
+  const selection = useAppStore((s) => s.selection);
 
   if (!rightPanel) return null;
 
   const meta = TITLES[rightPanel];
+
+  const scanHere = (): void => {
+    const session = getSession();
+    if (!session) return;
+    const rect = selection ?? {
+      x: Math.floor(session.camera.camera.x - 24),
+      y: Math.floor(session.camera.camera.y - 24),
+      w: 48,
+      h: 48,
+    };
+    scanRect(rect);
+  };
 
   return (
     <div
@@ -41,7 +67,17 @@ export function PanelRight() {
         {rightPanel === 'branches' && <BranchesPanel />}
         {rightPanel === 'compare' && <ComparePanel />}
         {rightPanel === 'settings' && <SettingsPanel />}
-        {rightPanel === 'guide' && <FieldGuidePanel />}
+        {rightPanel === 'experiments' && <ExperimentsPanel />}
+        {rightPanel === 'save' && <PersistPanel />}
+        {rightPanel === 'guide' && (
+          <FieldGuidePanel
+            entries={items.map((d) => ({ ...toFieldGuideEntry(d), following: d.following, lost: d.lost }))}
+            onScanHere={scanHere}
+            onRename={rename}
+            onToggleFollow={toggleFollow}
+            onGoTo={goTo}
+          />
+        )}
       </div>
     </div>
   );

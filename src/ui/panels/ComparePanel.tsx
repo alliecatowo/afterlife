@@ -29,11 +29,10 @@ export function ComparePanel() {
 
   useEffect(() => subscribeReadout((r) => setGen(r.gen)), []);
 
-  useEffect(() => {
-    const compareCanvas = document.getElementById('compare-canvas');
-    compareCanvas?.classList.toggle('hidden', compareWith === null);
-    return () => { if (compareWith === null) getSession()?.renderer.setDiffOverlay(null); };
-  }, [compareWith]);
+  // `#compare-canvas`'s visibility/layout is driven by `App.tsx` straight off
+  // `compareWith` (same source of truth) — this effect only owns clearing the
+  // main canvas's diff overlay when the comparison ends.
+  useEffect(() => () => { if (compareWith === null) getSession()?.renderer.setDiffOverlay(null); }, [compareWith]);
 
   const rect: Rect = selection ?? { x: 0, y: 0, w: WORLD_SPEC.width, h: WORLD_SPEC.height };
 

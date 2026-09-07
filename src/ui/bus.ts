@@ -8,7 +8,7 @@
  * `@/ui/store` (Zustand). See ARCHITECTURE.md § The React boundary.
  */
 import type {
-  BranchId, DiscoveryEvent, Disposable, Generation, Rect, RenderLens,
+  BranchId, CellCoord, DiscoveryEvent, Disposable, Generation, Rect, RenderLens,
 } from '@/core/types';
 
 export interface AppEvents {
@@ -43,8 +43,19 @@ export interface AppEvents {
   'audio:toggle': { muted: boolean };
   'audio:volume': { volume: number };
   'presentation:toggle': { on: boolean };
+  /* editing */
+  /** Requests the caller owning the TimelineStore pop and record the most
+   *  recent local undo entry (see `InputController.undo()`). Emitted by the
+   *  `z` shortcut in `@/interact/input.ts`, handled by `@/ui/session`. */
+  'history:undo': void;
   /* chrome */
   'toast': { message: string; tone?: 'info' | 'warn' | 'success'; ms?: number };
+  /**
+   * A quiet, world-anchored scene beat label (see `@/content/scenes`'
+   * `SceneBeat`). `null` clears it. Never a modal — a small marker positioned
+   * at `at` by `@/ui/SceneAnnotation`.
+   */
+  'scene:annotate': { at: CellCoord; label: string } | null;
 }
 
 export type AppEventName = keyof AppEvents;
