@@ -33,9 +33,18 @@ export function Drawer() {
   const setSelectedPattern = useUIState((s) => s.setSelectedPattern);
 
   if (!drawerOpen) {
+    // Below `md` the closed drawer is a full slide-over sheet translated
+    // off-screen (see `App.tsx`), so this collapsed-rail content isn't
+    // visible or reachable there — only hidden here (`hidden md:flex`), not
+    // just invisible, so it drops out of the tab order too. The HUD's own
+    // drawer toggle is the sole "open the drawer" control on mobile. On
+    // desktop this rail IS the visible, persistent "slim rail when closed"
+    // (see the module doc) — named "Expand drawer" rather than "Open drawer"
+    // so it's distinguishable by name from the HUD's separate toggle button,
+    // which is also visible at the same time.
     return (
-      <div className="flex h-full flex-col items-center gap-2 py-3">
-        <IconButton label="Open drawer" icon={<ChevronIcon direction="right" />} onClick={() => setDrawerOpen(true)} />
+      <div className="hidden h-full flex-col items-center gap-2 py-3 md:flex">
+        <IconButton label="Expand drawer" icon={<ChevronIcon direction="right" />} onClick={() => setDrawerOpen(true)} />
       </div>
     );
   }

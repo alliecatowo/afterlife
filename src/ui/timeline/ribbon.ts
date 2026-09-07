@@ -79,12 +79,34 @@ export function drawRibbon(ctx: CanvasRenderingContext2D, w: number, h: number, 
   ctx.fillStyle = c.ink700;
   ctx.fillRect(0, TRACK_TOP, w, trackH);
 
-  if (s.gens.length < 2) {
+  if (s.gens.length === 0) {
+    // Genuinely nothing observed yet this session/branch — the ONLY case
+    // where "no history recorded yet" is accurate. A single hand-drawn edit
+    // while paused (gen unchanged) already pushes one real sample (see
+    // `historyRing.push`), so this message must not linger past that —
+    // it previously did, because a lone sample also failed the old `< 2`
+    // check even though something real HAD been recorded.
     ctx.fillStyle = c.ivory300;
     ctx.font = '11px "Inter Variable", sans-serif';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     ctx.fillText('no history recorded yet — press play or draw a cell', w / 2, TRACK_TOP + trackH / 2);
+    return;
+  }
+
+  if (s.gens.length === 1) {
+    // One real recorded sample — honest about there not being a trend to
+    // trace yet, without falsely claiming nothing was recorded.
+    ctx.fillStyle = c.life;
+    ctx.globalAlpha = 0.55;
+    const bh = Math.max(2, trackH * 0.12);
+    ctx.fillRect(w / 2 - 1, TRACK_TOP + trackH - bh, 2, bh);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = c.ivory300;
+    ctx.font = '11px "Inter Variable", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText('recorded — press play to trace its history', w / 2, TRACK_TOP + trackH / 2 + 12);
     return;
   }
 

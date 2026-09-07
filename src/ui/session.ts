@@ -19,6 +19,7 @@
  */
 import { bus } from '@/ui/bus';
 import { readState, useAppStore } from '@/ui/store';
+import { useUIState } from '@/ui/uiState';
 import { createEngine, type LifeEngine } from '@/core/engine';
 import { createTimelineStore, HistoryWindowError, type TimelineStore } from '@/core/history';
 import { createSimLoop, type SimLoop } from '@/core/loop';
@@ -30,6 +31,7 @@ import { createSoundscape, type Soundscape } from '@/audio/audio';
 import { createPersistStore, EXPERIMENT_FORMAT_VERSION, STORAGE_PREFIX, type PersistStore } from '@/persist/store';
 import type { ExperimentDoc } from '@/persist/store';
 import { scan, type ScanResult } from '@/content/recognition';
+import { getPattern } from '@/content/patterns';
 import { OPENING_SCENE, type CameraSpec, type SceneDef } from '@/content/scenes';
 import type { EditOp, Rect, WorldSpec } from '@/core/types';
 
@@ -105,6 +107,33 @@ export function initSession(): Session {
   const sculptureController = createSculpture(sculptureHost);
   const soundscape = createSoundscape();
   const persist = createPersistStore();
+
+  // ---- specimen stamping: arm InputController from the drawer's selection ---
+  // `@/ui/uiState` tracks WHICH pattern is selected and its transform (drawer-
+  // facing, ephemeral UI state); `InputController` is what actually shows the
+  // ghost preview and paints on click, via `setStampPattern`/
+  // `setStampTransform`. Nothing previously connected the two — clicking a
+  // specimen updated the drawer's own highlight and switched `tool` to
+  // 'stamp', but the controller's armed pattern stayed null forever, so no
+  // ghost ever appeared and a click fell through to painting a single cell.
+  // This subscription is that missing wire.
+  useUIState.subscribe((state, prev) => {
+    if (state.selectedPatternId !== prev.selectedPatternId) {
+      input.setStampPattern(state.selectedPatternId ? getPattern(state.selectedPatternId) : null);
+    }
+    if (state.stampTransform !== prev.stampTransform) {
+      input.setStampTransform(state.stampTransform);
+    }
+  });
+  // Leaving the stamp tool (without Escape, which already disarms the
+  // controller directly) should also clear the drawer's own selection so the
+  // two stay in sync — e.g. picking 'draw' after stamping shouldn't leave a
+  // specimen looking selected in the drawer.
+  useAppStore.subscribe((state, prev) => {
+    if (prev.tool === 'stamp' && state.tool !== 'stamp' && useUIState.getState().selectedPatternId) {
+      useUIState.getState().setSelectedPattern(null);
+    }
+  });
 
   // ---- compare view: a real, synchronized second render of another branch --
   // Shares the main `camera` object (same generation/viewport, painted every

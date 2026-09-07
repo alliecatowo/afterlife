@@ -169,7 +169,12 @@ export function App() {
             id="drawer-left"
             data-open={drawerOpen}
             className={
-              'fixed inset-y-0 left-0 z-[var(--z-overlay)] w-72 max-w-[85vw] -translate-x-full border-r border-line ' +
+              // Below `md` this is a slide-over sheet, not the desktop rail — width
+              // matches the desktop column's own `--size-drawer` (240px, already
+              // proven to fit the pattern list's two-column rows) rather than the
+              // old fixed 288px/85vw, which ate ~74% of a 390px phone screen and
+              // left almost no world (or room for the pattern tooltips) visible.
+              'fixed inset-y-0 left-0 z-[var(--z-overlay)] w-[var(--size-drawer)] max-w-[78vw] -translate-x-full border-r border-line ' +
               'bg-ink-800 transition-transform duration-[var(--duration-base)] ease-[var(--ease-standard)] ' +
               'data-[open=true]:translate-x-0 md:static md:z-auto md:w-auto md:max-w-none md:translate-x-0 ' +
               (presentation ? 'md:hidden' : 'min-h-0 overflow-y-auto md:block')
@@ -199,7 +204,11 @@ export function App() {
             id="panel-right"
             data-open={Boolean(rightPanel)}
             className={
-              'fixed inset-y-0 right-0 z-[var(--z-overlay)] w-80 max-w-[90vw] translate-x-full border-l border-line ' +
+              // Same "mobile sheet, not a squeezed desktop column" fix as
+              // `#drawer-left` — width matches the desktop `--size-panel`
+              // column (304px) instead of the old 320px/90vw, which left only
+              // a sliver of world visible on a phone.
+              'fixed inset-y-0 right-0 z-[var(--z-overlay)] w-[var(--size-panel)] max-w-[80vw] translate-x-full border-l border-line ' +
               'bg-ink-800 transition-transform duration-[var(--duration-base)] ease-[var(--ease-standard)] ' +
               'data-[open=true]:translate-x-0 md:static md:z-auto md:max-w-none md:translate-x-0 ' +
               (rightPanel ? 'md:w-auto' : 'md:w-0 md:translate-x-0') +

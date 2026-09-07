@@ -101,7 +101,7 @@ export function bresenhamLine(x0: number, y0: number, x1: number, y1: number): C
   return pts;
 }
 
-type DragMode = 'draw' | 'erase' | 'pan' | 'select' | null;
+type DragMode = 'draw' | 'erase' | 'pan' | 'select' | 'moveSelection' | null;
 
 interface PendingCell { x: number; y: number; alive: boolean }
 
@@ -132,6 +132,18 @@ class InputControllerImpl implements InputController {
 
   #stampPattern: StampPattern | null = null;
   #stampTransform: StampTransform = { ...IDENTITY_TRANSFORM };
+
+  // ---- selection move/duplicate (see #onPointerDown's 'select' branch) ----
+  // Dragging inside an EXISTING selection rect moves its live contents
+  // instead of starting a new selection; holding Alt duplicates instead of
+  // moving. Both preview through the same ghost the stamp tool uses, and
+  // both commit as one atomic `EditOp` through `#stampCells`/`#finishGesture`
+  // — see ARCHITECTURE.md § Atomic edit commit.
+  #moveOrigin: Rect | null = null;
+  #movePattern: StampPattern | null = null;
+  #moveDuplicate = false;
+  #moveAnchorCell: CellCoord | null = null;
+  #moveCurrentAt: CellCoord | null = null;
 
   constructor(opts: InputOptions) {
     this.#renderer = opts.renderer;
@@ -260,15 +272,57 @@ class InputControllerImpl implements InputController {
     if (op) for (const cb of [...this.#gestureEndCbs]) cb();
   }
 
-  #commitStamp(at: CellCoord): void {
-    if (!this.#stampPattern) return;
-    const { w, h, cells } = transformPattern(this.#stampPattern, this.#stampTransform);
+  /** Paint `pattern` (post-`transform`) with its top-left at `at`, into the pending gesture. */
+  #stampCells(pattern: StampPattern, transform: StampTransform, at: CellCoord): void {
+    const { w, h, cells } = transformPattern(pattern, transform);
     for (let j = 0; j < h; j++) {
       for (let i = 0; i < w; i++) {
         this.#paintCell(at.x + i, at.y + j, cells[j * w + i] === 1);
       }
     }
+  }
+
+  #commitStamp(at: CellCoord): void {
+    if (!this.#stampPattern) return;
+    this.#stampCells(this.#stampPattern, this.#stampTransform, at);
     this.#finishGesture();
+  }
+
+  #pointInRect(cell: CellCoord, rect: Rect): boolean {
+    return cell.x >= rect.x && cell.x < rect.x + rect.w && cell.y >= rect.y && cell.y < rect.y + rect.h;
+  }
+
+  /**
+   * Rotate/reflect the LIVE contents of the current selection in place, one
+   * quarter-turn or mirror per call — the `r`/`f` keyboard shortcuts when
+   * `select` is the active tool and nothing is currently being dragged (a
+   * move/duplicate drag handles its own `r`/`f` preview separately). Reads
+   * the rect's current cells, transforms them with the exact same
+   * `transformPattern` the stamp ghost/commit uses, clears the original rect,
+   * paints the transformed result anchored on the rect's centre (rotation
+   * swaps width/height), and commits as one atomic edit — same path as a
+   * stamp click, so it undoes/replays identically.
+   */
+  #transformSelectionInPlace(transform: StampTransform): void {
+    if (!this.#engine) return;
+    const rect = readState().selection;
+    if (!rect) return;
+    const pattern: StampPattern = { name: 'selection', w: rect.w, h: rect.h, cells: this.#engine.region(rect) };
+    const result = transformPattern(pattern, transform);
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const at: CellCoord = { x: Math.round(cx - result.w / 2), y: Math.round(cy - result.h / 2) };
+
+    for (let j = 0; j < rect.h; j++) {
+      for (let i = 0; i < rect.w; i++) this.#paintCell(rect.x + i, rect.y + j, false);
+    }
+    this.#stampCells(result, IDENTITY_TRANSFORM, at);
+    this.#finishGesture();
+
+    const newRect: Rect = { x: at.x, y: at.y, w: result.w, h: result.h };
+    useAppStore.getState().setSelection(newRect);
+    this.#renderer.setSelection(newRect);
+    bus.emit('selection:changed', { rect: newRect });
   }
 
   // ---- pointer --------------------------------------------------------
@@ -307,6 +361,19 @@ class InputControllerImpl implements InputController {
     const cell = { x: Math.floor(world.x), y: Math.floor(world.y) };
 
     if (tool === 'select') {
+      const existing = readState().selection;
+      if (existing && this.#engine && this.#pointInRect(cell, existing)) {
+        // Drag inside the current selection: move its live contents (or, with
+        // Alt held, duplicate them) instead of starting a new selection.
+        this.#dragMode = 'moveSelection';
+        this.#moveOrigin = existing;
+        this.#movePattern = { name: 'selection', w: existing.w, h: existing.h, cells: this.#engine.region(existing) };
+        this.#moveDuplicate = e.altKey;
+        this.#moveAnchorCell = cell;
+        this.#moveCurrentAt = { x: existing.x, y: existing.y };
+        this.#renderer.setGhost(this.#movePattern, existing.x, existing.y, IDENTITY_TRANSFORM);
+        return;
+      }
       this.#dragMode = 'select';
       this.#selectStart = cell;
       const rect: Rect = { x: cell.x, y: cell.y, w: 1, h: 1 };
@@ -370,6 +437,14 @@ class InputControllerImpl implements InputController {
       return;
     }
 
+    if (this.#dragMode === 'moveSelection' && this.#moveOrigin && this.#moveAnchorCell && this.#movePattern) {
+      const dx = cell.x - this.#moveAnchorCell.x;
+      const dy = cell.y - this.#moveAnchorCell.y;
+      this.#moveCurrentAt = { x: this.#moveOrigin.x + dx, y: this.#moveOrigin.y + dy };
+      this.#renderer.setGhost(this.#movePattern, this.#moveCurrentAt.x, this.#moveCurrentAt.y, IDENTITY_TRANSFORM);
+      return;
+    }
+
     if (this.#dragMode === 'draw' || this.#dragMode === 'erase') {
       const from = this.#lastCell ?? cell;
       const alive = this.#dragMode === 'draw';
@@ -395,12 +470,43 @@ class InputControllerImpl implements InputController {
       if (this.#lastSelectionRect) useAppStore.getState().setSelection(this.#lastSelectionRect);
     } else if (this.#dragMode === 'draw' || this.#dragMode === 'erase') {
       this.#finishGesture();
+    } else if (this.#dragMode === 'moveSelection') {
+      this.#commitMoveSelection();
     }
     this.#dragMode = null;
     this.#activePointerId = null;
     this.#lastCell = null;
     this.#lastPanScreen = null;
     this.#selectStart = null;
+    this.#moveOrigin = null;
+    this.#movePattern = null;
+    this.#moveAnchorCell = null;
+    this.#moveCurrentAt = null;
+  }
+
+  /** Commits (or cancels, if nothing moved and it wasn't a duplicate) the in-progress move/duplicate drag. */
+  #commitMoveSelection(): void {
+    const origin = this.#moveOrigin;
+    const pattern = this.#movePattern;
+    const at = this.#moveCurrentAt;
+    this.#renderer.setGhost(null, 0, 0, IDENTITY_TRANSFORM);
+    if (!origin || !pattern || !at) return;
+
+    const moved = at.x !== origin.x || at.y !== origin.y;
+    if (!moved && !this.#moveDuplicate) return; // a plain click on the selection — no-op, not an edit.
+
+    if (!this.#moveDuplicate) {
+      for (let j = 0; j < origin.h; j++) {
+        for (let i = 0; i < origin.w; i++) this.#paintCell(origin.x + i, origin.y + j, false);
+      }
+    }
+    this.#stampCells(pattern, IDENTITY_TRANSFORM, at);
+    this.#finishGesture();
+
+    const newRect: Rect = { x: at.x, y: at.y, w: pattern.w, h: pattern.h };
+    useAppStore.getState().setSelection(newRect);
+    this.#renderer.setSelection(newRect);
+    bus.emit('selection:changed', { rect: newRect });
   }
 
   #onContextMenu = (e: MouseEvent): void => {
@@ -496,6 +602,13 @@ class InputControllerImpl implements InputController {
       }
       case 'r':
       case 'R':
+        // While a selection exists and isn't mid-drag, r/f rotate/reflect its
+        // LIVE contents in place (see #transformSelectionInPlace) instead of
+        // arming the stamp tool's transform.
+        if (readState().tool === 'select' && this.#dragMode !== 'moveSelection' && readState().selection) {
+          this.#transformSelectionInPlace({ rotate: 1, flipX: false, flipY: false });
+          return;
+        }
         this.#stampTransform = {
           ...this.#stampTransform,
           rotate: (((this.#stampTransform.rotate + 1) % 4) as 0 | 1 | 2 | 3),
@@ -503,6 +616,10 @@ class InputControllerImpl implements InputController {
         return;
       case 'f':
       case 'F':
+        if (readState().tool === 'select' && this.#dragMode !== 'moveSelection' && readState().selection) {
+          this.#transformSelectionInPlace({ rotate: 0, flipX: true, flipY: false });
+          return;
+        }
         this.#stampTransform = { ...this.#stampTransform, flipX: !this.#stampTransform.flipX };
         return;
       case 'Escape':
@@ -575,6 +692,10 @@ class InputControllerImpl implements InputController {
     this.#dragMode = null;
     this.#selectStart = null;
     this.#lastSelectionRect = null;
+    this.#moveOrigin = null;
+    this.#movePattern = null;
+    this.#moveAnchorCell = null;
+    this.#moveCurrentAt = null;
     this.#renderer.setSelection(null);
     useAppStore.getState().setSelection(null);
     bus.emit('selection:changed', { rect: null });
