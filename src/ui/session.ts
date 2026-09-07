@@ -23,14 +23,14 @@ import { createEngine, type LifeEngine } from '@/core/engine';
 import { createTimelineStore, HistoryWindowError, type TimelineStore } from '@/core/history';
 import { createSimLoop, type SimLoop } from '@/core/loop';
 import { createRenderer, type WorldRenderer } from '@/render/renderer';
-import { createCamera, type CameraController } from '@/render/camera';
+import { createCamera, fitCameraSpec, type CameraController } from '@/render/camera';
 import { createInput, type InputController } from '@/interact/input';
 import { createSculpture, type TimeSculpture } from '@/sculpture/sculpture';
 import { createSoundscape, type Soundscape } from '@/audio/audio';
 import { createPersistStore, EXPERIMENT_FORMAT_VERSION, STORAGE_PREFIX, type PersistStore } from '@/persist/store';
 import type { ExperimentDoc } from '@/persist/store';
 import { scan, type ScanResult } from '@/content/recognition';
-import { OPENING_SCENE, type SceneDef } from '@/content/scenes';
+import { OPENING_SCENE, type CameraSpec, type SceneDef } from '@/content/scenes';
 import type { EditOp, Rect, WorldSpec } from '@/core/types';
 
 /** The one universe AFTERLIFE observes — the same 256x160 torus every curated
@@ -181,6 +181,41 @@ export function initSession(): Session {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  // ---- curated camera framing: viewport-independent, re-fit on chrome change ----
+  // A `CameraSpec` (scene establishing/focus framing) is authored against a
+  // 1440x900 reference viewport (see `@/content/scenes`). Applying it as a raw
+  // `{x, y, scale}` only reproduces the intended framing at that exact canvas
+  // size — opening the right panel (or viewing on a phone) narrows the actual
+  // `#world-canvas` rect, and the same absolute scale can clip the scene's
+  // subject out of frame. `fitCameraSpec` reconstructs the authored world rect
+  // and fits it to whatever the canvas rect actually is; `curatedCamera` and
+  // the flag below let us re-apply that fit whenever the canvas resizes
+  // (panel open/close, orientation change, window resize) WITHOUT overriding
+  // a camera move the user or a scene beat made since — see the
+  // `camera:changed` listener.
+  let curatedCamera: CameraSpec | null = null;
+  let applyingCuratedCamera = false;
+  function applyCuratedCamera(spec: CameraSpec): void {
+    applyingCuratedCamera = true;
+    fitCameraSpec(camera, spec);
+    applyingCuratedCamera = false;
+    curatedCamera = spec;
+  }
+  bus.on('camera:changed', () => {
+    if (!applyingCuratedCamera) curatedCamera = null;
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    const reframe = new ResizeObserver(() => {
+      // Bring the camera's notion of viewport size up to date before
+      // re-fitting — mirrors `@/interact/input.ts`'s own `#syncViewport`,
+      // done independently here so re-framing never races that observer.
+      renderer.resize();
+      camera.setViewport(renderer.viewport.width, renderer.viewport.height);
+      if (curatedCamera) applyCuratedCamera(curatedCamera);
+    });
+    reframe.observe(worldCanvas);
+  }
 
   // ---- scene beats: quiet camera eases / world-anchored annotations ------
   // Never a modal, never a cutscene — see `@/content/scenes`' `SceneBeat` doc
@@ -377,11 +412,7 @@ export function initSession(): Session {
     if (scene.cells.length > 0) {
       history.record(0, [{ kind: 'set', cells: scene.cells.map((c) => ({ x: c.x, y: c.y, alive: true })) }]);
     }
-    camera.set({
-      x: scene.cameras.establishing.centerX,
-      y: scene.cameras.establishing.centerY,
-      scale: scene.cameras.establishing.pxPerCell,
-    });
+    applyCuratedCamera(scene.cameras.establishing);
     useAppStore.getState().setSpeed(scene.defaultSpeed);
     loop.setSpeed(scene.defaultSpeed);
     useAppStore.getState().setSelection(null);

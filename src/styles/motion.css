@@ -54,3 +54,16 @@
   from { opacity: 1; transform: translateY(0); }
   to { opacity: 0; transform: translateY(-8px); }
 }
+
+/* Sculpture loading placeholder (`@/sculpture/SculptureLoading`) — a single
+ * hairline sweep instead of a spinner, per DESIGN.md's restrained-motion
+ * register. `prefers-reduced-motion` (base.css) forces a 1-iteration,
+ * near-zero duration run, so it still renders (ending swept-through) rather
+ * than looping forever. */
+@keyframes sculpture-loading-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+.sculpture-loading-sweep {
+  animation: sculpture-loading-sweep 1.1s var(--ease-standard) infinite;
+}

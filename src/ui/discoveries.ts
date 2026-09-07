@@ -19,8 +19,8 @@
  */
 import { create } from 'zustand';
 import {
-  advanceFollow, bookmark, cameraFor, lastObservation, nameDiscovery,
-  startFollowing, stopFollowing, toFieldGuideEntry, type Discovery, type FieldGuideEntry,
+  advanceFollow, bookmark, cameraFor, isSameDiscovery, lastObservation, nameDiscovery,
+  reobserve, startFollowing, stopFollowing, toFieldGuideEntry, type Discovery, type FieldGuideEntry,
 } from '@/content/discoveries';
 import type { RecognizedCluster } from '@/content/recognition';
 import { bus } from '@/ui/bus';
@@ -34,16 +34,11 @@ function kindFor(cluster: RecognizedCluster): DiscoveryEvent['kind'] {
   return 'stability';
 }
 
-/** Quantised so ambient re-scans of a slowly drifting structure don't spam duplicates. */
-function dedupeKey(cluster: RecognizedCluster): string {
-  const label = cluster.name ?? `${cluster.status}-${cluster.period ?? 0}`;
-  return `${label}:${Math.round(cluster.bbox.x / 6)}:${Math.round(cluster.bbox.y / 6)}`;
-}
-
 interface DiscoveriesState {
   items: Discovery[];
-  seenKeys: Set<string>;
-  /** Manual scan (e.g. a "scan selection" button). Returns the number of new entries. */
+  /** Manual scan (e.g. a "scan selection" button). Returns the number of NEW entries
+   *  (a re-observed structure that already had an entry strengthens it in place — see
+   *  `@/content/discoveries#isSameDiscovery`/`reobserve` — and isn't counted here). */
   scanRect(rect: Rect, opts?: { ambient?: boolean }): number;
   rename(id: string, name: string): void;
   toggleFollow(id: string): void;
@@ -55,7 +50,6 @@ interface DiscoveriesState {
 
 export const useDiscoveries = create<DiscoveriesState>((set, get) => ({
   items: [],
-  seenKeys: new Set<string>(),
 
   scanRect(rect, opts) {
     const session = getSession();
@@ -63,13 +57,21 @@ export const useDiscoveries = create<DiscoveriesState>((set, get) => ({
     const gen = session.engine.gen;
     const { clusters } = session.scanRegion(rect);
     const added: Discovery[] = [];
+    // Same structure re-scanned (a glider three cells further along its own
+    // trajectory, a still life scanned again next tick) strengthens its
+    // existing Field Guide entry instead of spawning a duplicate — see
+    // `isSameDiscovery`'s doc for the identity+continuity test. Matched by
+    // id so two clusters in one scan can't both claim the same existing entry.
+    const toReobserve = new Map<string, RecognizedCluster>();
+    const existing = get().items;
     for (const cluster of clusters) {
       if (cluster.population === 0) continue;
       if (cluster.status === 'unknown' || cluster.status === 'unverified') continue;
-      if (opts?.ambient) {
-        const key = dedupeKey(cluster);
-        if (get().seenKeys.has(key)) continue;
-        get().seenKeys.add(key);
+
+      const match = existing.find((d) => !toReobserve.has(d.id) && isSameDiscovery(d, cluster, gen));
+      if (match) {
+        toReobserve.set(match.id, cluster);
+        continue;
       }
       const d = bookmark(cluster, gen);
       added.push(d);
@@ -78,7 +80,14 @@ export const useDiscoveries = create<DiscoveriesState>((set, get) => ({
         label: d.name ?? cluster.note, period: cluster.period,
       });
     }
-    if (added.length > 0) set((s) => ({ items: [...added, ...s.items] }));
+    if (added.length > 0 || toReobserve.size > 0) {
+      set((s) => ({
+        items: [
+          ...added,
+          ...s.items.map((d) => (toReobserve.has(d.id) ? reobserve(d, gen, toReobserve.get(d.id)!) : d)),
+        ],
+      }));
+    }
     return added.length;
   },
 
@@ -108,7 +117,7 @@ export const useDiscoveries = create<DiscoveriesState>((set, get) => ({
   },
 
   clear() {
-    set({ items: [], seenKeys: new Set() });
+    set({ items: [] });
   },
 }));
 

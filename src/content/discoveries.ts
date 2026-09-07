@@ -40,6 +40,17 @@ export interface Discovery {
   following: boolean;
   /** Set once a followed discovery stops matching (collision, dispersal, ran off the scanned area). The trail is left exactly as it was. */
   lost: boolean;
+  /**
+   * How many times this SAME structure has been (re-)observed, ambient or
+   * manual, since it was first bookmarked. Starts at 1. This is the whole
+   * point of `isSameDiscovery`/`reobserve`: a glider tracked across
+   * generations is one discovery, re-observed — the count (and
+   * `lastSeenGen`) is what "grows" the entry instead of the log gaining a
+   * near-identical duplicate every ambient scan tick.
+   */
+  observationCount: number;
+  /** Generation of the most recent (re-)observation. `>= discoveredAtGen`. */
+  lastSeenGen: Generation;
 }
 
 let _counter = 0;
@@ -61,6 +72,8 @@ export function bookmark(cluster: RecognizedCluster, gen: Generation): Discovery
     trail: [{ gen, rect: cluster.bbox }],
     following: false,
     lost: false,
+    observationCount: 1,
+    lastSeenGen: gen,
   };
 }
 
@@ -74,6 +87,82 @@ export function bookmarkRegion(rect: Rect, gen: Generation): Discovery {
     trail: [{ gen, rect }],
     following: false,
     lost: false,
+    observationCount: 1,
+    lastSeenGen: gen,
+  };
+}
+
+/**
+ * Continuity check for the ambient scanner: is `cluster` (freshly scanned at
+ * `gen`) plausibly the SAME structure as `d`, seen again — rather than a
+ * distinct new discovery? Two conditions must both hold:
+ *
+ *  1. **Same identity.** A named cluster must name the same specimen; a
+ *     characterized-but-unnamed cluster must share `d`'s period (and `d`
+ *     must not itself be named — a coincidentally-matching period doesn't
+ *     make an unnamed blinker the same object as a named one).
+ *  2. **Same continuity through time.** The cluster's bounding box must be
+ *     close to where `d` would be predicted to be at `gen`, extrapolating
+ *     from its last sighting by `translation` (for a moving spaceship) or
+ *     staying put (still lifes/oscillators). This is what turns "a glider
+ *     re-scanned three cells further along" into a re-observation of the
+ *     same traveler instead of a new entry, while still letting a second,
+ *     unrelated glider elsewhere register as its own discovery.
+ *
+ * Position is compared in plain (non-wrapping) cell distance — ambient scans
+ * are bounded to a small window around the camera, so a seam-crossing false
+ * negative here just means (at worst) one extra entry, not a crash.
+ */
+export function isSameDiscovery(d: Discovery, cluster: RecognizedCluster, gen: Generation): boolean {
+  const sameIdentity =
+    cluster.status === 'named'
+      ? d.specimenId !== undefined && d.specimenId === cluster.name
+      : cluster.status === 'characterized'
+        ? d.specimenId === undefined && d.kind === 'characterized' && d.period === cluster.period
+        : false;
+  if (!sameIdentity) return false;
+
+  const last = lastObservation(d);
+  const elapsed = Math.max(0, gen - last.gen);
+  const lastCenter = { x: last.rect.x + last.rect.w / 2, y: last.rect.y + last.rect.h / 2 };
+  const predicted =
+    d.translation && d.period
+      ? {
+          x: lastCenter.x + (d.translation.dx * elapsed) / d.period,
+          y: lastCenter.y + (d.translation.dy * elapsed) / d.period,
+        }
+      : lastCenter;
+  const clusterCenter = { x: cluster.bbox.x + cluster.bbox.w / 2, y: cluster.bbox.y + cluster.bbox.h / 2 };
+  const tolerance = Math.max(cluster.bbox.w, cluster.bbox.h, last.rect.w, last.rect.h, 8) + 6;
+  const dx = clusterCenter.x - predicted.x;
+  const dy = clusterCenter.y - predicted.y;
+  return dx * dx + dy * dy <= tolerance * tolerance;
+}
+
+/**
+ * Strengthen an existing discovery with a fresh sighting of the SAME
+ * structure (see `isSameDiscovery`) instead of creating a duplicate entry —
+ * "seeing the same small traveler repeatedly should gradually make it feel
+ * like your traveler" (design brief). Bumps `observationCount`/`lastSeenGen`
+ * always; only grows `trail` when the structure actually moved, otherwise
+ * refreshes the last sighting's generation in place so a standing still life
+ * re-observed for an hour doesn't accumulate hundreds of identical entries.
+ */
+export function reobserve(d: Discovery, gen: Generation, cluster: RecognizedCluster): Discovery {
+  const last = lastObservation(d);
+  const moved = last.rect.x !== cluster.bbox.x || last.rect.y !== cluster.bbox.y;
+  const MAX_TRAIL = 24;
+  const trail = moved
+    ? [...d.trail, { gen, rect: cluster.bbox }].slice(-MAX_TRAIL)
+    : [...d.trail.slice(0, -1), { gen, rect: cluster.bbox }];
+  return {
+    ...d,
+    lost: false,
+    period: cluster.period ?? d.period,
+    translation: cluster.translation ?? d.translation,
+    observationCount: d.observationCount + 1,
+    lastSeenGen: gen,
+    trail,
   };
 }
 
@@ -108,7 +197,12 @@ export function advanceFollow(d: Discovery, gen: Generation, freshScan: Recogniz
   if (!stillMatches) {
     return { ...d, lost: true };
   }
-  return { ...d, trail: [...d.trail, { gen, rect: freshScan.bbox }] };
+  return {
+    ...d,
+    trail: [...d.trail, { gen, rect: freshScan.bbox }],
+    observationCount: d.observationCount + 1,
+    lastSeenGen: gen,
+  };
 }
 
 /** The most recent sighting — where "clicking an observation" should return to. */
@@ -173,6 +267,14 @@ export function toFieldGuideEntry(d: Discovery): FieldGuideEntry {
     body = 'Last seen before it collided, dispersed, or moved out of view. The trail below leads back to it.';
   } else {
     body = 'An unnamed structure, bookmarked for a closer look.';
+  }
+
+  // "Seeing the same small traveler repeatedly should gradually make it feel
+  // like your traveler" — re-observation strengthens this entry in place
+  // (see `reobserve`) rather than spawning a duplicate, so the growing count
+  // is the visible trace of that familiarity.
+  if (d.observationCount > 1) {
+    body += ` Observed ${d.observationCount} times so far, most recently at generation ${d.lastSeenGen}.`;
   }
 
   return { id: d.id, title, kind: d.kind, body, discoveredAtGen: d.discoveredAtGen, preview };

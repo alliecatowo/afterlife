@@ -216,3 +216,32 @@ class CameraControllerImpl implements CameraController {
 export function createCamera(initial?: Partial<Camera>): CameraController {
   return new CameraControllerImpl(initial);
 }
+
+/**
+ * A curated camera framing authored against a reference viewport (see
+ * `@/content/scenes`'s `CameraSpec` doc: "pxPerCell for a 1440x900
+ * viewport"). Applying it as a raw `{ x, y, scale }` triple only reproduces
+ * the intended framing at that exact viewport size — on any other visible
+ * canvas rect (a phone, or a desktop with the inspector/experiments panel
+ * open narrowing the world canvas) the same absolute scale shows a
+ * different world extent, and an authored subject can end up clipped or
+ * lost in the margins.
+ *
+ * `fitCameraSpec` instead reconstructs the WORLD-CELL rect the spec was
+ * authored to show at the reference viewport, then asks the camera to
+ * `fit()` that same rect into whatever viewport is actually current. The
+ * result matches the authored framing exactly at the reference size and
+ * degrades gracefully (never cropping the subject) at any other size.
+ */
+export function fitCameraSpec(
+  camera: CameraController,
+  spec: { centerX: number; centerY: number; pxPerCell: number },
+  referenceViewport: Readonly<Viewport> = { width: 1440, height: 900 },
+): void {
+  const rectW = referenceViewport.width / spec.pxPerCell;
+  const rectH = referenceViewport.height / spec.pxPerCell;
+  camera.fit(
+    { x: spec.centerX - rectW / 2, y: spec.centerY - rectH / 2, w: rectW, h: rectH },
+    0,
+  );
+}

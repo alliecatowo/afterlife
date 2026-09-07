@@ -29,7 +29,22 @@
  */
 import { createRoot, type Root } from 'react-dom/client';
 import type { Generation, Rect } from '@/core/types';
-import { SculptureApp, type SculptureController } from './SculptureApp';
+import type { SculptureController } from './SculptureApp';
+import { SculptureLoading } from './SculptureLoading';
+
+/**
+ * Cached across every `open()` in the session: three.js + @react-three/fiber
+ * + drei (the entire weight of the Time Sculpture, see the module doc above)
+ * are only fetched the FIRST time a sculpture is opened, via a dynamic
+ * `import()` — this is the one line that makes the sculpture its own Vite
+ * chunk instead of eagerly loading with the core experience. Every open
+ * after the first resolves instantly from this cache.
+ */
+let sculptureAppModule: Promise<typeof import('./SculptureApp')> | null = null;
+function loadSculptureApp(): Promise<typeof import('./SculptureApp')> {
+  sculptureAppModule ??= import('./SculptureApp');
+  return sculptureAppModule;
+}
 
 /** Hard cap; beyond this the sculpture reduces via time stride (see ./budget.ts). */
 export const MAX_SLICES = 256;
@@ -77,6 +92,10 @@ export function createSculpture(host: HTMLElement): TimeSculpture {
   let controller: SculptureController | null = null;
   let pending: Array<(c: SculptureController) => void> = [];
   const sliceSelectedCallbacks = new Set<(gen: Generation) => void>();
+  // Bumped on every open()/close() so a dynamic import() that resolves after
+  // the sculpture was closed (or reopened with newer data) never renders
+  // into a stale/unmounted root.
+  let openToken = 0;
 
   function withController(fn: (c: SculptureController) => void): void {
     if (controller) fn(controller);
@@ -95,20 +114,30 @@ export function createSculpture(host: HTMLElement): TimeSculpture {
   return {
     open(rect, fromGen, toGen, slices) {
       if (root) { root.unmount(); root = null; controller = null; }
+      pending = [];
+      const myToken = ++openToken;
       root = createRoot(host);
-      root.render(
-        <SculptureApp
-          rect={rect}
-          fromGen={fromGen}
-          toGen={toGen}
-          slices={slices}
-          onSliceSelected={(gen) => sliceSelectedCallbacks.forEach((cb) => cb(gen))}
-          onControllerReady={handleControllerReady}
-        />,
-      );
+      // Paint the (cheap, three.js-free) loading state immediately — the
+      // real chunk (three.js + @react-three/fiber + drei) is fetched lazily
+      // below and only ever downloaded once per session.
+      root.render(<SculptureLoading />);
+      void loadSculptureApp().then(({ SculptureApp }) => {
+        if (myToken !== openToken || !root) return; // closed/reopened meanwhile
+        root.render(
+          <SculptureApp
+            rect={rect}
+            fromGen={fromGen}
+            toGen={toGen}
+            slices={slices}
+            onSliceSelected={(gen) => sliceSelectedCallbacks.forEach((cb) => cb(gen))}
+            onControllerReady={handleControllerReady}
+          />,
+        );
+      });
     },
 
     close() {
+      ++openToken;
       if (root) { root.unmount(); root = null; }
       controller = null;
       pending = [];
