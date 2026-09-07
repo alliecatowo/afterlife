@@ -28,3 +28,66 @@ or delete another agent's entry. Format:
 Stubs throw `not implemented`; typecheck, test and build are green.
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-06 — ci-deploy — .github/** (CI + Pages)
+**Need:** n/a — informational record for the team.
+**Proposed:** Added `.github/workflows/ci.yml` (typecheck/test/build on push+PR to main)
+and `.github/workflows/deploy.yml` (build with `npm run build -- --base=/afterlife/`,
+deploy to GitHub Pages via configure-pages/upload-pages-artifact/deploy-pages).
+Verified locally: `vite build --base=/afterlife/` correctly emits
+`/afterlife/assets/...` URLs in `dist/index.html` — **no vite.config.ts change is
+needed**, the CLI flag is respected as-is. Also added `.nojekyll` in the deploy
+workflow, issue templates, PR template, and dependabot.yml (weekly, grouped).
+Enabled Pages via API with `build_type=workflow`; site will be at
+https://alliecatowo.github.io/afterlife/ once main is green.
+**Blocking?** no.
+**Resolution:** n/a.
+
+## 2026-09-06 — render — src/ui/bus.ts (AppEvents)
+**Need:** ARCHITECTURE.md's interaction spec asks `src/interact/input.ts` to "maintain an
+edit-gesture undo stack ... and emit undo requests on the bus" for the `z` key. There is no
+`edit:undo`/`history:undo` entry in `AppEvents`, and `bus.emit` is generically typed over
+`keyof AppEvents`, so emitting an ad-hoc key would fail typecheck.
+**Proposed:** Add something like `'history:undo': void` to `AppEvents` in `src/ui/bus.ts`,
+emitted by whichever module ends up owning the `z` shortcut.
+**Blocking?** no — interim workaround implemented: `InputController` (owned by render) now
+exposes `undo(): EditOp | null` and `canUndo`, mirroring the existing `commit()` contract.
+It maintains its own bounded (64-entry) undo stack of INVERSE `EditOp`s, captured from each
+cell's prior value at first-touch of a gesture (requires the new optional
+`InputOptions.engine?: LifeEngine` — a render-owned interface addition, not a core change).
+Pressing `z` currently no-ops in `input.ts`; the caller that owns `TimelineStore` should call
+`input.undo()` on `z` and hand the result to `history.record(currentGen, [inverseOp])`,
+exactly like `commit()`. If the bus event above lands, swapping to it is a small localized
+change in `input.ts`'s keydown handler.
+**Resolution:** n/a.
+
+## 2026-09-06 — core — src/core/engine.ts, src/core/history.ts, src/core/loop.ts
+**Need:** n/a — informational record. `engine.ts`, `history.ts`, `loop.ts` are stubs I own,
+not frozen files, so I filled them in and made two small non-breaking additions to the
+`TimelineStore` interface beyond what the original stub declared. Flagging both here since
+other agents (render/interact for the loop wiring, sculpture for `sliceStack`) will consume
+these.
+**Proposed (already implemented, not a request):**
+1. `TimelineStore.advance(gen: Generation): void` — **whoever wires up `SimLoop` must call
+   `history.advance(engine.gen)` once per generation right after `engine.step()` during
+   normal playback.** This is what keeps `history.maxGen`/`windowStart` current and
+   populates keyframes every 64 gens for fast seeking. Without it, `goto()`/`branchFrom()`
+   still work correctly (they always fall back to replaying from the gen-0 keyframe), just
+   slower, and the UI's `maxGen` readout would go stale during pure playback. `loop.ts`
+   itself stays engine/history-agnostic (its `step` callback is opaque, supplied by the
+   caller) — this is a wiring responsibility in whatever module constructs the loop.
+2. `TimelineStore.sliceStack(rect, fromGen, toGen, maxSlices = 256)` — added an optional
+   4th parameter (existing 3-arg call sites are unaffected) plus a new readonly
+   `TimelineStore.lastSliceStride: number` reporting the stride actually used for the most
+   recent `sliceStack()` call, per ARCHITECTURE's "report the stride actually used"
+   requirement for the Time Sculpture.
+3. `TimelineStore.goto(gen, signal?, onProgress?)` — added an optional 3rd parameter,
+   `onProgress(done, total)`, called at each ~64-generation chunk boundary during a long
+   seek, for a progress affordance.
+`engine.ts` also exports `transformPattern(pattern, transform): StampPattern` (pure,
+side-effect-free) — `stamp()` uses it internally, and render/UI should use the exact same
+function for the placement ghost so it never drifts from where a stamp actually lands.
+Measured perf: 512×512 world, ~1.7ms/step average (Node/V8, no rendering) — well inside the
+33ms budget for 30 gens/sec.
+**Blocking?** no.
+**Resolution:** n/a.

@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in AFTERLIFE isn't working right
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Load a pattern...
+        2. Press play...
+        3. See...
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / OS
+      placeholder: e.g. Chrome 129 on macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors
+      description: Any errors from the browser dev console (if applicable)
+      render: text
+    validations:
+      required: false
