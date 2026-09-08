@@ -280,3 +280,183 @@ to work.)
 **Blocking?** no.
 **Resolution:** n/a.
 
+
+## 2026-09-07 — core/render — colourful lenses (lineage/immigration/quadlife/velocity/neighbors)
+**Need:** `RenderLens` (`src/core/types.ts`, frozen/architect-owned) widened from
+`'life' | 'age' | 'activity'` to also include the 5 new lenses, plus the HUD's lens
+picker (`src/ui/hud/Hud.tsx` and its mobile twin `HudMoreSheet.tsx`, not frozen but
+owned by a concurrent `ui`/mobile agent this session, so I did not edit them) wired up
+to offer them. Nothing else needs to change: `src/ui/store.ts`/`src/ui/bus.ts` only
+reference `RenderLens` by type, never enumerate its members, so they need zero edits
+once `types.ts` is widened.
+
+**Why:** the user asked for AFTERLIFE to be genuinely multi-coloured, not just three
+single-hue lenses. Implemented (all in `src/core/**`+`src/render/**`, which I own):
+- **`lineage`** — classic heritage colouring. A newborn's hue is the circular mean of
+  its exactly-3 parents' hues; survivors keep theirs. Seeded with a spatially-coherent
+  hue hash so a fresh soup starts as visibly distinct "families" per region.
+- **`immigration`** (2 colours) / **`quadlife`** (4 colours) — the textbook Immigration/
+  QuadLife birth rule (majority-of-3, ties take the 4th unused colour), proven
+  B3/S23-identical to the plain engine by `tests/engine-color.test.ts`. Both read the
+  SAME `species` buffer; Immigration is a coarser 2-bucket view of it (see
+  `src/core/lineage.ts`'s doc for why that's not a second simulation to keep in sync).
+- **`velocity`** — hue from each cell's local 8-neighbour directional bias (a proxy for
+  which way a structure is advancing; grey where undefined), purely derived, nothing
+  stored.
+- **`neighbors`** — a 9-step spectral ramp over live-neighbour count 0..8, drawing dead
+  (birth-eligible) cells too at reduced alpha, so B3/S23 itself becomes visible.
+- Genuinely spectral (not single-hue) `age`/`activity` ramps, still terminating exactly
+  on the real `--color-accent-age`/`--color-accent-activity` token at full intensity.
+- A colourblind-safe (Okabe-Ito) palette option for the discrete species lenses via
+  `WorldRenderer.setPalette('default' | 'cvd')`.
+
+**Colour state / determinism:** `hue`/`species` are new cosmetic per-cell buffers on
+`LifeEngine` (`src/core/engine.ts`), exactly parallel to the existing `age`/`activity` —
+NEVER read by the B3/S23 step decision, only written after `nv` is already decided.
+Unlike `age`, a colour value on a long-lived survivor is never recomputed once assigned,
+so a flat post-`restore()` default would NOT self-correct via replay the way `age` does.
+`history.ts`'s `TimelineStore` therefore snapshots/restores `hue`/`species` as a second,
+parallel keyframe (`colorKeyframes`, keyed at the exact same generations as the bits
+`keyframes`) via new `engine.snapshotColors()`/`restoreColors()` methods — so
+`goto()`/`branchFrom()`/`cloneBranchAt()` are bit-exact for colour too, not just
+alive/dead. See `tests/engine-color.test.ts`'s "history.ts: colour is bit-exact across
+rewind and branching" suite for the proof, and `tests/engine-color.test.ts`'s "B3/S23
+determinism is untouched by colour bookkeeping" suite (including a test that directly
+poisons colour state via extra `set()` churn and confirms the resulting bits are still
+byte-identical) for the B3/S23-preservation proof.
+
+**Proposed exact diff for `src/core/types.ts`:**
+```diff
+ /**
+  * How the renderer colours cells.
+  *  - 'life'     — binary alive/dead, `--accent-life`.
+  *  - 'age'      — generations since the cell was born, `--accent-age` ramp.
+  *  - 'activity' — recent-change heat, decaying 0..1, `--accent-activity` ramp.
++ *  - 'lineage'     — heritage colour: a newborn blends its 3 parents' hue.
++ *  - 'immigration' — 2-colour Immigration variant (majority-of-3 birth rule).
++ *  - 'quadlife'    — 4-colour QuadLife variant (majority-of-3, ties take the 4th).
++ *  - 'velocity'    — hue from local directional bias (proxy for travel direction).
++ *  - 'neighbors'   — hue by live-neighbour count 0..8 (the B3/S23 rule made visible).
+  */
+-export type RenderLens = 'life' | 'age' | 'activity';
++export type RenderLens = 'life' | 'age' | 'activity' | 'lineage' | 'immigration' | 'quadlife' | 'velocity' | 'neighbors';
+```
+(`src/render/color.ts` already exports an identical `ColorLens` superset type so
+`WorldRenderer` type-checks today regardless of when/whether this lands — see that
+file's doc. This diff is a convenience for `ui` so the picker/store/bus don't need a
+second type; it's not a blocker for anything in `src/core/**`/`src/render/**`.)
+
+**Proposed exact diff for `src/ui/hud/Hud.tsx`** (and the identical `LENS_LEGEND`
+block + `Toggle` `options` array in `HudMoreSheet.tsx`):
+```diff
+-const LENS_LEGEND: Record<RenderLens, { swatch: string; label: string }[]> = {
+-  life: [{ swatch: 'var(--color-accent-life)', label: 'alive' }],
+-  age: [
+-    { swatch: 'linear-gradient(90deg, color-mix(in oklch, var(--color-accent-age) 25%, transparent), var(--color-accent-age))', label: 'young → long-lived' },
+-  ],
+-  activity: [
+-    { swatch: 'linear-gradient(90deg, transparent, var(--color-accent-activity))', label: 'quiet → recently changed' },
+-  ],
+-};
++import { buildLensLegends } from '@/render/color';
++// Swap the hand-authored record for the render-owned legend data (already keyed by
++// every lens id, including the 5 new ones) — pass the current palette mode (see the
++// new Settings toggle proposed below) so CVD swatches update live.
++const LENS_LEGEND = buildLensLegends(paletteMode); // 'default' | 'cvd', from wherever this session stores that preference
+```
+```diff
+         <Toggle
+           aria-label="Render lens"
+           options={[
+             { value: 'life', label: 'Life' },
+             { value: 'age', label: 'Age' },
+             { value: 'activity', label: 'Activity' },
++            { value: 'lineage', label: 'Lineage' },
++            { value: 'immigration', label: 'Immigration' },
++            { value: 'quadlife', label: 'QuadLife' },
++            { value: 'velocity', label: 'Velocity' },
++            { value: 'neighbors', label: 'Neighbors' },
+           ]}
+           value={lens}
+           onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
+         />
+         <Legend items={LENS_LEGEND[lens]} className="ml-1" />
+```
+A CVD-safe palette toggle (`renderer.setPalette('default' | 'cvd')`, already
+implemented and dirty-flag-gated) would most naturally live in `SettingsPanel` — I
+didn't propose exact JSX for that since I don't know its current layout, but the call
+is a one-liner: `getSession()?.renderer.setPalette(mode)` (adjust to whatever the real
+accessor is named) plus re-running `buildLensLegends(mode)` for the HUD legend.
+
+**Blocking?** No — `src/render/color.ts`/`renderer.ts` work standalone today (verified
+by `tests/render-color-lens.test.ts`, `tests/render-dirty.test.ts`); only the HUD
+picker (and therefore end-user reachability + the production-build Playwright
+assertions I added in `e2e/prod-build.spec.ts`, which feature-detect the new `Toggle`
+options and report clearly rather than failing hard if they're not wired yet) depend
+on this landing.
+**Resolution:** n/a.
+
+## 2026-09-08 — audioplus — musical diversity + interaction impact (`src/audio/**`, `src/ui/panels/AudioPanel.tsx`)
+
+**Need:** a real (not fabricated) source of engine/input state for the soundscape's new
+interaction-feedback features (drawing-as-instrument, proximity-weighted churn, a real
+population centroid for pan), and a real signal for two event classes (stamping,
+forking a branch) that previously had no dedicated sound.
+
+**What I did, entirely within my own ownership:**
+- `src/audio/scheduler.ts`: five new synthesised `Timbre`s (`pluck`, `bell`, `bow`,
+  `breath`, `perc`) and four new `NoteSource`s (`paint`, `stamp`, `branch`,
+  `percussion`), all built with oscillators/filters/noise — no samples.
+- `src/audio/synth.ts`: a per-timbre voice builder (filtered-noise burst for `perc`,
+  inharmonic sine partials for `bell`, vibrato sawtooth for `bow`, sine+bandpassed-noise
+  for `breath`, filter-swept sawtooth for `pluck`) sharing one noise buffer with the
+  existing drone — no new buffer allocation.
+- `src/audio/harmony.ts` (new, pure): a slow dual-EMA population-trend tracker driving
+  a hysteresis-gated ±2-scale-step register drift — real state, `MIN_CHANGE_INTERVAL_SECONDS`
+  = 60s between changes, always fully in-scale.
+- `src/audio/mapper.ts`: weighted churn timbre selection, per-kind discovery timbre
+  overrides, a reinforced explosion "impact" note and a quiet extinction dyad, plus new
+  pure mappers `mapStampToNotes`, `mapBranchToNotes`, `mapPaintToNote`, `mapPercussion`.
+- `src/audio/settings.ts` + `settingsStore.ts`: `AUDIO_PRESETS` (Observatory/Glass/Deep/
+  Chime — Observatory reproduces the shipped default exactly), `percussion`/
+  `harmonicMovement` toggles, `applyPreset()`.
+- `src/audio/brain.ts` / `audio.ts`: wired all of the above; added an optional
+  `SoundscapeDeps` (`{ engine?, input? }`) to `createSoundscape()`, purely additive
+  (defaults to `{}`, every existing call site/test unaffected).
+- `src/ui/panels/AudioPanel.tsx` (mine): preset picker, percussion/harmonic-movement
+  toggles.
+- 71 new/extended tests (`tests/audio-harmony.test.ts`,
+  `tests/audio-mapper-interaction.test.ts`, `tests/audio-brain-interaction.test.ts`,
+  `tests/audio-settingsStore.test.ts`, extended `audio-settings.test.ts`); no existing
+  test weakened. Full suite green (498/498), `tsc --noEmit` clean.
+
+**Proposed / already done (one small additive edit outside `src/audio/**`):**
+`src/ui/session.ts` line ~113 — changed `createSoundscape()` to
+`createSoundscape({ engine, input })`. Both `engine` (`LifeEngine`) and `input`
+(`InputController`) were already in scope at that line; this is the ONLY way the
+soundscape can honestly read real cell/gesture state (a real population centroid for
+pan, real local density/activity for the drawing-feedback and proximity-weighting
+features) without inventing anything. `SoundscapeDeps` only requires a structural
+`{ pending }` shape (`PendingEditSource`, declared in `audio.ts`), so `audio.ts` never
+imports anything from `@/interact/**`. Read-only in both directions: audio never calls
+a setter on either object, so this cannot affect cell-state determinism. Mirrors the
+precedent set by the `audio`/`cinematic` agents' own small additive edits to shared,
+unlisted `src/ui/` files earlier in this log.
+**Blocking?** no — `createSoundscape()`'s new parameter defaults to `{}`, so nothing
+breaks if this one-line change is ever reverted; the interaction-feedback features just
+silently no-op (same as they do today in every unit test).
+**Resolution:** n/a.
+
+**Not done — routed here instead of touching `src/render/**`/`src/interact/**`:** a
+subtle visual ripple/emphasis on edit (the brief allowed either an audio response or a
+visual one to live in "the audio/UI layer's own overlay", routed here otherwise). I
+did NOT build a new overlay component: mounting one means touching `App.tsx` (mobile
+agent's file) or duplicating the coach-mark/scene-annotation pattern outside the React
+tree, and `src/interact/**`/`src/render/**` were both already showing concurrent
+uncommitted changes from other agents in this session. If the render/mobile agent wants
+it: a one-shot, quickly-fading world-space ring at the cell coordinate on
+`edit:committed` (real `EditOp`, not fabricated) — `session.renderer.worldToScreen(x,y)`
+already exists for exactly this (see `SceneAnnotation.tsx`'s doc comment for the
+pattern). Purely decorative, never gates on anything audio does.
+**Blocking?** no — the soundscape's own honesty guarantees don't depend on this landing.
+**Resolution:** n/a.

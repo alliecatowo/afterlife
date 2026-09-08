@@ -21,6 +21,7 @@ import {
   type Disposable,
   type EditOp,
   type Rect,
+  type RenderLens,
   type StampPattern,
   type StampTransform,
 } from '@/core/types';
@@ -28,6 +29,7 @@ import { rectFromCorners, transformPattern, type LifeEngine } from '@/core/engin
 import { bus } from '@/ui/bus';
 import { readState, useAppStore } from '@/ui/store';
 import type { WorldRenderer } from '@/render/renderer';
+import type { ColorLens } from '@/render/color';
 import type { CameraController } from '@/render/camera';
 import { shouldIgnoreGlobalShortcut } from './globalShortcutGuard';
 
@@ -682,6 +684,26 @@ class InputControllerImpl implements InputController {
       case '3':
         this.#setLens('activity');
         return;
+      // 4-8: the "lineage family" of multi-colour lenses added alongside
+      // life/age/activity — see `@/render/color.ts`'s `ColorLens` doc and
+      // INTEGRATION-NOTES.md for the HUD `Toggle` picker this anticipates
+      // (not yet wired there as of this writing; these shortcuts are a
+      // fully-functional way to reach every lens today regardless).
+      case '4':
+        this.#setLens('lineage');
+        return;
+      case '5':
+        this.#setLens('immigration');
+        return;
+      case '6':
+        this.#setLens('quadlife');
+        return;
+      case '7':
+        this.#setLens('velocity');
+        return;
+      case '8':
+        this.#setLens('neighbors');
+        return;
       case 'g':
       case 'G': {
         const show = !readState().showGrid;
@@ -766,10 +788,17 @@ class InputControllerImpl implements InputController {
     bus.emit('playback:speed', { speed });
   }
 
-  #setLens(lens: 'life' | 'age' | 'activity'): void {
-    useAppStore.getState().setLens(lens);
+  #setLens(lens: ColorLens): void {
+    // `useAppStore.setLens`/the bus's `lens:changed` are typed against the
+    // still-frozen core `RenderLens` (`'life' | 'age' | 'activity'`) — see
+    // INTEGRATION-NOTES.md for the proposed widening. Documented, temporary
+    // cast at this one call site ahead of that landing: neither Zustand nor
+    // the bus validates the string at runtime, and every existing consumer
+    // of `store.lens`/`lens:changed` just forwards it straight to
+    // `renderer.setLens()`, which is already typed to the wider `ColorLens`.
+    useAppStore.getState().setLens(lens as RenderLens);
     this.#renderer.setLens(lens);
-    bus.emit('lens:changed', { lens });
+    bus.emit('lens:changed', { lens: lens as RenderLens });
   }
 
   #zoomAtCenter(factor: number): void {
