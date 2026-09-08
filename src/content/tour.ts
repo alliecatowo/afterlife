@@ -182,10 +182,6 @@ export const TOUR_STEPS: readonly TourStepContent[] = [
   },
 ];
 
-export function getTourStep(id: TourStepId): TourStepContent | undefined {
-  return TOUR_STEPS.find((s) => s.id === id);
-}
-
 /** Copy for the compact "What is this?" affordance — reachable at any time, independent of the tour. */
 export const ABOUT_CONTENT = {
   title: 'What is this',

@@ -715,3 +715,98 @@ leftover `dist/site/`, and both were verified live via `vite preview` (`/afterli
 
 **Blocking?** no.
 **Resolution:** done.
+
+---
+
+## 2026-09-06 — final fix pass — desktop lens discoverability, two e2e flakes, dead-export cleanup
+
+**Need:** three independent issues reported against the shipped state at `c37234f`: (1) 4 of
+the 8 colour lenses (Immigration/QuadLife/Velocity/Neighbors) were entirely off-screen with no
+scroll/chevron/gradient hint at 1440x900 desktop — the `Toggle` group holding all 8 lenses,
+capped to `max-w-[210px]` to keep the trailing icon row on-screen, silently clipped the rest;
+(2) two e2e specs (`tour.spec.ts`'s "does not auto-show again on a second visit",
+`cinematic.spec.ts`'s "entering hides chrome, moves the camera") failed intermittently only
+inside a full sequential run, never in isolation; (3) 5 confirmed-dead exports and one stale
+doc comment.
+
+**Proposed / done:**
+
+- **Lens control:** replaced the capped `Toggle` + hover-tooltip-legend with a new `Menu`
+  primitive (`src/ui/primitives/Menu.tsx`, Radix `DropdownMenu`, added to DESIGN.md's
+  component vocabulary — a frozen file, edited directly since this pass has no other agent to
+  route an `INTEGRATION-NOTES.md` request through). A single fixed-width trigger (colour
+  swatch + current lens name + chevron) replaces the ~560px-wide Toggle; the popover lists all
+  8 lenses, each with its own swatch and full "what this colour means" text — the fuller
+  sentence previously demoted to a hover-only tooltip now fits because the popover has real
+  vertical room. Reachable by keyboard (arrow keys, type-ahead, `Home`/`End`) and touch tap,
+  not hover-only. `HudMoreSheet.tsx`'s mobile copy (a `Toggle` with `flex-wrap`, already fully
+  visible with no cap) is untouched.
+- **Real regression found and fixed while measuring the above, not assumed away:** even after
+  narrowing the lens control, the full `lg` HUD row's real content still measured ~1493px wide
+  against the 1440px viewport — a pre-existing overflow nobody had actually measured before
+  (only `mobile.spec.ts`'s HUD-overflow assertion existed, and it only runs at 390px). The
+  ~116px "— pause time anytime" onboarding hint (shown until the first play/pause toggle) was
+  the difference; it now hides from `lg` (1024px) up, where the dense desktop icon row has no
+  spare width, and still shows in the 640–1023px tablet band where there's room. Measured
+  after: total HUD content 1440px == viewport 1440px exactly, "Keyboard shortcuts" right edge
+  at x=1428.
+- **Real regression found via the new e2e spec itself:** opening the lens `Menu` and pressing a
+  letter for Radix's own type-ahead (e.g. "v" for Velocity) also fired `App.tsx`'s global `v`
+  (toggle presentation mode) shortcut underneath it — Radix's type-ahead doesn't stop the
+  keydown from bubbling to `window`. Fixed at the root: `globalShortcutGuard.ts`'s
+  `shouldIgnoreGlobalShortcut` already suppressed every global shortcut while any
+  `role="dialog"` was open; extended the same check to `role="menu"` (`isMenuOpen()`) — a
+  Radix `DropdownMenu`/`ContextMenu`-open guard, not a lens-specific patch, so it protects any
+  future menu too. Unit-tested (`tests/interact-globalShortcutGuard.test.ts`).
+- **New regression coverage:** `e2e/hud-desktop.spec.ts` — every lens option is asserted
+  visible-and-actionable (`toBeVisible` + `toBeInViewport`) at 1440x900 via plain Playwright
+  actionability, one is selected by mouse and one entirely by keyboard, and the trailing icon
+  row's measured bounding boxes are asserted within the 1440px viewport. This is the assertion
+  class that was missing before: the existing mobile HUD-overflow check only ever looked at the
+  outer `#hud-top` row, and only at 390px.
+- **Two e2e flakes, root-caused, not just re-timed:**
+  - `dismissTitle()` (`e2e/utils.ts`) used a `force: true` click on `#world-canvas` the instant
+    it was `attached` to the DOM — but the `pointerdown` listener that actually dismisses the
+    title plate is wired in a `useEffect` in `App.tsx`, which only runs after React commits,
+    a real (if usually sub-millisecond) window after the canvas node itself exists. `force:
+    true` bypasses Playwright's actionability waits entirely, so under real load (a long
+    sequential run, a contended machine) the click could land before the listener existed,
+    leaving the title never dismissed and every later action gated on it (the tour, in
+    particular) spinning until the whole 45s TEST timeout expired — not a slow click, a
+    genuinely stuck one. Fixed with `expect(...).toPass()`: retries the click against the real,
+    observable effect (the title plate's `aria-hidden` flipping to `"true"`, or the element
+    disappearing entirely under `prefers-reduced-motion`) instead of trusting one fire-and-forget
+    gesture.
+  - `cinematic.spec.ts`'s camera-movement assertion did `waitForTimeout(7000)` then compared
+    camera position ONCE. The director's own timing (`WIDE_HOLD_MS=4500ms` establishing shot,
+    then a real subject) is correct — confirmed by manual polling — but how long it takes to
+    produce a visible 0.5-unit displacement in WALL-CLOCK time also depends on the browser
+    actually getting to run animation frames promptly, which a cold dev server (first-time Vite
+    module transforms) or a loaded CI box doesn't guarantee. A one-shot check at a fixed t=7s
+    treated "hasn't moved yet" the same as "will never move." Replaced with `expect.poll(...,
+    { timeout: 20_000 })`, which accepts the movement the instant it genuinely happens.
+  - Measured: 3 full sequential `desktop` project runs (70, then 68, then 68 tests — the two
+    extra in the first were a stray earlier state) — 0 failures across all three once the fixes
+    above (title-dismiss race, camera poll, plus a self-inflicted race in the new
+    `hud-desktop.spec.ts` keyboard test, and one `persistence.spec.ts` failure traced to
+    Playwright's own trace-writer colliding across overlapping local test invocations, not a
+    product bug) were in place.
+- **Dead exports removed** (confirmed zero application callers; two had test-only callers,
+  updated to call the underlying array/`.find()` directly instead of losing coverage):
+  `getCinematicController()` (`src/ui/cinematic/index.ts`), `readCaptureState()`
+  (`src/audio/captureStore.ts`), `readMidiState()` (`src/audio/midiStore.ts`), `getTourStep()`
+  (`src/content/tour.ts`, `tests/content-tour.test.ts` now inlines `TOUR_STEPS.find(...)`),
+  `getAchievement()` (`src/content/achievements.ts`, `tests/content-achievements.test.ts` now
+  inlines `ACHIEVEMENTS.find(...)`).
+- **Stale doc fixed:** `src/render/color.ts`'s "lineage family" module doc no longer claims
+  `RenderLens` is frozen at `'life' | 'age' | 'activity'` — it's been widened to all 8 lens ids
+  in `src/core/types.ts` since the colourful-lenses work landed; `ColorLens` is now documented
+  as a deliberately-kept, currently-redundant alias rather than a stopgap for a type that
+  hadn't grown yet.
+
+**Final verified state, run in isolation with no other dev servers up:**
+`typecheck` clean · unit tests 522/522 (51 files) · `desktop` e2e 70/70, repeated 3x with 0
+failures · `mobile` e2e 20/20 · `prod-build` e2e 6/6 · `npm run build` succeeds.
+
+**Blocking?** no.
+**Resolution:** done.

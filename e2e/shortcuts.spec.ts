@@ -25,13 +25,16 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('[');
     await expect(page.getByRole('radio', { name: '12', exact: true })).toHaveAttribute('data-state', 'on');
 
-    // '1'-'8': render lens. `exact: true` matters now that the lens Toggle
-    // has 8 options — Playwright's default name match is substring-based, so
-    // 'Age' would also match 'Lineage' and 'Life' would also match 'QuadLife'.
+    // '1'-'8': render lens. The digit shortcuts drive the SAME store/bus
+    // path the HUD's lens `Menu` does (`@/ui/hud/Hud.tsx`) — checked via the
+    // menu's own trigger button, whose accessible name always states the
+    // current lens, rather than a `radio` role: that role only exists while
+    // the popover itself is open, which a keyboard shortcut deliberately
+    // does not do (pressing '2' picks a lens without forcing a menu open).
     await page.keyboard.press('2');
-    await expect(page.getByRole('radio', { name: 'Age', exact: true })).toHaveAttribute('data-state', 'on');
+    await expect(page.getByRole('button', { name: /^Render lens: Age\b/ })).toBeVisible();
     await page.keyboard.press('1');
-    await expect(page.getByRole('radio', { name: 'Life', exact: true })).toHaveAttribute('data-state', 'on');
+    await expect(page.getByRole('button', { name: /^Render lens: Life\b/ })).toBeVisible();
 
     // 'g': grid toggle reflected on the canvas.
     const canvas = page.locator('#world-canvas');
@@ -131,12 +134,21 @@ test.describe('keyboard shortcuts', () => {
     );
     const xBefore = await camX();
 
-    // `exact: true`: 'Life' and 'Age' are now also substrings of 'QuadLife'
-    // and 'Lineage' since the lens Toggle grew to 8 options.
-    const lifeRadio = page.getByRole('radio', { name: 'Life', exact: true });
-    await lifeRadio.focus();
-    await page.keyboard.press('ArrowRight'); // moves roving focus to "Age", NOT the camera
-    await expect(page.getByRole('radio', { name: 'Age', exact: true })).toBeFocused();
+    // The render lens is now a `Menu` (a Radix DropdownMenu popover), not a
+    // `Toggle`/ToggleGroup — its own roving-focus arrow keys only exist
+    // while the popover is OPEN, and `isMenuOpen()` (see
+    // `globalShortcutGuard.ts`) already blanket-suppresses every global
+    // shortcut while any menu is open, camera panning included, so that
+    // specific combination can't regress the way it used to. The playback
+    // SPEED control is still exactly the `Toggle`/ToggleGroup this
+    // regression test was written against (a focused, always-mounted
+    // roving-focus `radiogroup`), so it's exercised there instead — same
+    // underlying Radix mechanism, same "arrow key moves focus, not camera"
+    // guarantee.
+    const speed1 = page.getByRole('radio', { name: '1', exact: true });
+    await speed1.focus();
+    await page.keyboard.press('ArrowRight'); // moves roving focus to "4", NOT the camera
+    await expect(page.getByRole('radio', { name: '4', exact: true })).toBeFocused();
     expect(await camX()).toBe(xBefore);
   });
 });

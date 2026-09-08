@@ -127,10 +127,6 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   },
 ];
 
-export function getAchievement(id: AchievementId): AchievementDef | undefined {
-  return ACHIEVEMENTS.find((a) => a.id === id);
-}
-
 /** A single earned entry — real state at the moment it was earned, never
  *  faked or backfilled. Mirrors `@/content/discoveries`'s own "generation
  *  and timestamp it was earned" shape. */

@@ -40,5 +40,3 @@ export const useMidiStore = create<MidiState>(() => ({
   mapEventClasses: false,
   activeNoteCount: 0,
 }));
-
-export const readMidiState = (): MidiState => useMidiStore.getState();

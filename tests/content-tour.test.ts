@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ABOUT_CONTENT, TOUR_STEPS, getTourStep } from '@/content/tour';
+import { ABOUT_CONTENT, TOUR_STEPS } from '@/content/tour';
 import { OPENING_VERIFIED } from '@/content/scenes';
 import { TOUR_BEHAVIORS } from '@/ui/tutorial/behaviors';
 
@@ -39,7 +39,7 @@ describe('content: guided tour script', () => {
   });
 
   it('the encounter step points at the real, verified opening-scene encounter (generation 123)', () => {
-    const step = getTourStep('encounter');
+    const step = TOUR_STEPS.find((s) => s.id === 'encounter');
     expect(step).toBeDefined();
     expect(step!.target).toEqual({ kind: 'world', at: OPENING_VERIFIED.firstInteractingCell });
     expect(step!.body).toMatch(/meet/);

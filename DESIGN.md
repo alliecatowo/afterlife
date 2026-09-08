@@ -128,8 +128,10 @@ leaving the world and a 1-line tabular readout.
 
 Built on Radix primitives, unstyled, painted only with tokens:
 `Button` (solid | ghost | quiet × sm | md), `IconButton` (requires `label`), `Toggle`
-(ToggleGroup), `Slider`, `Panel`, `Field`/`Label`, `Tooltip`, `Readout` (tabular, fixed
-width), `Legend` (swatch + meaning), `Divider`, `Toast`.
+(ToggleGroup), `Menu` (DropdownMenu — a compact trigger + full option list for when a
+`Toggle` group would outgrow its available width, e.g. the HUD's 8-way render lens),
+`Slider`, `Panel`, `Field`/`Label`, `Tooltip`, `Readout` (tabular, fixed width), `Legend`
+(swatch + meaning), `Divider`, `Toast`.
 
 No component may hardcode a hex/oklch colour, a px radius, or a duration — token or
 nothing. If you need a value that doesn't exist, propose it in `INTEGRATION-NOTES.md`;

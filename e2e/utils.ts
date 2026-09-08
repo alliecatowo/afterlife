@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 /** Navigate to the app and wait for the world canvas to exist. */
 export async function openApp(page: Page): Promise<void> {
@@ -19,10 +19,44 @@ export async function suppressTour(page: Page): Promise<void> {
   });
 }
 
-/** The very first pointer interaction dismisses the title plate — no click-to-continue gate. */
+/**
+ * The very first pointer interaction dismisses the title plate — no
+ * click-to-continue gate (see `App.tsx`'s `onPointerDown` listener). That
+ * listener is attached inside a `useEffect`, which only runs once React has
+ * committed the tree AFTER `#world-canvas` is already in the DOM — `openApp`
+ * only waits for the canvas to be *attached*, not for that effect to have
+ * run. On an idle machine the gap between the two is sub-millisecond and
+ * invisible; under real load (a long sequential e2e run, a cold/contended
+ * CI box) it's a genuine race: a `force: true` click bypasses Playwright's
+ * actionability waits entirely, so it can fire before the listener exists,
+ * land on nothing, and leave the title (and everything gated on its
+ * dismissal — the guided tour, `titleDismissed`-driven affordances) stuck
+ * showing. Every later assertion or click that expects dismissal to have
+ * happened then spins until the whole TEST times out (not just the click),
+ * which is what made this look like an occasional 45s hang rather than a
+ * fast, obvious failure. `expect(...).toPass()` retries the click against
+ * the real, observable effect of dismissal (`title-plate`'s own
+ * `aria-hidden` flipping to `"true"`) instead of trusting one fire-and-forget
+ * gesture — deterministic regardless of how long React takes to attach the
+ * listener, and a no-op extra click in the already-fast common case.
+ *
+ * Checked via a direct DOM read rather than a Playwright visibility matcher:
+ * `TitlePlate` sets `aria-hidden="true"` on dismissal but keeps rendering
+ * while its fade-out animation plays (so it can still read as "visible" to
+ * Playwright's own heuristics for a moment), and unmounts ENTIRELY once
+ * dismissed under `prefers-reduced-motion` (see that component's doc) — an
+ * absent element is just as much "dismissed" as one with the attribute set.
+ */
 export async function dismissTitle(page: Page): Promise<void> {
   const canvas = page.locator('#world-canvas');
-  await canvas.click({ position: { x: 5, y: 5 }, force: true });
+  await expect(async () => {
+    await canvas.click({ position: { x: 5, y: 5 }, force: true });
+    const ariaHidden = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="title-plate"]');
+      return el ? el.getAttribute('aria-hidden') : 'true'; // absent = already dismissed
+    });
+    expect(ariaHidden).toBe('true');
+  }).toPass({ timeout: 10_000 });
 }
 
 /** The opening scene autoplays on boot (a live observatory, not a paused

@@ -165,9 +165,4 @@ export function initCinematic(deps: CinematicDeps): CinematicController {
   return controller;
 }
 
-/** Non-reactive accessor, same pattern as `@/ui/session.ts`'s `getSession()`. */
-export function getCinematicController(): CinematicController | null {
-  return controller;
-}
-
 export { isFullscreenSupported };

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACHIEVEMENTS, CATALOGUE_SIZE, SURVIVAL_GENERATIONS, TRAVELLER_OBSERVATIONS,
-  getAchievement, logbookRows, parseAchievementLog, type AchievementLog,
+  logbookRows, parseAchievementLog, type AchievementLog, type AchievementId,
 } from '@/content/achievements';
+
+function findAchievement(id: AchievementId) {
+  return ACHIEVEMENTS.find((a) => a.id === id);
+}
 
 describe('content/achievements: static definitions', () => {
   it('every achievement has a unique id, a non-empty title, and an honest (non-empty) description even unearned', () => {
@@ -19,18 +23,18 @@ describe('content/achievements: static definitions', () => {
     }
   });
 
-  it('getAchievement finds a known id and is undefined for an unknown one', () => {
-    expect(getAchievement('first-glider')?.title).toBeTruthy();
-    expect(getAchievement('not-a-real-id' as never)).toBeUndefined();
+  it('finds a known id and is undefined for an unknown one', () => {
+    expect(findAchievement('first-glider')?.title).toBeTruthy();
+    expect(findAchievement('not-a-real-id' as AchievementId)).toBeUndefined();
   });
 
   it('thresholds referenced in copy are exported, not hardcoded twice', () => {
     expect(SURVIVAL_GENERATIONS).toBeGreaterThan(0);
     expect(CATALOGUE_SIZE).toBeGreaterThan(1);
     expect(TRAVELLER_OBSERVATIONS).toBeGreaterThan(1);
-    expect(getAchievement('survived')!.description).toContain(String(SURVIVAL_GENERATIONS));
-    expect(getAchievement('catalogue')!.description).toContain(String(CATALOGUE_SIZE));
-    expect(getAchievement('your-traveller')!.description).toContain(String(TRAVELLER_OBSERVATIONS));
+    expect(findAchievement('survived')!.description).toContain(String(SURVIVAL_GENERATIONS));
+    expect(findAchievement('catalogue')!.description).toContain(String(CATALOGUE_SIZE));
+    expect(findAchievement('your-traveller')!.description).toContain(String(TRAVELLER_OBSERVATIONS));
   });
 });
 

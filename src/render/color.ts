@@ -205,12 +205,16 @@ export function resolveToken(
 // ---------------------------------------------------------------------------
 // The "lineage" family of lenses: multi-hue palettes and their maths.
 //
-// `RenderLens` (`@/core/types`) is architect-owned/frozen and currently only
-// lists `'life' | 'age' | 'activity'`. `ColorLens` is a render-owned SUPERSET
-// used internally by `WorldRenderer` so this module doesn't have to wait on
-// that type being widened — see `INTEGRATION-NOTES.md` for the exact
-// proposed `types.ts`/HUD diff. `ColorLens` is safe to keep permanently even
-// after `RenderLens` grows: it would just become a harmless redundant union.
+// `RenderLens` (`@/core/types`) has since been widened to all 8 lens ids
+// (`'life' | 'age' | 'activity' | 'lineage' | 'immigration' | 'quadlife' |
+// 'velocity' | 'neighbors'`) — see `INTEGRATION-NOTES.md`'s "colourful
+// lenses" entry for the history. `ColorLens` is kept as a separate, render-
+// owned alias rather than importing `RenderLens` verbatim everywhere in this
+// module: it's what lets this file's own vocabulary (`COLOR_LENSES`, the
+// legend builders below) stay stable even if `RenderLens` ever changes shape
+// again, without every call site here needing to know which type is
+// authoritative. Currently an exact match, so this union is redundant by
+// construction, not a divergent set of lenses.
 // ---------------------------------------------------------------------------
 import type { RenderLens } from '@/core/types';
 

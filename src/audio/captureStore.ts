@@ -35,5 +35,3 @@ export const useCaptureStore = create<CaptureStoreState>(() => ({
   reactFilter: false,
   reactTempo: false,
 }));
-
-export const readCaptureState = (): CaptureStoreState => useCaptureStore.getState();

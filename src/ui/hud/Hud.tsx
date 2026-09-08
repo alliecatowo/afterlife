@@ -10,12 +10,13 @@ import { useAppStore } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
 import { getSession } from '@/ui/session';
 import { subscribeReadout } from '@/ui/hooks/useSimulationReadout';
-import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/primitives';
+import { IconButton, Readout, Toggle, Divider, Tooltip, Button, Menu } from '@/ui/primitives';
+import type { MenuOption } from '@/ui/primitives';
 import {
-  PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
+  PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
   DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon, FilmIcon,
-  LogbookIcon,
+  LogbookIcon, ChevronIcon,
 } from '@/ui/icons';
 import { HudMoreSheet } from './HudMoreSheet';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
@@ -37,9 +38,38 @@ import type { RenderLens } from '@/core/types';
 // Recomputed per the live `paletteMode` (see `SettingsPanel`'s CVD toggle) so
 // the quadlife/immigration swatches shown here always match what's actually
 // on screen.
-import { buildLensLegends, safeLensLegend } from '@/render/color';
+import { buildLensLegends, safeLensLegend, type LensLegendEntry } from '@/render/color';
 
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
+
+/** Display order + labels for every render lens — same 8 ids `HudMoreSheet.tsx`
+ *  lists for its own (already fully visible, vertically-stacked) mobile
+ *  copy of this control. */
+const LENS_OPTIONS: { value: RenderLens; label: string }[] = [
+  { value: 'life', label: 'Life' },
+  { value: 'age', label: 'Age' },
+  { value: 'activity', label: 'Activity' },
+  { value: 'lineage', label: 'Lineage' },
+  { value: 'immigration', label: 'Immigration' },
+  { value: 'quadlife', label: 'QuadLife' },
+  { value: 'velocity', label: 'Velocity' },
+  { value: 'neighbors', label: 'Neighbors' },
+];
+
+function lensLabel(lens: RenderLens): string {
+  return LENS_OPTIONS.find((o) => o.value === lens)?.label ?? lens;
+}
+
+/** The fullest available explanation of what a lens's colours mean — the
+ *  one `title` sentence if any entry has one, else the swatch labels joined
+ *  (still meaningful for e.g. `life`'s single "alive" entry). Used in the
+ *  lens `Menu`'s popover, which has real vertical room, unlike the old
+ *  single-line HUD strip this replaces. */
+function lensDescription(entries: LensLegendEntry[]): string {
+  const withTitle = entries.find((e) => e.title);
+  if (withTitle?.title) return withTitle.title;
+  return entries.map((e) => e.label).join(' · ');
+}
 
 /** How often the throttled live region (below) may announce gen/population
  *  changes to a screen reader. `gen:changed` can fire up to 60x/sec — an
@@ -209,8 +239,27 @@ export function Hud() {
         >
           {playing ? '● running' : '❚❚ paused'}
         </span>
+        {/* Shown only in the 640-1023px tablet band (`sm:inline`), and
+            explicitly hidden again from `lg` (1024px) up (`lg:hidden`), NOT
+            left to show all the way to arbitrarily wide desktops: measuring
+            the real, un-eyeballed content width of the full `lg` row —
+            drawer toggle, transport, gen/pop, speed, the lens control,
+            Time Sculpture, every right-panel tab, mute/presentation/
+            cinematic/about/logbook/shortcuts — comes to ~1493px, already
+            past a 1440px viewport with zero slack. This ~116px decorative,
+            self-dismissing (`everToggled`) hint was exactly the difference
+            between "Keyboard shortcuts" landing on-screen and landing
+            41px past the right edge with no visible affordance — the same
+            "control exists but isn't reachable" bug this whole fix targets,
+            just caused by a different control than the lens picker. It's a
+            pure onboarding nicety with a full keyboard-accessible synonym
+            (the Space-to-pause hint already lives in the Play/Pause
+            button's own tooltip), so losing it exactly where the dense
+            desktop row has no spare width to give is the right trade, not a
+            regression — see `e2e/hud-desktop.spec.ts` for the width
+            assertion this satisfies. */}
         {!everToggled && (
-          <span className="hidden text-micro italic text-ivory-300 sm:inline">— pause time anytime</span>
+          <span className="hidden text-micro italic text-ivory-300 sm:inline lg:hidden">— pause time anytime</span>
         )}
       </div>
 
@@ -247,50 +296,65 @@ export function Hud() {
       </div>
 
       <Divider orientation="vertical" className="hidden h-6 lg:block" />
-      <div className="hidden shrink-0 items-center gap-2 lg:flex">
-        {/* The legend moved from an always-inline `<Legend>` block to this
-            hover/focus tooltip: with 8 lenses (up from 3), rendering every
-            lens's full legend inline pushed the HUD row's real content well
-            past a 1440px viewport with no visible scroll affordance — the
-            exact "control exists but isn't reachable" class of bug the
-            mobile agent already found and fixed for narrow widths (see
-            INTEGRATION-NOTES.md), recurring on ordinary desktop widths once
-            the lens set grew. Nothing about what a colour MEANS is lost —
-            it's a hover/focus away, and `HudMoreSheet.tsx`'s mobile/tablet
-            copy still shows it inline (that sheet has vertical room to
-            spare). */}
-        <Tooltip content={<Legend items={safeLensLegend(lensLegend, lens)} />} side="bottom">
-          <IconButton label={`Lens legend (${lens})`} icon={<EyeIcon />} />
-        </Tooltip>
-        {/* Growing from 3 to 8 lenses made the Toggle itself ~400px wider —
-            enough on its own to push the icon row (mute/presentation/
-            cinematic/about/logbook/shortcuts) off a 1440px viewport with no
-            visible affordance (confirmed: e2e/mobile.spec.ts's HUD-overflow
-            assertion, meant for 390px, caught this same overflow when it
-            accidentally also ran at 1440px under the `desktop` project — see
-            INTEGRATION-NOTES.md). Capping this wrapper's own width and
-            letting IT scroll internally (rather than letting the whole HUD
-            row overflow) keeps every other control's position stable and
-            confines "there's more here" to one small, visibly-clipped
-            control — a real scroll cue, not a silent one. All 8 options stay
-            one Tab/click away either way; nothing becomes unreachable. */}
-        <div className="max-w-[210px] overflow-x-auto">
-          <Toggle
-            aria-label="Render lens"
-            options={[
-              { value: 'life', label: 'Life' },
-              { value: 'age', label: 'Age' },
-              { value: 'activity', label: 'Activity' },
-              { value: 'lineage', label: 'Lineage' },
-              { value: 'immigration', label: 'Immigration' },
-              { value: 'quadlife', label: 'QuadLife' },
-              { value: 'velocity', label: 'Velocity' },
-              { value: 'neighbors', label: 'Neighbors' },
-            ]}
-            value={lens}
-            onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
-          />
-        </div>
+      <div className="hidden shrink-0 lg:flex">
+        {/* A `Menu` (Radix DropdownMenu), not a `Toggle` group: at 8 options
+            a `Toggle` is ~560px wide with every lens's legend inline —
+            wider than fits on a 1440px viewport alongside the rest of the
+            HUD (`--size-hud`'s "slim perimeter" rule, DESIGN.md §6). A prior
+            attempt capped the `Toggle` at 210px and let it scroll
+            internally, which kept Settings/Mute/About/Shortcuts on-screen
+            but made 4 of the 8 lenses (Immigration/QuadLife/Velocity/
+            Neighbors) reachable only via an undiscoverable horizontal
+            scroll — no scrollbar, chevron, or gradient hinted they existed.
+            The trigger below occupies exactly ONE control's width
+            regardless of how many lenses exist; the popover holds all 8,
+            each with its own colour chip and full "what this means" text —
+            genuinely keyboard-operable (arrow keys, type-ahead) and
+            touch-tappable, not a hover-only tooltip the way the legend used
+            to be. See `e2e/hud-desktop.spec.ts` for the regression test:
+            every lens option must be independently visible-and-clickable at
+            1440x900, and the trailing icon row must stay in-viewport. */}
+        <Menu<RenderLens>
+          aria-label="Render lens options"
+          value={lens}
+          onChange={(l) => { setLens(l); bus.emit('lens:changed', { lens: l }); }}
+          options={LENS_OPTIONS.map(
+            (o): MenuOption<RenderLens> => ({
+              value: o.value,
+              label: o.label,
+              swatch: safeLensLegend(lensLegend, o.value)[0]?.swatch,
+              description: lensDescription(safeLensLegend(lensLegend, o.value)),
+            }),
+          )}
+          trigger={
+            // A plain `title` (native browser hover hint), NOT our `Tooltip`
+            // primitive: `Menu`'s `RadixDropdown.Trigger asChild` clones its
+            // click/`aria-*`/ref props onto whatever single element `trigger`
+            // renders as — that must land on this real `<button>` (via
+            // `Button`'s `forwardRef`) for the popover to open at all.
+            // Wrapping it in `Tooltip` first would have those props cloned
+            // onto the `Tooltip` component instead (a plain function
+            // component that doesn't forward them), silently breaking the
+            // click. The Menu's own popover — reachable by keyboard/touch,
+            // not hover-only — is the real legend; this is just a bonus
+            // glance for a mouse user who pauses over the trigger.
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 pl-2"
+              aria-label={`Render lens: ${lensLabel(lens)}. Open to change.`}
+              title={lensDescription(safeLensLegend(lensLegend, lens))}
+            >
+              <span
+                aria-hidden="true"
+                className="h-2.5 w-2.5 shrink-0 rounded-xs border border-line-strong"
+                style={{ background: safeLensLegend(lensLegend, lens)[0]?.swatch }}
+              />
+              <span className="w-[70px] truncate text-left">{lensLabel(lens)}</span>
+              <ChevronIcon direction="down" width={10} height={10} />
+            </Button>
+          }
+        />
       </div>
 
       <div className="flex-1" />
