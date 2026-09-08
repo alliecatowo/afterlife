@@ -4,10 +4,13 @@
  * control is wired to a real bus event or store field.
  */
 import { useAppStore } from '@/ui/store';
+import { useUIState } from '@/ui/uiState';
 import { bus } from '@/ui/bus';
+import { getSession } from '@/ui/session';
 import { useReducedMotion } from '@/ui/hooks/useReducedMotion';
-import { Field, Slider, Divider, Readout } from '@/ui/primitives';
+import { Field, Slider, Divider, Readout, Toggle } from '@/ui/primitives';
 import { HISTORY_WINDOW, KEYFRAME_INTERVAL } from '@/core/history';
+import type { PaletteMode } from '@/render/color';
 
 export function SettingsPanel() {
   const muted = useAppStore((s) => s.muted);
@@ -16,6 +19,8 @@ export function SettingsPanel() {
   const setVolume = useAppStore((s) => s.setVolume);
   const showGrid = useAppStore((s) => s.showGrid);
   const setShowGrid = useAppStore((s) => s.setShowGrid);
+  const paletteMode = useUIState((s) => s.paletteMode);
+  const setPaletteMode = useUIState((s) => s.setPaletteMode);
   const reducedMotion = useReducedMotion();
 
   return (
@@ -54,6 +59,27 @@ export function SettingsPanel() {
           />
           Show cell grid lines
         </label>
+      </Field>
+
+      <Divider />
+
+      <Field
+        label="Colour palette"
+        description="Affects the discrete species lenses (Immigration, QuadLife). Okabe-Ito is tuned for colour-vision deficiency."
+      >
+        <Toggle
+          aria-label="Colour palette"
+          options={[
+            { value: 'default', label: 'Default' },
+            { value: 'cvd', label: 'Colourblind-safe' },
+          ]}
+          value={paletteMode}
+          onChange={(v) => {
+            const mode = v as PaletteMode;
+            setPaletteMode(mode);
+            getSession()?.renderer.setPalette(mode);
+          }}
+        />
       </Field>
 
       <Divider />

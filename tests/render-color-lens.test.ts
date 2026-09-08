@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildHueRamp, sampleHueRamp, buildNeighborRamp, buildRgbRamp, sampleRgbRamp,
   resolveQuadPalette, resolveImmigrationPalette, quadColorForSpecies, immigrationColorForSpecies,
-  blendRgbWeighted, buildLensLegends, COLOR_LENSES, type ColorLens,
+  blendRgbWeighted, buildLensLegends, safeLensLegend, COLOR_LENSES, type ColorLens,
 } from '@/render/color';
 
 function isGreyOrWhite(rgb: { r: number; g: number; b: number }): boolean {
@@ -157,5 +157,21 @@ describe('buildLensLegends: every lens is documented, colour is never decorative
     const def = buildLensLegends('default');
     const cvd = buildLensLegends('cvd');
     expect(def.quadlife[0]!.swatch).not.toBe(cvd.quadlife[0]!.swatch);
+  });
+});
+
+describe('safeLensLegend: an unrecognised lens id can never crash the HUD', () => {
+  it('returns the real entry for every known lens', () => {
+    const legends = buildLensLegends('default');
+    for (const lens of COLOR_LENSES) {
+      expect(safeLensLegend(legends, lens)).toBe(legends[lens as ColorLens]);
+    }
+  });
+
+  it('falls back to the "life" entry for an unrecognised key instead of returning undefined — this is exactly the lookup that used to unmount the whole React tree (including #world-canvas) when RenderLens didn\'t yet include a lens id that had reached the store', () => {
+    const legends = buildLensLegends('default');
+    const bogus = 'not-a-real-lens' as ColorLens;
+    expect(safeLensLegend(legends, bogus)).toBe(legends.life);
+    expect(safeLensLegend(legends, bogus).length).toBeGreaterThan(0);
   });
 });

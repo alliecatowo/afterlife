@@ -468,6 +468,25 @@ export function buildLensLegends(mode: PaletteMode = 'default'): Record<ColorLen
 }
 
 /**
+ * Look up a lens's legend, falling back to `life`'s if `lens` isn't a
+ * recognised key. `buildLensLegends()` covers every current `ColorLens`
+ * value, so in normal operation this fallback never triggers — but a naive
+ * `LENS_LEGEND[lens]` index crashed the ENTIRE app (React tree unmount,
+ * including `#world-canvas`) the moment an unrecognised lens id reached the
+ * store before `RenderLens` was widened to include the 5 new colour lenses
+ * (see INTEGRATION-NOTES.md's "colourful lenses" entry for the full story).
+ * Cheap, permanent insurance against the same class of bug recurring — e.g.
+ * a future lens/legend drift, or a stale/corrupted persisted lens id from an
+ * older save.
+ */
+export function safeLensLegend(
+  legends: Record<ColorLens, LensLegendEntry[]>,
+  lens: ColorLens,
+): LensLegendEntry[] {
+  return legends[lens] ?? legends.life;
+}
+
+/**
  * Build a translucent variant of ANY resolved token colour at a new alpha,
  * usable directly as a canvas `fillStyle`/`strokeStyle`. Uses `color-mix()`
  * against the token's own CSS string rather than reconstructing an

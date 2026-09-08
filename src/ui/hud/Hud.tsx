@@ -4,7 +4,7 @@
  * from the bus — this component itself only re-renders on low-frequency
  * store changes (lens, speed, playing, muted, presentation).
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { bus } from '@/ui/bus';
 import { useAppStore } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
@@ -26,20 +26,12 @@ import type { RenderLens } from '@/core/types';
 // Legend content for every lens (including the 5 colour lenses) now lives with
 // the render agent's colour math, keyed by the same `RenderLens` ids — see
 // `src/render/color.ts`'s doc and INTEGRATION-NOTES.md "colourful lenses".
-// A palette-mode (CVD) toggle can pass a mode through here later; default for now.
-import { buildLensLegends } from '@/render/color';
+// Recomputed per the live `paletteMode` (see `SettingsPanel`'s CVD toggle) so
+// the quadlife/immigration swatches shown here always match what's actually
+// on screen.
+import { buildLensLegends, safeLensLegend } from '@/render/color';
 
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
-
-const LENS_LEGEND = buildLensLegends();
-/** Defensive fallback: never let an unrecognised/stale persisted lens id
- *  crash `Legend`'s render (`undefined.map(...)`) and take the whole React
- *  tree — including `#world-canvas` — down with it. `buildLensLegends()`
- *  covers every current `RenderLens` id, but this stays cheap insurance
- *  against a future lens/legend drift or corrupted persisted state. */
-function legendFor(lens: RenderLens): { swatch: string; label: string }[] {
-  return LENS_LEGEND[lens] ?? LENS_LEGEND.life;
-}
 
 /** How often the throttled live region (below) may announce gen/population
  *  changes to a screen reader. `gen:changed` can fire up to 60x/sec — an
@@ -71,6 +63,8 @@ export function Hud() {
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
   const setMoreOpen = useUIState((s) => s.setMoreOpen);
   const setAboutOpen = useTourStore((s) => s.setAboutOpen);
+  const paletteMode = useUIState((s) => s.paletteMode);
+  const lensLegend = useMemo(() => buildLensLegends(paletteMode), [paletteMode]);
 
   useEffect(() => subscribeReadout((r) => {
     if (genRef.current) genRef.current.textContent = String(r.gen);
@@ -258,7 +252,7 @@ export function Hud() {
           value={lens}
           onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
         />
-        <Legend items={legendFor(lens)} className="ml-1" />
+        <Legend items={safeLensLegend(lensLegend, lens)} className="ml-1" />
       </div>
 
       <div className="flex-1" />
