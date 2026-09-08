@@ -521,3 +521,95 @@ export function withAlpha(token: TokenColor, alpha: number): string {
   const a = Math.max(0, Math.min(1, alpha));
   return `color-mix(in oklab, ${token.css} ${Math.round(a * 100)}%, transparent)`;
 }
+
+// ---------------------------------------------------------------------------
+// Art mode colour maths (`@/render/artConfig.ts`/`artStore.ts`/the glyph
+// draw path in `renderer.ts`). Kept here rather than a new file since it's
+// the same "pure RGB maths" vocabulary as the ramps above — hue rotation and
+// a custom-palette-stop sampler, both plain-number in/out and independent of
+// canvas/DOM, so they're directly unit-testable.
+// ---------------------------------------------------------------------------
+
+/** Rotate an already-resolved RGB colour's hue by `degrees` (via HSL),
+ *  preserving its saturation/lightness. Used for Art mode's "hue rotation"
+ *  and "palette cycling" controls — both are, mechanically, the same
+ *  operation applied to a continuously increasing angle. `degrees % 360 ===
+ *  0` short-circuits to the input unchanged (also handles negative/huge
+ *  inputs correctly via modulo). */
+export function rotateHueRgb(rgb: RGB, degrees: number): RGB {
+  const deg = ((degrees % 360) + 360) % 360;
+  if (deg === 0) return rgb;
+  const r = rgb.r / 255;
+  const g = rgb.g / 255;
+  const b = rgb.b / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  let h = 0;
+  let s = 0;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  h = (h + deg / 360) % 1;
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return { r: v, g: v, b: v };
+  }
+  const hue2rgb = (p: number, q: number, tIn: number): number => {
+    let t = tIn;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return {
+    r: Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    g: Math.round(hue2rgb(p, q, h) * 255),
+    b: Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  };
+}
+
+/** An already-resolved custom palette stop — `t` in `[0, 1]`, `rgb` the
+ *  resolved colour at that position. Callers resolve raw CSS stop strings
+ *  through `resolveCssColor` ONCE (they change rarely, on user edit) and
+ *  cache the result; `sampleStopsRgb` itself never touches CSS/DOM, so it's
+ *  cheap to call per cell per frame. */
+export interface RgbStop {
+  t: number;
+  rgb: RGB;
+}
+
+/** Piecewise-linear-interpolate a custom Art-mode palette (sorted ascending
+ *  by `t`) at position `t`, clamping to the end stops outside `[0, 1]`. */
+export function sampleStopsRgb(stops: readonly RgbStop[], t: number): RGB {
+  if (stops.length === 0) return { r: 0, g: 0, b: 0 };
+  if (stops.length === 1) return stops[0]!.rgb;
+  const clamped = Math.min(1, Math.max(0, t));
+  const first = stops[0]!;
+  const last = stops[stops.length - 1]!;
+  if (clamped <= first.t) return first.rgb;
+  if (clamped >= last.t) return last.rgb;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i]!;
+    const b = stops[i + 1]!;
+    if (clamped >= a.t && clamped <= b.t) {
+      const span = b.t - a.t || 1;
+      const localT = (clamped - a.t) / span;
+      return {
+        r: Math.round(a.rgb.r + (b.rgb.r - a.rgb.r) * localT),
+        g: Math.round(a.rgb.g + (b.rgb.g - a.rgb.g) * localT),
+        b: Math.round(a.rgb.b + (b.rgb.b - a.rgb.b) * localT),
+      };
+    }
+  }
+  return last.rgb;
+}

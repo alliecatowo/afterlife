@@ -21,6 +21,8 @@ function makeFakeRenderer(): WorldRenderer & { lensCalls: ColorLens[] } {
     setCamera() {},
     setLens(lens: ColorLens) { lensCalls.push(lens); },
     setPalette() {},
+    setArtConfig() {},
+    setModulationGrid() {},
     draw() {},
     resize() {},
     screenToWorld(px: number, py: number) { return { x: px, y: py }; },

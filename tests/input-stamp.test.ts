@@ -20,6 +20,8 @@ function makeFakeRenderer(): WorldRenderer & { ghostCalls: unknown[]; selectionC
     setCamera() {},
     setLens() {},
     setPalette() {},
+    setArtConfig() {},
+    setModulationGrid() {},
     draw() {},
     resize() {},
     screenToWorld(px: number, py: number) { return { x: px, y: py }; },

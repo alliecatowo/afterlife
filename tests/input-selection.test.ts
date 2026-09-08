@@ -14,6 +14,8 @@ function makeFakeRenderer(): WorldRenderer {
     setCamera() {},
     setLens() {},
     setPalette() {},
+    setArtConfig() {},
+    setModulationGrid() {},
     draw() {},
     resize() {},
     screenToWorld(px: number, py: number) { return { x: px, y: py }; },

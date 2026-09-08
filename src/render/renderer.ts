@@ -21,13 +21,51 @@ import type {
 import type { Camera, Viewport } from './camera';
 import {
   resolveToken, resolveCssColor, withAlpha, type TokenColor,
-  type ColorLens, type PaletteMode, type RGB,
+  type ColorLens, type PaletteMode, type RGB, type RgbStop,
   buildHueRamp, sampleHueRamp, buildNeighborRamp, buildRgbRamp, sampleRgbRamp,
   resolveQuadPalette, resolveImmigrationPalette, quadColorForSpecies, immigrationColorForSpecies,
-  blendRgbWeighted,
+  blendRgbWeighted, rotateHueRgb, sampleStopsRgb,
 } from './color';
+import type { ArtConfig, PaletteStop, LfoTarget } from './artConfig';
+import { isArtConfigAnimated } from './artConfig';
+import {
+  GLYPH_SETS, resolveGlyphChars, glyphIndexForValue, type GlyphSetId,
+  normalizeAge, normalizeActivity, normalizeNeighbors, normalizeLineage, normalizeDensity, normalizeField,
+} from './glyphs';
+import { buildGlyphAtlas, atlasCellPxBucket, type GlyphAtlasHandle } from './glyphAtlas';
+import {
+  sampleField, isFieldAnimated, type SampledGrid, type FieldSampleParams, type FieldTransform,
+} from './field';
+import { lfoValue, smoothNoise1D, type LfoShape } from './lfo';
 
 export type { ColorLens } from './color';
+
+/** Below this CSS px/cell, ASCII glyph rendering is illegible — Art mode
+ *  falls all the way back to the honest, unmodified lens rendering (the
+ *  same fallback the LOD boundary above already uses for the aggregated
+ *  zoomed-out path). `ArtPanel` shows a "zoom in to see glyphs" hint driven
+ *  by this exact constant, so the UI and the renderer never disagree about
+ *  where the threshold is. */
+export const GLYPH_MIN_SCALE = 11;
+
+/** Hard cap on cells drawn as individual glyphs in one frame — each glyph
+ *  costs two real canvas draw calls (a cached-raster blit + a tint fill),
+ *  not one `putImageData`. At `GLYPH_MIN_SCALE` a full 1440x900 viewport is
+ *  already well under this; it exists purely as a safety valve against a
+ *  pathological camera/viewport combination, never triggered in normal use. */
+export const MAX_GLYPH_CELLS = 40_000;
+
+function nowSeconds(): number {
+  return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+}
+
+function hashStringSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+const BUILTIN_GLYPH_SET_IDS: readonly Exclude<GlyphSetId, 'custom'>[] = ['ascii', 'blocks', 'box', 'dots', 'geometric'];
 
 export interface ExportImageOptions {
   /** Multiplier over CSS pixel size. Default 2. */
@@ -56,6 +94,27 @@ export interface WorldRenderer {
    * from. `'cvd'` is the colourblind-safe option. Marks dirty on change.
    */
   setPalette(mode: PaletteMode): void;
+  /**
+   * ACID ART / Art mode (`@/render/artConfig.ts`). `null`/`enabled: false`
+   * restores rendering byte-identical to before Art mode ever existed —
+   * every code path this touches is gated on `this.#art?.enabled`. Above
+   * `GLYPH_MIN_SCALE`, live cells render as cached-raster glyph characters
+   * (see `GLYPH_MIN_SCALE`'s doc) whose shape/colour/position are driven by
+   * real per-cell state (age/activity/neighbours/lineage/density) and
+   * optionally the modulation field; below it, Art mode has no visible
+   * effect at all and the honest lens renders exactly as it always did.
+   * Never affects which cells are alive — purely cosmetic, like every
+   * existing lens.
+   */
+  setArtConfig(config: ArtConfig | null): void;
+  /**
+   * The modulation field's sampled image/video/webcam frame, refreshed by
+   * whatever owns a `@/render/mediaField.ts` `MediaFieldSource` (currently
+   * `ArtPanel`) on its own timer. `null` when no media source is active —
+   * `@/render/field.ts`'s `sampleField` treats that as a neutral 0.5, never
+   * a crash.
+   */
+  setModulationGrid(grid: SampledGrid | null): void;
   /** Draw one frame. Cheap enough to call every rAF at 60fps for 512x512 worlds. */
   draw(engine: LifeEngine, overlays?: RenderOverlays): void;
   /** Re-read the canvas' CSS size and devicePixelRatio. Call on resize. */
@@ -249,6 +308,18 @@ class WorldRendererImpl implements WorldRenderer {
   #quadPalette!: RGB[];
   #immigrationPalette!: [RGB, RGB];
 
+  // ---- Art mode state (`@/render/artConfig.ts`) — all `null`/empty by
+  // default, so an app that never calls `setArtConfig` pays nothing beyond
+  // one extra `?.` per `draw()` call.
+  #art: ArtConfig | null = null;
+  #artGrid: SampledGrid | null = null;
+  #glyphAtlasCache = new Map<string, GlyphAtlasHandle>();
+  #customStopsCacheKey = '';
+  #customStopsRgb: RgbStop[] = [];
+  #tokInk900!: TokenColor;
+  #currentTSec = 0;
+  #currentLfoAcc: Partial<Record<LfoTarget, number>> = {};
+
   get viewport(): Readonly<Viewport> {
     return { width: this.#cssW, height: this.#cssH };
   }
@@ -258,6 +329,29 @@ class WorldRendererImpl implements WorldRenderer {
     this.#ctx = canvas.getContext('2d');
     this.#resolveTokens();
     this.resize();
+    // Art mode's reachability (trigger tab + 'a' shortcut) self-mounts from
+    // here — see `./artMount.ts`'s doc for why this hook, not `Hud.tsx`.
+    // Fire-and-forget: never blocks/affects attach() itself, and this
+    // module has no other reference to React outside this one dynamic
+    // import, so a renderer used headlessly (tests) never pays for it.
+    //
+    // GATED ON THE CANVAS ID: `@/ui/session.ts` creates a SECOND
+    // `WorldRenderer` for the compare view (`#compare-canvas`) and calls
+    // `attach()` on it too, unconditionally, moments after this one — both
+    // calls race the same dynamic `import('./artMount')`, and that module's
+    // own `mounted` guard (a plain boolean, set inside the FIRST `.then()`
+    // callback to actually run) has no way to tell the two apart on its
+    // own. Observed in practice: the compare renderer's `attach()` call
+    // sometimes won that race, permanently binding Art mode's store-to-
+    // renderer sync to the almost-never-drawn compare canvas instead of the
+    // visible world one — Art mode would toggle in the UI (the store change
+    // is real) with NO visible effect whatsoever, and no error anywhere.
+    // Restricting this to the one stable DOM id `#world-canvas` (see
+    // ARCHITECTURE.md's "DOM anchors" contract) makes which renderer wins
+    // unambiguous regardless of promise-resolution timing.
+    if (canvas.id === 'world-canvas') {
+      void import('./artMount').then((m) => m.ensureArtUiMounted(this));
+    }
   }
 
   #resolveTokens(): void {
@@ -269,6 +363,7 @@ class WorldRendererImpl implements WorldRenderer {
     this.#tokLine = resolveToken('--color-line', 'oklch(0.32 0.018 198)');
     this.#tokLineStrong = resolveToken('--color-line-strong', 'oklch(0.44 0.020 199)');
     this.#tokIvory = resolveToken('--color-ivory-100', 'oklch(0.96 0.014 92)');
+    this.#tokInk900 = resolveToken('--color-ink-900', 'oklch(0.16 0.012 200)');
 
     this.#hueRamp = buildHueRamp();
     this.#neighborRamp = buildNeighborRamp();
@@ -299,6 +394,16 @@ class WorldRendererImpl implements WorldRenderer {
     this.#paletteMode = mode;
     this.#resolvePalettes();
     this.#dirty = true;
+  }
+
+  setArtConfig(config: ArtConfig | null): void {
+    this.#art = config;
+    this.#dirty = true;
+  }
+
+  setModulationGrid(grid: SampledGrid | null): void {
+    this.#artGrid = grid;
+    if (this.#art?.enabled) this.#dirty = true;
   }
 
   invalidate(): void {
@@ -404,14 +509,40 @@ class WorldRendererImpl implements WorldRenderer {
     const canvas = this.#canvas;
     if (!ctx || !canvas) return;
 
+    // Art mode is only visually active once cells are legible as glyphs
+    // (see `GLYPH_MIN_SCALE`'s doc) — below that, and always when zoomed all
+    // the way out, this is `false` and every honest lens renders completely
+    // unmodified, byte-identical to before Art mode existed.
+    const artActive = Boolean(this.#art?.enabled) && this.#camera.scale >= GLYPH_MIN_SCALE;
+    if (artActive) {
+      this.#currentTSec = nowSeconds();
+      this.#currentLfoAcc = this.#evalLfos(this.#art!, this.#currentTSec);
+    }
+    const trailsActive = artActive && this.#art!.color.trails.enabled;
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (trailsActive) {
+      // Fade the previous frame toward the page background instead of
+      // clearing it — an explicit, Art-mode-only "trails show PAST state"
+      // effect (see `ArtPanel`'s caption). `decay` is how much of the old
+      // frame survives each draw; LFO "trailLength" targets multiply it.
+      const decay = this.#effectiveTrailDecay();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = withAlpha(this.#tokInk900, decay);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
 
     const spec = engine.spec;
     const rect = this.#visibleWorldRect(spec);
 
     if (this.#camera.scale >= ZOOM_LOD_THRESHOLD) {
-      this.#drawZoomedIn(engine, rect);
+      if (artActive) {
+        this.#drawGlyphs(engine, rect);
+      } else {
+        this.#drawZoomedIn(engine, rect);
+      }
     } else {
       this.#drawZoomedOut(engine, rect);
     }
@@ -435,6 +566,18 @@ class WorldRendererImpl implements WorldRenderer {
 
     const ghost = overlays && 'ghost' in overlays ? overlays.ghost : this.#ghost;
     if (ghost) this.#drawGhost(ghost);
+
+    // Self-perpetuating animation: only while Art mode is actually visible
+    // AND actually configured to change over time (an LFO, colour cycling,
+    // trails decaying, or an inherently time-varying field like plasma/
+    // video/webcam) does this renderer mark itself dirty again — a static
+    // Art config (e.g. a fixed noise field, no LFOs) costs exactly one draw,
+    // same as any other lens. This is what lets an animated Art mode keep
+    // animating with NO changes to `@/core/loop.ts` or `@/ui/session.ts`'s
+    // rAF loop: it already calls `consumeDirty()` every frame regardless.
+    if (artActive && this.#art && isArtConfigAnimated(this.#art, isFieldAnimated)) {
+      this.#dirty = true;
+    }
   }
 
   #ensureCellCanvas(w: number, h: number): CanvasRenderingContext2D {
@@ -547,6 +690,266 @@ class WorldRendererImpl implements WorldRenderer {
         data[idx + 3] = 255;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Art mode: LFO evaluation, trails, the modulation field's colour/glyph
+  // effects, and the glyph draw path itself. Everything below is reached
+  // ONLY from `draw()`'s `artActive` branch — an app that never enables Art
+  // mode never executes any of it.
+  // ---------------------------------------------------------------------
+
+  /** Sum every configured LFO's contribution per target, once per frame
+   *  (never per cell — an LFO's value only depends on wall-clock time, so
+   *  it's the same number for every cell this frame). Multiple LFOs may
+   *  target the same parameter; their (depth-scaled) outputs simply add. */
+  #evalLfos(art: ArtConfig, tSec: number): Partial<Record<LfoTarget, number>> {
+    const acc: Partial<Record<LfoTarget, number>> = {};
+    for (const l of art.lfos) {
+      if (l.target === 'none') continue;
+      const v = lfoValue(l.shape as LfoShape, tSec, l.rateHz, l.phase, hashStringSeed(l.id)) * l.depth;
+      acc[l.target] = (acc[l.target] ?? 0) + v;
+    }
+    return acc;
+  }
+
+  #effectiveTrailDecay(): number {
+    const base = this.#art?.color.trails.decay ?? 0.15;
+    const lfo = this.#currentLfoAcc.trailLength ?? 0;
+    return Math.min(0.9, Math.max(0.02, base * (1 + lfo)));
+  }
+
+  /** Fraction of live cells in a small (2*radius+1)^2 neighbourhood — the
+   *  `density` glyph driver. Deliberately a plain box count over the raw
+   *  bits (`engine.get`), same honesty guarantee as `#directionalBias`:
+   *  nothing invented, nothing beyond what the engine already exposes. */
+  #localDensity(engine: LifeEngine, x: number, y: number, radius = 2): number {
+    let live = 0;
+    let total = 0;
+    for (let oy = -radius; oy <= radius; oy++) {
+      for (let ox = -radius; ox <= radius; ox++) {
+        total++;
+        if (engine.get(x + ox, y + oy)) live++;
+      }
+    }
+    return total > 0 ? live / total : 0;
+  }
+
+  /** The colour a live cell would have under the CURRENTLY ACTIVE lens —
+   *  reimplements just the alive-cell cases of `#writeCellPixel` (never the
+   *  dead-cell special casing `activity`/`neighbors` do, since Art mode's
+   *  glyph path only ever visits live cells — see `#drawGlyphs`). Kept as
+   *  its own method rather than refactoring `#writeCellPixel` to share it,
+   *  so the existing, already-tested per-pixel path is untouched. */
+  #aliveCellColorForGlyph(engine: LifeEngine, x: number, y: number): { rgb: RGB; alpha: number } {
+    switch (this.#lens) {
+      case 'age': {
+        const age = engine.ageAt(x, y);
+        const t = Math.min(1, age / AGE_RAMP_GENERATIONS);
+        return { rgb: sampleRgbRamp(this.#ageRamp, t), alpha: Math.round((0.35 + 0.65 * t) * 255) };
+      }
+      case 'lineage':
+        return { rgb: sampleHueRamp(this.#hueRamp, engine.hueAt(x, y)), alpha: 255 };
+      case 'immigration': {
+        const rgb = immigrationColorForSpecies(this.#immigrationPalette, engine.speciesAt(x, y));
+        return { rgb: rgb ?? this.#tokLife.rgb, alpha: 255 };
+      }
+      case 'quadlife': {
+        const rgb = quadColorForSpecies(this.#quadPalette, engine.speciesAt(x, y));
+        return { rgb: rgb ?? this.#tokLife.rgb, alpha: 255 };
+      }
+      case 'velocity': {
+        const { dx, dy } = this.#directionalBias(engine, x, y);
+        if (dx === 0 && dy === 0) return { rgb: this.#tokIvory.rgb, alpha: 90 };
+        const hueDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+        return { rgb: sampleHueRamp(this.#hueRamp, hueDeg), alpha: 255 };
+      }
+      case 'activity': {
+        const heat = engine.activityAt(x, y);
+        const eased = Math.pow(Math.min(1, heat), 0.6);
+        return { rgb: sampleRgbRamp(this.#activityRamp, eased), alpha: Math.max(80, Math.round(eased * 255)) };
+      }
+      case 'neighbors': {
+        const n = engine.liveNeighborCount(x, y);
+        return { rgb: this.#neighborRamp[n] ?? this.#tokLife.rgb, alpha: 255 };
+      }
+      default:
+        return { rgb: this.#tokLife.rgb, alpha: 255 };
+    }
+  }
+
+  /** Resolve+cache a custom Art palette's CSS stop strings to RGB, keyed by
+   *  the stops' own JSON — cheap to recompute only when the user actually
+   *  edits the palette, never per cell/frame. Falls back per-stop to the
+   *  `life` accent on an unparseable colour (e.g. a hand-edited import)
+   *  rather than throwing mid-frame. */
+  #resolveCustomStops(stops: readonly PaletteStop[]): RgbStop[] {
+    const key = JSON.stringify(stops);
+    if (key !== this.#customStopsCacheKey) {
+      this.#customStopsRgb = stops
+        .map((s) => {
+          try {
+            return { t: s.t, rgb: resolveCssColor(s.color) };
+          } catch {
+            return { t: s.t, rgb: this.#tokLife.rgb };
+          }
+        })
+        .sort((a, b) => a.t - b.t);
+      this.#customStopsCacheKey = key;
+    }
+    return this.#customStopsRgb;
+  }
+
+  /** Get (building + caching on first use) the glyph atlas for an exact
+   *  character list at a device-pixel cell-size bucket. Cache is bounded so
+   *  a long session of custom-string edits or an animated glyph-set LFO
+   *  (which needs every built-in set's atlas available at once — see below)
+   *  can't grow it unboundedly. */
+  #ensureAtlas(chars: readonly string[], bucket: number): GlyphAtlasHandle {
+    const key = `${chars.join('')}|${bucket}`;
+    let atlas = this.#glyphAtlasCache.get(key);
+    if (!atlas) {
+      atlas = buildGlyphAtlas(chars, bucket);
+      this.#glyphAtlasCache.set(key, atlas);
+      if (this.#glyphAtlasCache.size > 24) {
+        const oldest = this.#glyphAtlasCache.keys().next().value;
+        if (oldest) this.#glyphAtlasCache.delete(oldest);
+      }
+    }
+    return atlas;
+  }
+
+  /**
+   * The ASCII/glyph draw path: live cells only (HONESTY — see the module
+   * doc and `WorldRenderer.setArtConfig`'s doc), each rendered as a cached
+   * glyph raster tinted to that cell's colour, positioned with the exact
+   * same shared-corner device-pixel rounding every other overlay in this
+   * file uses (`#drawGhost`/`#drawSelection`/`#drawDiff`) — this is what
+   * keeps the glyph grid "tight and even… no gaps or drift" at every zoom
+   * level above `GLYPH_MIN_SCALE`, not just at one magic zoom value.
+   */
+  #drawGlyphs(engine: LifeEngine, rect: Rect): void {
+    const art = this.#art!;
+    const ctx = this.#ctx!;
+    const dpr = this.#dpr;
+    const spec = engine.spec;
+
+    if (rect.w * rect.h > MAX_GLYPH_CELLS) { this.#drawZoomedIn(engine, rect); return; }
+
+    const tSec = this.#currentTSec;
+    const lfoAcc = this.#currentLfoAcc;
+
+    const devicePx = this.#camera.scale * dpr;
+    const bucket = atlasCellPxBucket(devicePx);
+    const baseChars = resolveGlyphChars(art.glyphs.setId, art.glyphs.customChars);
+    let chars = baseChars;
+    const glyphSetShift = lfoAcc.glyphSetIndex;
+    if (glyphSetShift && art.glyphs.setId !== 'custom') {
+      const ids = BUILTIN_GLYPH_SET_IDS;
+      const baseIdx = Math.max(0, ids.indexOf(art.glyphs.setId as Exclude<GlyphSetId, 'custom'>));
+      const n = ids.length;
+      const shifted = (((baseIdx + Math.round(glyphSetShift * n)) % n) + n) % n;
+      chars = GLYPH_SETS[ids[shifted]!];
+    }
+    const atlas = this.#ensureAtlas(chars, bucket);
+
+    const fieldTransform: FieldTransform = {
+      scale: Math.max(0.01, art.field.scale * (1 + (lfoAcc.fieldScale ?? 0))),
+      offsetX: art.field.offsetX + (lfoAcc.fieldOffsetX ?? 0) * 50,
+      offsetY: art.field.offsetY + (lfoAcc.fieldOffsetY ?? 0) * 50,
+      rotationDeg: art.field.rotationDeg + (lfoAcc.fieldRotation ?? 0) * 180,
+    };
+    const fieldParams: FieldSampleParams = {
+      source: art.field.source, seed: art.field.seed, transform: fieldTransform, grid: this.#artGrid,
+    };
+    const fieldOn = art.field.source !== 'none';
+    const wantsGlyphField = fieldOn && art.field.targets.includes('glyph');
+    const wantsHueField = fieldOn && art.field.targets.includes('hue');
+    const wantsBrightnessField = fieldOn && art.field.targets.includes('brightness');
+    const wantsJitterField = fieldOn && art.field.targets.includes('jitter');
+    const needsFieldSample = wantsGlyphField || wantsHueField || wantsBrightnessField || wantsJitterField;
+
+    const hueRotateBase = art.color.hueRotateDeg
+      + (lfoAcc.hueRotate ?? 0) * 180
+      + tSec * art.color.cycleSpeedHz * 360
+      + (lfoAcc.paletteCycle ?? 0) * 180;
+    const brightnessLfo = lfoAcc.brightness ?? 0;
+
+    const customStops = art.color.source === 'custom' ? this.#resolveCustomStops(art.color.stops) : null;
+
+    ctx.save();
+    for (let j = 0; j < rect.h; j++) {
+      const wy = wrap(rect.y + j, spec.height);
+      for (let i = 0; i < rect.w; i++) {
+        const wx = wrap(rect.x + i, spec.width);
+        if (!engine.get(wx, wy)) continue; // HONESTY: never draw a glyph for a dead cell.
+
+        let baseT: number;
+        switch (art.glyphs.driver) {
+          case 'age': baseT = normalizeAge(engine.ageAt(wx, wy)); break;
+          case 'activity': baseT = normalizeActivity(engine.activityAt(wx, wy)); break;
+          case 'neighbors': baseT = normalizeNeighbors(engine.liveNeighborCount(wx, wy)); break;
+          case 'lineage': baseT = normalizeLineage(engine.hueAt(wx, wy)); break;
+          case 'density': baseT = normalizeDensity(this.#localDensity(engine, wx, wy)); break;
+          case 'field': baseT = normalizeField(sampleField(fieldParams, wx, wy, tSec)); break;
+          default: baseT = 0.5;
+        }
+
+        const fieldSample = needsFieldSample ? sampleField(fieldParams, wx, wy, tSec) : 0.5;
+        let glyphT = baseT;
+        if (wantsGlyphField && art.glyphs.driver !== 'field') {
+          glyphT = Math.min(1, Math.max(0, baseT * 0.6 + fieldSample * 0.4));
+        }
+        const glyphIndex = glyphIndexForValue(glyphT, chars.length);
+        const srcRect = atlas.rectFor(glyphIndex);
+
+        let rgb: RGB;
+        let alpha: number;
+        if (customStops) {
+          rgb = sampleStopsRgb(customStops, art.glyphs.driver === 'field' ? glyphT : baseT);
+          alpha = 255;
+        } else {
+          const c = this.#aliveCellColorForGlyph(engine, wx, wy);
+          rgb = c.rgb;
+          alpha = c.alpha;
+        }
+
+        let effectiveHue = hueRotateBase;
+        if (wantsHueField) effectiveHue += (fieldSample - 0.5) * 360;
+        if (((effectiveHue % 360) + 360) % 360 !== 0) rgb = rotateHueRgb(rgb, effectiveHue);
+
+        let brightness = 1 + brightnessLfo;
+        if (wantsBrightnessField) brightness *= 0.4 + fieldSample * 1.2;
+        brightness = Math.min(1.8, Math.max(0.15, brightness));
+        alpha = Math.min(255, Math.max(0, Math.round(alpha * brightness)));
+
+        const p0 = this.worldToScreen(wx, wy);
+        const p1 = this.worldToScreen(wx + 1, wy + 1);
+        let dx = Math.round(p0.x * dpr);
+        let dy = Math.round(p0.y * dpr);
+        const dw = Math.max(1, Math.round(p1.x * dpr) - dx);
+        const dh = Math.max(1, Math.round(p1.y * dpr) - dy);
+
+        if (wantsJitterField && fieldSample > 0) {
+          const seedA = ((wx * 92821 + wy * 68917) % 997 + 997) % 997;
+          const seedB = ((wx * 68917 + wy * 92821 + 50) % 997 + 997) % 997;
+          const j1 = smoothNoise1D(tSec * 0.5 + wx * 0.7 + wy * 0.31, seedA);
+          const j2 = smoothNoise1D(tSec * 0.5 + wx * 0.31 + wy * 0.7, seedB);
+          const amp = dw * 0.22 * fieldSample;
+          dx = Math.round(dx + (j1 - 0.5) * 2 * amp);
+          dy = Math.round(dy + (j2 - 0.5) * 2 * amp);
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(atlas.canvas, srcRect.sx, srcRect.sy, srcRect.sw, srcRect.sh, dx, dy, dw, dh);
+        ctx.globalCompositeOperation = 'source-in';
+        ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`;
+        ctx.fillRect(dx, dy, dw, dh);
+
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
   }
 
   #drawZoomedIn(engine: LifeEngine, rect: Rect): void {
@@ -978,6 +1381,9 @@ class WorldRendererImpl implements WorldRenderer {
     this.#cellCanvas = null;
     this.#cellCtx = null;
     this.#lastEngine = null;
+    this.#art = null;
+    this.#artGrid = null;
+    this.#glyphAtlasCache.clear();
   }
 }
 
