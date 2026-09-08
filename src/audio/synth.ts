@@ -11,6 +11,15 @@ import type { ScheduledNote, Timbre } from './scheduler';
 
 const DRONE_RAMP_SECONDS = 0.6;
 const MASTER_RAMP_SECONDS = 0.25;
+const REVERB_RAMP_SECONDS = 0.4;
+/** Feedback delay network standing in for a convolution reverb — per the
+ * module's "no samples" rule, there is no impulse-response file to load.
+ * Two short, prime-ish delay times summed give a diffuse-ish tail without
+ * the metallic ping of a single delay line, at negligible CPU cost. */
+const REVERB_DELAY_A_SECONDS = 0.041;
+const REVERB_DELAY_B_SECONDS = 0.067;
+/** Hard ceiling on feedback gain — this is a decay control, never a howl. */
+const MAX_REVERB_FEEDBACK = 0.55;
 
 /** Build a short (2s) buffer of white noise, looped, for the filtered-noise
  * drone — "gentle filtered noise for population movement" per DESIGN.md.
@@ -30,6 +39,13 @@ export class SynthGraph {
   private readonly droneFilter: BiquadFilterNode;
   private readonly droneGain: GainNode;
   private readonly dronePanner: StereoPannerNode;
+  private readonly reverbSend: GainNode;
+  private readonly reverbWet: GainNode;
+  private readonly reverbDelayA: DelayNode;
+  private readonly reverbDelayB: DelayNode;
+  private readonly reverbFeedbackA: GainNode;
+  private readonly reverbFeedbackB: GainNode;
+  private readonly reverbDamp: BiquadFilterNode;
   private disposed = false;
 
   constructor(ctx: AudioContext) {
@@ -58,6 +74,55 @@ export class SynthGraph {
     this.droneGain.connect(this.dronePanner);
     this.dronePanner.connect(this.master);
     this.droneSource.start();
+
+    // A cheap algorithmic "reverb/decay" send — a small feedback-delay
+    // network, not a convolution reverb (no impulse-response sample to load,
+    // per this module's "no samples" rule). `playNote` sends a copy of each
+    // voice's envelope output here; `setReverbAmount` (driven by the panel's
+    // decay control) is the only thing that changes over time. Silent (wet
+    // gain 0) until a user turns the decay knob past its neutral default, so
+    // it costs nothing extra for anyone who never touches it.
+    this.reverbSend = ctx.createGain();
+    this.reverbSend.gain.value = 0;
+    this.reverbWet = ctx.createGain();
+    this.reverbWet.gain.value = 0;
+    this.reverbDamp = ctx.createBiquadFilter();
+    this.reverbDamp.type = 'lowpass';
+    this.reverbDamp.frequency.value = 2600;
+    this.reverbDelayA = ctx.createDelay(1);
+    this.reverbDelayA.delayTime.value = REVERB_DELAY_A_SECONDS;
+    this.reverbDelayB = ctx.createDelay(1);
+    this.reverbDelayB.delayTime.value = REVERB_DELAY_B_SECONDS;
+    this.reverbFeedbackA = ctx.createGain();
+    this.reverbFeedbackA.gain.value = 0;
+    this.reverbFeedbackB = ctx.createGain();
+    this.reverbFeedbackB.gain.value = 0;
+
+    this.reverbSend.connect(this.reverbDelayA);
+    this.reverbSend.connect(this.reverbDelayB);
+    this.reverbDelayA.connect(this.reverbFeedbackA);
+    this.reverbFeedbackA.connect(this.reverbDamp);
+    this.reverbDelayB.connect(this.reverbFeedbackB);
+    this.reverbFeedbackB.connect(this.reverbDamp);
+    this.reverbDamp.connect(this.reverbDelayA);
+    this.reverbDamp.connect(this.reverbDelayB);
+    this.reverbDamp.connect(this.reverbWet);
+    this.reverbWet.connect(this.master);
+  }
+
+  /**
+   * 0 (dry, the original fixed sound) .. 1 (long, washy tail). Ramped, never
+   * stepped, so turning the panel's decay slider never clicks. Feedback is
+   * hard-capped at `MAX_REVERB_FEEDBACK` regardless of `amount` so this can
+   * never runaway into a howl.
+   */
+  setReverbAmount(amount: number, atTime: number): void {
+    const a = Math.max(0, Math.min(1, amount));
+    this.reverbSend.gain.setTargetAtTime(a * 0.5, atTime, REVERB_RAMP_SECONDS / 3);
+    this.reverbWet.gain.setTargetAtTime(a * 0.4, atTime, REVERB_RAMP_SECONDS / 3);
+    const feedback = a * MAX_REVERB_FEEDBACK;
+    this.reverbFeedbackA.gain.setTargetAtTime(feedback, atTime, REVERB_RAMP_SECONDS / 3);
+    this.reverbFeedbackB.gain.setTargetAtTime(feedback * 0.85, atTime, REVERB_RAMP_SECONDS / 3);
   }
 
   /** Master gain, 0..1, with a short ramp to avoid clicks. */
@@ -99,6 +164,9 @@ export class SynthGraph {
     osc.connect(env);
     env.connect(panner);
     panner.connect(this.master);
+    // A parallel send to the reverb bus — silent (see `setReverbAmount`)
+    // unless the panel's decay control has been turned up.
+    panner.connect(this.reverbSend);
 
     const stopAt = start + attack + release + release; // let the tail ring out
     osc.start(start);
@@ -119,6 +187,13 @@ export class SynthGraph {
     this.droneFilter.disconnect();
     this.droneGain.disconnect();
     this.dronePanner.disconnect();
+    this.reverbSend.disconnect();
+    this.reverbDelayA.disconnect();
+    this.reverbDelayB.disconnect();
+    this.reverbFeedbackA.disconnect();
+    this.reverbFeedbackB.disconnect();
+    this.reverbDamp.disconnect();
+    this.reverbWet.disconnect();
     this.master.disconnect();
   }
 }

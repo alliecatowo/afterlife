@@ -345,6 +345,23 @@ export function UploadIcon(props: IconProps) {
   );
 }
 
+export function WaveformIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M1.5 8h2l1.2-4.5L7 12.5l1.6-8L10 8.8 11 6.5l1 1.5h2.5" />
+    </Svg>
+  );
+}
+
+export function CompassIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="8" r="5.75" />
+      <path d="M10.2 5.8 8.7 8.7 5.8 10.2 7.3 7.3Z" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 export function GlobeIcon(props: IconProps) {
   return (
     <Svg {...props}>

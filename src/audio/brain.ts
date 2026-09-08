@@ -7,9 +7,9 @@
  */
 import type { AudioEvent } from './events';
 import {
-  emptyAggregate, mapAuditionToNote, mapCentroidDriftToPan, mapChurnToNotes,
-  mapDiscoveryToNotes, mapDrone,
-  type BucketAggregate, type DroneParams,
+  DEFAULT_DRONE_SHAPE, DEFAULT_SCALE_CONTEXT, emptyAggregate, mapAuditionToNote,
+  mapCentroidDriftToPan, mapChurnToNotes, mapDiscoveryToNotes, mapDrone,
+  type BucketAggregate, type DroneParams, type DroneShape, type ScaleContext,
 } from './mapper';
 import {
   BUCKET_SECONDS, LOOKAHEAD_SECONDS, VoicePool, bucketFloor,
@@ -42,6 +42,15 @@ export class SoundscapeBrain {
   #lastDrone: DroneParams = { cutoffHz: 180, weight: 0, pan: 0 };
   #lastDronePan = 0;
 
+  // ---- panel-tunable parameters (all default to the original fixed
+  // behaviour; see `@/audio/settingsStore` for the persisted UI state that
+  // drives these via `Soundscape`). ----
+  #bucketSeconds: number = BUCKET_SECONDS;
+  #scale: ScaleContext = DEFAULT_SCALE_CONTEXT;
+  #density = 1;
+  #droneShape: DroneShape = DEFAULT_DRONE_SHAPE;
+  #decay = 1;
+
   constructor(maxVoices?: number) {
     this.#pool = new VoicePool(maxVoices);
     this.#agg = emptyAggregate(0, 0);
@@ -49,6 +58,36 @@ export class SoundscapeBrain {
 
   get muted(): boolean {
     return this.#muted;
+  }
+
+  /** Change the musical grid's tempo. Takes effect from the next bucket
+   * boundary — never retroactively rewrites already-scheduled notes. */
+  setBucketSeconds(seconds: number): void {
+    this.#bucketSeconds = Math.max(0.01, seconds);
+  }
+
+  setScale(scale: ScaleContext): void {
+    this.#scale = scale;
+  }
+
+  setDensity(density: number): void {
+    this.#density = density;
+  }
+
+  setDroneShape(shape: DroneShape): void {
+    this.#droneShape = shape;
+  }
+
+  setDecay(decay: number): void {
+    this.#decay = decay;
+  }
+
+  setVoiceCap(maxVoices: number): void {
+    this.#pool.setMaxVoices(maxVoices);
+  }
+
+  get voiceCap(): number {
+    return this.#pool.maxVoices;
   }
 
   setMuted(muted: boolean): void {
@@ -117,12 +156,12 @@ export class SoundscapeBrain {
         break;
       case 'discovery':
         if (!this.#scrubbing) {
-          this.#pendingDiscoveries.push(...mapDiscoveryToNotes(event.discovery));
+          this.#pendingDiscoveries.push(...mapDiscoveryToNotes(event.discovery, this.#scale, this.#decay));
         }
         break;
       case 'scrub':
         if (this.#audition && now - this.#lastAuditionTime >= AUDITION_MIN_INTERVAL_SECONDS) {
-          this.#pendingDiscoveries.push(mapAuditionToNote(event.gen));
+          this.#pendingDiscoveries.push(mapAuditionToNote(event.gen, this.#scale));
           this.#lastAuditionTime = now;
         }
         break;
@@ -142,35 +181,42 @@ export class SoundscapeBrain {
     const notes: ScheduledNote[] = [];
     const horizon = now + lookahead;
 
+    const bucketSeconds = this.#bucketSeconds;
+
     if (this.#lastFlushedBoundary === null) {
-      this.#lastFlushedBoundary = bucketFloor(now);
+      this.#lastFlushedBoundary = bucketFloor(now, bucketSeconds);
     }
 
     // If we've been paused/muted (or the tab was backgrounded) for a long
     // stretch, don't replay a huge backlog of empty buckets synchronously —
     // drop it and resume from just before `now`, mirroring the sim loop's
     // catch-up guard in `core/loop.ts`.
+    const maxCatchupSeconds = Math.max(MAX_CATCHUP_SECONDS, bucketSeconds * 8);
     const staleness = horizon - this.#lastFlushedBoundary;
-    if (staleness > MAX_CATCHUP_SECONDS) {
-      this.#lastFlushedBoundary = bucketFloor(now) - BUCKET_SECONDS;
+    if (staleness > maxCatchupSeconds) {
+      this.#lastFlushedBoundary = bucketFloor(now, bucketSeconds) - bucketSeconds;
     }
 
     // Advance by direct addition, never by re-deriving from `bucketFloor`
-    // each step: repeatedly doing `floor(boundary / BUCKET_SECONDS) *
-    // BUCKET_SECONDS` can, under floating-point rounding, occasionally fail
+    // each step: repeatedly doing `floor(boundary / bucketSeconds) *
+    // bucketSeconds` can, under floating-point rounding, occasionally fail
     // to advance a full step and stall the loop forever. A fixed positive
     // increment is guaranteed to eventually exceed any finite `horizon`. The
     // iteration cap below is a hard backstop in case that guarantee is ever
     // violated some other way.
-    let boundary = this.#lastFlushedBoundary + BUCKET_SECONDS;
+    let boundary = this.#lastFlushedBoundary + bucketSeconds;
     let guard = 0;
-    const GUARD_MAX = Math.ceil(MAX_CATCHUP_SECONDS / BUCKET_SECONDS) + 4;
+    const GUARD_MAX = Math.ceil(maxCatchupSeconds / bucketSeconds) + 4;
     while (boundary <= horizon && guard < GUARD_MAX) {
       guard++;
       // Churn notes for the bucket that just closed (suppressed while
       // scrubbing unless audition mode — audition uses its own sparse path).
       if (!this.#scrubbing) {
-        const churnNotes = mapChurnToNotes(this.#agg);
+        const churnNotes = mapChurnToNotes(this.#agg, {
+          density: this.#density,
+          decay: this.#decay,
+          scale: this.#scale,
+        });
         for (const req of churnNotes) {
           const n = this.#pool.tryAllocate(req, boundary, now);
           if (n) notes.push(n);
@@ -191,10 +237,10 @@ export class SoundscapeBrain {
       }
       this.#agg = emptyAggregate(this.#agg.gen, this.#agg.population);
       this.#lastFlushedBoundary = boundary;
-      boundary = boundary + BUCKET_SECONDS;
+      boundary = boundary + bucketSeconds;
     }
 
-    this.#lastDrone = mapDrone(this.#agg.population, this.#lastDronePan);
+    this.#lastDrone = mapDrone(this.#agg.population, this.#lastDronePan, this.#droneShape);
     return { notes, drone: this.#lastDrone };
   }
 }

@@ -20,6 +20,13 @@ import { createAudioContext, ensureRunning } from './context';
 import { TICK_INTERVAL_SECONDS } from './scheduler';
 import { SynthGraph } from './synth';
 import type { AudioEvent } from './events';
+import { stop as stopCapture } from './capture';
+import { midiController } from './midi';
+import {
+  bucketSecondsFromSettings, droneShapeFromSettings, scaleContextFromSettings,
+  type AudioSettings,
+} from './settings';
+import { readAudioSettings, useAudioSettingsStore } from './settingsStore';
 
 export type { AudioEvent };
 
@@ -75,12 +82,36 @@ export function createSoundscape(): Soundscape {
     synth.setMasterGain(muted ? 0 : volume, ctx.currentTime);
   }
 
+  /** Push the panel's current settings into the brain (always — it has no
+   * `AudioContext` dependency) and, if the graph already exists, into the
+   * synth's reverb send. Called once at construction and on every
+   * `settingsStore` change, so the panel's controls are the only source of
+   * truth: nobody needs to call a setter by hand. */
+  function applySettings(settings: AudioSettings): void {
+    brain.setScale(scaleContextFromSettings(settings));
+    brain.setBucketSeconds(bucketSecondsFromSettings(settings));
+    brain.setVoiceCap(settings.voiceCap);
+    brain.setDensity(settings.density);
+    brain.setDroneShape(droneShapeFromSettings(settings));
+    brain.setDecay(settings.decay);
+    brain.setAudition(settings.auditionOnScrub);
+    if (synth && ctx) {
+      // Neutral at decay<=1 (the shipped default), so nobody who never
+      // touches the slider gets an unrequested reverb tail.
+      const wet = Math.max(0, (settings.decay - 1) / 1.5);
+      synth.setReverbAmount(wet, ctx.currentTime);
+    }
+  }
+  applySettings(readAudioSettings());
+  const unsubscribeSettings = useAudioSettingsStore.subscribe(applySettings);
+
   function schedulerTick(): void {
     if (!ctx || !synth || muted) return;
     const t = ctx.currentTime;
     const { notes, drone } = brain.tick(t);
     synth.setDrone(drone, t);
     for (const note of notes) synth.playNote(note);
+    midiController.sendNotes(notes, t);
   }
 
   function startScheduler(): void {
@@ -123,6 +154,9 @@ export function createSoundscape(): Soundscape {
     muted = next;
     brain.setMuted(next);
     applyMasterGain();
+    // Muting must never leave a hardware synth holding a note — panic
+    // immediately, the same guarantee `dispose()`/port-change/disable give.
+    if (next) midiController.allNotesOff();
     if (!ctx) return;
     if (next) {
       stopScheduler();
@@ -149,6 +183,7 @@ export function createSoundscape(): Soundscape {
         ctx = createAudioContext();
         synth = new SynthGraph(ctx);
         applyMasterGain();
+        applySettings(readAudioSettings()); // now that `synth` exists, pick up e.g. the decay/reverb send
       }
       await ensureRunning(ctx);
       if (!muted) startScheduler();
@@ -177,6 +212,9 @@ export function createSoundscape(): Soundscape {
       disposed = true;
       stopScheduler();
       for (const s of subs) s.dispose();
+      unsubscribeSettings();
+      midiController.dispose();
+      stopCapture();
       brain.reset();
       synth?.dispose();
       synth = null;

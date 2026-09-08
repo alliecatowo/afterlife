@@ -14,8 +14,13 @@ import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/prim
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
-  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon,
+  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon,
 } from '@/ui/icons';
+// The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
+// this HUD only needs its "About" affordance, which doubles as the tour's
+// replay entry point (see `AboutDialog`'s own "Take the guided tour" button).
+// Logged in INTEGRATION-NOTES.md.
+import { useTourStore } from '@/ui/tutorial/tourStore';
 import type { RenderLens } from '@/core/types';
 
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
@@ -58,6 +63,7 @@ export function Hud() {
   const rightPanel = useUIState((s) => s.rightPanel);
   const toggleRightPanel = useUIState((s) => s.toggleRightPanel);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
+  const setAboutOpen = useTourStore((s) => s.setAboutOpen);
 
   useEffect(() => subscribeReadout((r) => {
     if (genRef.current) genRef.current.textContent = String(r.gen);
@@ -254,6 +260,9 @@ export function Hud() {
         <Tooltip content="Save & export">
           <IconButton label="Save & export" icon={<SaveIcon />} pressed={rightPanel === 'save'} onClick={() => toggleRightPanel('save')} />
         </Tooltip>
+        <Tooltip content="Instrument">
+          <IconButton label="Instrument" icon={<WaveformIcon />} pressed={rightPanel === 'audio'} onClick={() => toggleRightPanel('audio')} />
+        </Tooltip>
         <Tooltip content="Settings">
           <IconButton label="Settings" icon={<SlidersIcon />} pressed={rightPanel === 'settings'} onClick={() => toggleRightPanel('settings')} />
         </Tooltip>
@@ -271,6 +280,9 @@ export function Hud() {
             icon={<ExpandIcon />}
             onClick={() => { setPresentation(true); bus.emit('presentation:toggle', { on: true }); }}
           />
+        </Tooltip>
+        <Tooltip content="What is this?">
+          <IconButton label="About AFTERLIFE" icon={<CompassIcon />} onClick={() => setAboutOpen(true)} />
         </Tooltip>
         <Tooltip content="Keyboard shortcuts (?)">
           <IconButton label="Keyboard shortcuts" icon={<QuestionIcon />} onClick={() => setShortcutsOpen(true)} />

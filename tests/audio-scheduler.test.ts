@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BUCKET_SECONDS, MAX_VOICES, VoicePool, bucketFloor, nextBucketBoundary,
-  type NoteRequest,
+  BUCKET_SECONDS, MAX_BPM, MAX_VOICES, MIN_BPM, VoicePool, bucketFloor, bucketSecondsForBpm,
+  nextBucketBoundary, type NoteRequest,
 } from '@/audio/scheduler';
 
 function makeRequest(priority = 1): NoteRequest {
@@ -88,5 +88,41 @@ describe('audio/scheduler VoicePool concurrency cap', () => {
     expect(pool.activeCount(0)).toBe(2);
     pool.reset();
     expect(pool.activeCount(0)).toBe(0);
+  });
+
+  it('setMaxVoices live-adjusts the cap (the panel\'s "voice cap" control)', () => {
+    const pool = new VoicePool(8);
+    for (let i = 0; i < 8; i++) pool.tryAllocate(makeRequest(1), 0, 0);
+    expect(pool.activeCount(0)).toBe(8);
+    pool.setMaxVoices(3);
+    expect(pool.maxVoices).toBe(3);
+    // Tightening the cap doesn't retroactively cut already-sounding voices...
+    expect(pool.activeCount(0)).toBe(8);
+    // ...but new admissions are now held to the lower cap.
+    const admitted = pool.tryAllocate(makeRequest(1), 0, 0);
+    expect(admitted).toBeNull();
+  });
+
+  it('setMaxVoices never drops below 1 even if asked to', () => {
+    const pool = new VoicePool(4);
+    pool.setMaxVoices(0);
+    expect(pool.maxVoices).toBe(1);
+    pool.setMaxVoices(-5);
+    expect(pool.maxVoices).toBe(1);
+  });
+});
+
+describe('audio/scheduler — tempo-tunable bucket length', () => {
+  it('bucketSecondsForBpm is a strictly decreasing function of bpm', () => {
+    expect(bucketSecondsForBpm(MIN_BPM)).toBeGreaterThan(bucketSecondsForBpm(MAX_BPM));
+  });
+
+  it('clamps out-of-range bpm to [MIN_BPM, MAX_BPM]', () => {
+    expect(bucketSecondsForBpm(0)).toBeCloseTo(bucketSecondsForBpm(MIN_BPM), 10);
+    expect(bucketSecondsForBpm(10000)).toBeCloseTo(bucketSecondsForBpm(MAX_BPM), 10);
+  });
+
+  it('reproduces the fixed BUCKET_SECONDS constant at the original 72bpm', () => {
+    expect(bucketSecondsForBpm(72)).toBeCloseTo(BUCKET_SECONDS, 10);
   });
 });

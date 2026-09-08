@@ -101,6 +101,38 @@ handler now emits it instead of no-op'ing, and `@/ui/session.ts` owns the subscr
 **core**'s `history.advance()` note: `session.ts`'s `step()` calls it immediately after
 `engine.step()`, verified by `e2e/timeline.spec.ts`'s scrub-determinism test.
 
+## 2026-09-07 — tutorial — guided tour (`src/ui/tutorial/**`, `src/content/tour.ts`)
+**Need:** n/a — informational record. Built the first-run guided tour + "What is this?"
+entry point per the brief. Owned/new: `src/content/tour.ts` (script + target specs),
+`src/ui/tutorial/{tourStore,behaviors,targeting,layout,CoachMark,TourOverlay,AboutDialog}`.
+Also touched `src/ui/App.tsx` (mounted `TourOverlay`/`AboutDialog`, wired auto-start to
+`titleDismissed`) — all within my stated ownership.
+
+Beyond that ownership, made three small, additive edits outside it, each isolated to one
+new import + one new element, because the brief explicitly requires the replay control to
+live "near the shortcuts/help affordance" and be "listed in the shortcuts sheet", plus a
+HUD-reachable "About" entry:
+- `src/ui/icons.tsx`: added `CompassIcon` (used by the About button).
+- `src/ui/hud/Hud.tsx`: added one `Tooltip`+`IconButton` ("About AFTERLIFE", opens
+  `AboutDialog`) next to the existing shortcuts (`?`) button. Landed cleanly alongside the
+  audio agent's concurrent `WaveformIcon` addition to the same file — no conflict.
+- `src/ui/dialogs/ShortcutsDialog.tsx`: added a "Help" row group and a `Dialog` `footer`
+  button ("Replay the guided tour") that calls `useTourStore.getState().start(true)`.
+
+If the `ui`/`content` agents want these three touches done differently (a dedicated Help
+menu, different icon, different copy), they're small and easy to move — say so here and
+I'll follow.
+
+One a11y fix worth flagging for anyone else adding a floating/portaled overlay: axe's
+`region` rule ("all page content must be contained by a landmark") flagged the coach
+mark's card because it mounts as a fixed-position sibling near the document root, outside
+`<header>`/`<main>`/`<footer>`. Fixed by giving `CoachMark`'s outer wrapper
+`role="complementary" aria-label="Guided tour"`. `Toast`/`ShortcutsDialog` don't hit this
+today (empty `#toast-layer` mount point, and Radix's dialog content has its own
+`role="dialog"` landmark), but the same fix applies if a future overlay does.
+**Blocking?** no.
+**Resolution:** n/a.
+
 The parallel-build phase is over. A single integration agent then had full write access to
 every file (including everything listed as frozen above) to wire the modules together, add
 `src/ui/session.ts`'s scene loading / discoveries / experiments / persistence / compare-view
@@ -113,3 +145,26 @@ instead of the authoritative `TimelineStore.maxGen`), fix `sculpture/tokens.ts`'
 `ARCHITECTURE.md` §3 for the (now historical) file-ownership table.
 **Blocking?** no.
 **Resolution:** done.
+
+## 2026-09-07 — audio — instrument panel, MIDI output, audio-reactivity
+**Need:** n/a — informational record. Extended `src/audio/**` (scale modes, tunable
+tempo/density/drone/decay, MIDI output, system/mic capture) per a follow-up request to make
+the soundscape a "real instrument." Since `src/ui/App.tsx`/`src/ui/session.ts` are other
+agents' territory and the right-panel registration pattern lives in ordinary (non-frozen,
+non-listed) `src/ui/` files, I made small ADDITIVE edits to three shared files instead of
+routing through them:
+- `src/ui/uiState.ts`: added `'audio'` to the `RightPanelId` union.
+- `src/ui/panels/PanelRight.tsx`: imports the new `AudioPanel`, adds it to `TITLES` and the
+  render switch under `rightPanel === 'audio'`.
+- `src/ui/hud/Hud.tsx`: added a `WaveformIcon` HUD button ("Instrument") next to Settings,
+  toggling `rightPanel === 'audio'`.
+- `src/ui/icons.tsx`: added `WaveformIcon` (new export only, nothing existing touched).
+
+New persisted key: `afterlife:v1:audio-settings` (via `src/audio/settingsStore.ts`, reusing
+`STORAGE_PREFIX` from `@/persist/store` but NOT the `PersistStore` interface itself — that's
+shaped around `ExperimentDoc`, not arbitrary settings). No changes to `@/persist/**`,
+`@/ui/bus.ts`, `@/ui/store.ts`, or any frozen file. `@/audio/audio.ts`'s `createSoundscape()`
+now also reads `useAppStore`'s existing `speed`/`setSpeed` (an ordinary, already-public
+action) for the optional audio-reactive tempo nudge — no new coupling to `@/core/**`.
+**Blocking?** no.
+**Resolution:** n/a.

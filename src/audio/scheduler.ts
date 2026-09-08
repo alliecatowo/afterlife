@@ -13,6 +13,18 @@ export const BPM = 72;
  * this is what turns hundreds of births/sec into music instead of a barrage. */
 export const BUCKET_SECONDS = 60 / BPM / 2;
 
+/** Sane range for the panel's tempo control — well short of turning the
+ * instrument into a barrage, well short of losing the pulse entirely. */
+export const MIN_BPM = 30;
+export const MAX_BPM = 160;
+
+/** Bucket length (seconds) for a given BPM, same eighth-note relationship as
+ * the fixed `BUCKET_SECONDS`/`BPM` pair above. */
+export function bucketSecondsForBpm(bpm: number): number {
+  const clamped = Math.min(MAX_BPM, Math.max(MIN_BPM, bpm));
+  return 60 / clamped / 2;
+}
+
 /** Scheduler tick cadence (wall clock) — NOT per-note timing. */
 export const TICK_INTERVAL_SECONDS = 0.1;
 
@@ -64,10 +76,22 @@ interface ActiveVoice {
 export class VoicePool {
   #voices: ActiveVoice[] = [];
   #nextId = 1;
-  readonly maxVoices: number;
+  #maxVoices: number;
 
   constructor(maxVoices: number = MAX_VOICES) {
-    this.maxVoices = maxVoices;
+    this.#maxVoices = Math.max(1, maxVoices);
+  }
+
+  get maxVoices(): number {
+    return this.#maxVoices;
+  }
+
+  /** Live-adjust the concurrency cap (the panel's "voice cap" control).
+   * Never below 1 — the instrument always keeps at least one voice. Lowering
+   * the cap does not forcibly cut already-sounding voices; it only tightens
+   * admission from here on, so no abrupt clicks from cutting a ringing tail. */
+  setMaxVoices(maxVoices: number): void {
+    this.#maxVoices = Math.max(1, Math.round(maxVoices));
   }
 
   /** Drop any voice whose `endTime` has passed. */
