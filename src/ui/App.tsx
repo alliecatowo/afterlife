@@ -265,16 +265,35 @@ export function App() {
               // leaving the canvas at 0 width. Pinning every child to its
               // column makes that immune to which siblings are hidden.
               // `data-[open=false]:pointer-events-none` (mobile sheet mode
-              // only — `md:pointer-events-auto` restores it for the desktop
-              // rail, which is never actually "closed" the same way):
-              // closing this still takes `--duration-base` (220ms) to slide
-              // fully off-screen. Without this, a tap landing in the strip
-              // it's still animating across during that window hits the
-              // now-logically-closed drawer instead of the canvas
-              // underneath it — real, findable jank on a quick two-tap
-              // sequence (close, then immediately draw/select in that
-              // region), not just a test timing artifact.
-              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:pointer-events-auto md:static md:z-auto md:col-start-1 md:w-auto md:max-w-none md:translate-x-0 ' +
+              // only — `md:data-[open=false]:pointer-events-auto` restores it
+              // for the desktop rail, which is never actually "closed" the
+              // same way): closing this still takes `--duration-base` (220ms)
+              // to slide fully off-screen. Without this, a tap landing in the
+              // strip it's still animating across during that window hits the
+              // now-logically-closed drawer instead of the canvas underneath
+              // it — real, findable jank on a quick two-tap sequence (close,
+              // then immediately draw/select in that region), not just a test
+              // timing artifact.
+              //
+              // BUG (found via e2e/layout.spec.ts failing at desktop width
+              // with the collapsed rail entirely unclickable): a bare
+              // `md:pointer-events-auto` does NOT reliably override
+              // `data-[open=false]:pointer-events-none` here. Tailwind
+              // compiles `data-[open=false]:pointer-events-none` to
+              // `.data-\[open\=false\]\:pointer-events-none[data-open=false]`
+              // — a CLASS selector plus an ATTRIBUTE selector, specificity
+              // (0,2,0) — while a plain `md:pointer-events-auto` compiles to
+              // just `.md\:pointer-events-auto` inside a media query,
+              // specificity (0,1,0). The higher-specificity rule wins
+              // regardless of viewport, so the desktop "override" never
+              // actually applied — verified: `getComputedStyle(...)
+              // .pointerEvents` was `'none'` at 1440px whenever the rail was
+              // collapsed. Repeating the SAME `data-[open=false]` condition in
+              // the desktop override (`md:data-[open=false]:pointer-events-auto`)
+              // gives it the matching (0,2,0) specificity, so it wins on
+              // source order (Tailwind emits `md:` rules after the base
+              // layer) instead of losing to a specificity mismatch.
+              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:data-[open=false]:pointer-events-auto md:static md:z-auto md:col-start-1 md:w-auto md:max-w-none md:translate-x-0 ' +
               // Only matters in the mobile `fixed inset-y-0` sheet mode above
               // (`md:static` opts back into the ordinary grid row, which is
               // already safe-area-aware via the header/footer track heights):
@@ -338,8 +357,15 @@ export function App() {
               // See `#drawer-left`'s comment: explicit column placement so
               // this aside can never slide into the world's own track just
               // because `#drawer-left` happens to be `display:none`.
-              // See `#drawer-left`'s matching comment above.
-              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:pointer-events-auto md:static md:z-auto md:col-start-3 md:max-w-none md:translate-x-0 ' +
+              // See `#drawer-left`'s matching comment above — same
+              // specificity-mismatch fix (`md:data-[open=false]:pointer-events-auto`,
+              // not a bare `md:pointer-events-auto`), same real bug: this
+              // panel was UNCLICKABLE at desktop widths whenever it was
+              // "closed" (`rightPanel === null`), even though it should never
+              // need pointer-events disabled at desktop at all — there is no
+              // slide-off-screen animation state to guard against there,
+              // `md:w-0` already collapses it to zero width instantly.
+              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:data-[open=false]:pointer-events-auto md:static md:z-auto md:col-start-3 md:max-w-none md:translate-x-0 ' +
               (rightPanel ? 'md:w-auto' : 'md:w-0 md:translate-x-0') +
               ' min-h-0 overflow-y-auto ' +
               // See `#drawer-left`'s matching comment.

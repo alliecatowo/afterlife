@@ -225,11 +225,14 @@ mise exec -- npm run e2e         # playwright test — boots the real vite dev s
 ```
 
 Playwright chromium is installed for browser verification. `playwright.config.ts` defines
-two projects: `desktop` (1440x900, runs every spec under `e2e/`) and `mobile` (390x844,
-runs only `e2e/screenshots.spec.ts`). Screenshot output goes to `screenshots/`, which is
-gitignored — look at them after a run, don't just check the exit code. The dev server is
-started automatically (`webServer` in the Playwright config) unless one is already running
-on :5173, in which case it's reused.
+three projects: `desktop` (1440x900, runs every spec under `e2e/` except `prod-build.spec.ts`
+and the touch/390px-specific `mobile.spec.ts`), `mobile` (390x844, touch-enabled, runs
+`screenshots.spec.ts` and `mobile.spec.ts`), and `prod-build` (1440x900, runs only
+`prod-build.spec.ts` against a real production build served on its own port — see that
+project's own comment in `playwright.config.ts`). Screenshot output goes to `screenshots/`,
+which is gitignored — look at them after a run, don't just check the exit code. The dev
+server is started automatically (`webServer` in the Playwright config) unless one is already
+running on :5173, in which case it's reused.
 
 `src/ui/session.ts` exposes a dev-only `window.__AFTERLIFE__` (the live `Session`) when
 `import.meta.env.DEV` is true, dead-code-eliminated from production builds — this is what

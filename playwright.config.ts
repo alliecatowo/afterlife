@@ -38,7 +38,21 @@ export default defineConfig({
       // production bundle served on the `prod-build` project's own baseURL
       // (4173) — running it here too would silently point it at the DEV
       // server (5173) instead, which is exactly the gap BUG 1 fell through.
-      testIgnore: /prod-build\.spec\.ts/,
+      //
+      // `mobile.spec.ts` is written specifically for a touch-enabled 390px
+      // viewport (its own test names say so): it calls `.tap()` throughout,
+      // which Playwright refuses outside a context with `hasTouch: true`
+      // (only the `mobile` project below sets that), and several of its own
+      // assertions (e.g. "the HUD row never overflows horizontally") are
+      // meaningless at a 1440px desktop width — this project's OWN full-icon-
+      // row layout is a deliberately different, wider composition, not a
+      // scaled-up version of the 390px one. This mirrors the `mobile`
+      // project's own `testMatch` below (added when `mobile.spec.ts` was
+      // introduced) — that change updated where the file DOES run without
+      // also updating where it DOESN'T, so `desktop`'s "run everything"
+      // default silently picked it up too and failed for reasons that have
+      // nothing to do with this project's own viewport.
+      testIgnore: /(prod-build|mobile)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     {

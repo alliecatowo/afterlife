@@ -248,23 +248,49 @@ export function Hud() {
 
       <Divider orientation="vertical" className="hidden h-6 lg:block" />
       <div className="hidden shrink-0 items-center gap-2 lg:flex">
-        <EyeIcon className="text-ivory-300" />
-        <Toggle
-          aria-label="Render lens"
-          options={[
-            { value: 'life', label: 'Life' },
-            { value: 'age', label: 'Age' },
-            { value: 'activity', label: 'Activity' },
-            { value: 'lineage', label: 'Lineage' },
-            { value: 'immigration', label: 'Immigration' },
-            { value: 'quadlife', label: 'QuadLife' },
-            { value: 'velocity', label: 'Velocity' },
-            { value: 'neighbors', label: 'Neighbors' },
-          ]}
-          value={lens}
-          onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
-        />
-        <Legend items={safeLensLegend(lensLegend, lens)} className="ml-1" />
+        {/* The legend moved from an always-inline `<Legend>` block to this
+            hover/focus tooltip: with 8 lenses (up from 3), rendering every
+            lens's full legend inline pushed the HUD row's real content well
+            past a 1440px viewport with no visible scroll affordance — the
+            exact "control exists but isn't reachable" class of bug the
+            mobile agent already found and fixed for narrow widths (see
+            INTEGRATION-NOTES.md), recurring on ordinary desktop widths once
+            the lens set grew. Nothing about what a colour MEANS is lost —
+            it's a hover/focus away, and `HudMoreSheet.tsx`'s mobile/tablet
+            copy still shows it inline (that sheet has vertical room to
+            spare). */}
+        <Tooltip content={<Legend items={safeLensLegend(lensLegend, lens)} />} side="bottom">
+          <IconButton label={`Lens legend (${lens})`} icon={<EyeIcon />} />
+        </Tooltip>
+        {/* Growing from 3 to 8 lenses made the Toggle itself ~400px wider —
+            enough on its own to push the icon row (mute/presentation/
+            cinematic/about/logbook/shortcuts) off a 1440px viewport with no
+            visible affordance (confirmed: e2e/mobile.spec.ts's HUD-overflow
+            assertion, meant for 390px, caught this same overflow when it
+            accidentally also ran at 1440px under the `desktop` project — see
+            INTEGRATION-NOTES.md). Capping this wrapper's own width and
+            letting IT scroll internally (rather than letting the whole HUD
+            row overflow) keeps every other control's position stable and
+            confines "there's more here" to one small, visibly-clipped
+            control — a real scroll cue, not a silent one. All 8 options stay
+            one Tab/click away either way; nothing becomes unreachable. */}
+        <div className="max-w-[210px] overflow-x-auto">
+          <Toggle
+            aria-label="Render lens"
+            options={[
+              { value: 'life', label: 'Life' },
+              { value: 'age', label: 'Age' },
+              { value: 'activity', label: 'Activity' },
+              { value: 'lineage', label: 'Lineage' },
+              { value: 'immigration', label: 'Immigration' },
+              { value: 'quadlife', label: 'QuadLife' },
+              { value: 'velocity', label: 'Velocity' },
+              { value: 'neighbors', label: 'Neighbors' },
+            ]}
+            value={lens}
+            onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
+          />
+        </div>
       </div>
 
       <div className="flex-1" />
