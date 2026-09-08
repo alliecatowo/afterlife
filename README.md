@@ -17,7 +17,9 @@ each slice a real recorded frame rather than a re-simulation. Change a cell at a
 point in the past and the future forks: the world you had and the world you made
 now run side by side, comparable cell for cell.
 
-Live at **<https://alliecatowo.github.io/afterlife/>**.
+Live at **<https://alliecatowo.github.io/afterlife/>**. The guide and wiki — a
+longer walkthrough, a specimen catalogue, and the full verification record —
+are at **<https://alliecatowo.github.io/afterlife/guide/>**.
 
 ## Running it locally
 
@@ -59,13 +61,27 @@ Sculpture — a 3D stack of every one of those generations, one slice per frame,
 that you can orbit and slide a plane through to read the whole story of a
 collision or a chase from the side.
 
+First run also gets a guided tour that spotlights the real UI and waits for
+you to actually do each step (or does it for you, if you'd rather watch) —
+replay it any time from **?**.
+
 ## What it's built from
 
 **The living world.** A 256x160 toroidal grid, standard B3/S23, drawn on a plain
 2D canvas so the simulation loop never has to fight React for frame time. Draw,
-erase, pan, zoom, select and stamp specimens onto it; three lenses (life, age,
-activity) recolor the same cells to answer different questions about what's
-happening.
+erase, pan, zoom, select and stamp specimens onto it.
+
+**Colour, honestly.** Eight lenses recolor the same cells without ever
+touching the rule underneath. `life`/`age`/`activity` are real multi-hue
+spectral ramps; `lineage` blends a newborn's hue from the circular mean of its
+three parents', so colliding populations visibly interbreed; `immigration`
+and `quadlife` are the classic 2- and 4-colour Life variants (majority-of-3
+birth colour, a 3-way tie takes the unused colour) running the exact same
+B3/S23 underneath; `velocity` reads local directional bias; `neighbors` is a
+spectral ramp over live-neighbour count. A test poisons colour state and
+confirms the resulting bits never change, and colour reproduces exactly
+through deterministic replay. A colourblind-safe (Okabe-Ito) palette is a
+toggle in Settings. Switch lenses with **1**–**8**.
 
 **Time as a physical thing.** The history ribbon isn't a scrollbar bolted onto a
 simulation — it's the actual record. Scrubbing calls `goto(gen)`, which restores
@@ -87,7 +103,28 @@ specimens (still lifes, oscillators, spaceships, guns) as they appear and logs
 them as discoveries you can follow, rename, and jump back to. Three authored
 experiments — One Cell, First Contact, Keep Something Alive — are small,
 scored puzzles built on the same mechanics: change something, watch what
-happens, get an honest verdict instead of a badge.
+happens, get an honest verdict instead of a badge. A 14-entry achievements
+logbook (HUD icon, or **L**) records what you've actually witnessed — real
+bus events only, never a timer standing in for "the user did it" — in a
+naturalist's-log voice.
+
+**An instrument, not just a picture.** A WebAudio soundscape turns
+population, births, deaths and activity into scheduled, pitched notes: 5
+timbres (pluck, bell, bow, breath, perc, alongside the original mallet/glass/
+pad/accent set), 4 presets (Observatory — the original default — Glass, Deep,
+Chime), slow harmonic drift driven by a dual-EMA population tracker gated to
+at most one change per 60 seconds, and opt-in generative percussion. Notes
+can also drive a real synth or DAW over **Web MIDI** (port/channel selection,
+guaranteed note-offs, an all-notes-off panic), and the soundscape can react to
+system or microphone audio (`getDisplayMedia`/`getUserMedia`) — structurally
+limited to presentation and tempo, since it only ever touches playback speed
+and existing audio settings, never `@/core`.
+
+**Cinematic mode.** `C` hands the camera to an auto-pan choreographer that
+scores regions by real activity, density and confirmed travellers, holds on
+what it finds, lingers on the aftermath when a tracked traveller dies, and
+pulls back periodically. Any real input pauses it without exiting; `Esc`
+exits.
 
 ## Keyboard shortcuts
 
@@ -109,10 +146,16 @@ Everything below is also in-app under **?**.
 | `R` | Rotate the stamp (or the selection's contents, if one is active) |
 | `F` | Flip the stamp (or the selection's contents, if one is active) |
 | `Z` | Undo last edit |
-| `1` / `2` / `3` | Life / age / activity lens |
+| `1`–`8` | Render lens — life / age / activity / lineage / immigration / quadlife / velocity / neighbors |
 | `V` | Presentation mode |
+| `C` | Cinematic mode — auto-pan, full-screen, hands-off (any input pauses it; `Esc` exits) |
+| `L` | Logbook — a naturalist's record of what you've witnessed |
 | `?` | Keyboard shortcuts sheet |
 | `Esc` | Close dialog / panel / presentation, or cancel the current selection / armed stamp |
+
+Also in the shortcuts sheet: the compass icon ("What is this?") opens a short
+explanation and the guided tour, and its footer has a **Replay the guided
+tour** button.
 
 ## What was verified
 
@@ -152,8 +195,41 @@ walkthrough is in [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.m
   puffer**: over 2,600 candidate arrangements were searched and none produced a
   clean, verifiable periodic puffer, so none shipped rather than shipping one on
   a guess.
-- 220 unit tests across 26 files, plus 38 Playwright end-to-end tests (desktop
-  at 1440x900, mobile at 390x844); `typecheck` and `build` both run clean.
+- **Colour never touches the rule.** A test seeds hue/species colour state,
+  actively poisons it, and confirms the resulting live/dead bits are
+  byte-identical to a run with no colour reasoning applied at all — B3/S23
+  cannot see colour. Colour itself (hue, species) is captured in history
+  keyframes alongside the bits and reproduces exactly through rewind,
+  branching and reload — the fix for a real bug where a reload used to lose
+  colour, traced to replay skipping edits recorded at the generation-0
+  baseline.
+- **Mobile touch actually commits.** `#endPinch()` used to unconditionally
+  clear the active drag mode on every single-finger release, which meant
+  100% of one-finger draw/erase/select touches silently failed to commit on
+  a real touch device. Fixed, and covered by the `mobile` Playwright project.
+- **The production build itself is checked**, not just the dev server: a
+  `prod-build` Playwright project builds for real and asserts actual canvas
+  pixels are non-white/non-grey and that every lens — including the five
+  multi-hue ones — produces genuinely differentiated colour, not a silent
+  fallback. This is the regression test for a real shipped bug: Tailwind v4 +
+  Lightning CSS downlevel design tokens to `lab(...)` in production (the dev
+  server serves `oklch(...)` verbatim), which broke the old regex-only colour
+  parser and silently fell back to solid white for every lens — in
+  production only, which is exactly why it shipped once before this check
+  existed. See [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.md)
+  §7 for detail.
+- **A CPU-pinning render loop was fixed**, measured with Chrome's CDP
+  performance metrics on the dev server: idle-paused went from 60 draws/sec
+  at 11.7% main-thread CPU to ~0.3 draws/sec at 2.7%; playing at 12
+  generations/sec went from 60.7 draws/sec (always 60fps, regardless of sim
+  speed) at 15.0% CPU to 11.7 draws/sec (tracking the actual generation
+  rate) at 6.5% CPU.
+- **516 unit tests** across 49 files, plus **94 Playwright end-to-end tests**
+  (68 desktop at 1440x900, 20 mobile at 390x844 touch-enabled, 6 `prod-build`
+  against a real production build served with `vite preview`); `typecheck`
+  and `build` both run clean. Production bundle, measured from a real build:
+  the app chunk is 533 kB (169 kB gzipped), the lazily-loaded Time Sculpture
+  chunk is 996 kB (277 kB gzipped) and never loads until you open it.
 
 ## Known limitations
 
@@ -178,6 +254,13 @@ walkthrough is in [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.m
 - End-to-end specs under `e2e/` sit outside `tsconfig.json`'s `include` by
   design — they run under Playwright's own TypeScript handling, not the app's
   `tsc --noEmit` project.
+- **Web MIDI output** and **system/mic audio reactivity** depend on browser
+  support (`navigator.requestMIDIAccess`, `getDisplayMedia`/`getUserMedia`)
+  and, for MIDI, real or virtual hardware — both degrade to an honest
+  disabled/unsupported state rather than a silent no-op when unavailable.
+  Audio reactivity only ever adjusts presentation (density, drone filter
+  range) and playback speed; it has no code path into `@/core` and cannot
+  affect simulation state.
 
 The authored scenes and specimen set were arrived at by simulation search, not
 hand-tuning by eye — see [`docs/verification/`](./docs/verification/) for the
@@ -191,3 +274,8 @@ scripts and full logs behind every number above.
 - [`DESIGN.md`](./DESIGN.md) — the visual and interaction design system.
 - [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.md) — a guided
   read of the verification evidence.
+- **[The guide and wiki](https://alliecatowo.github.io/afterlife/guide/)** —
+  a longer, illustrated walkthrough plus an 8-page wiki: getting started,
+  Life fundamentals, the specimen catalogue, features (lenses, audio,
+  cinematic mode, the tour, achievements), shortcuts, how it works, and
+  verification. Built from `site/**`, deployed alongside the app.

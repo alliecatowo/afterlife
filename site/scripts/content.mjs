@@ -20,7 +20,7 @@ export const WIKI_PAGES = [
   { slug: 'getting-started', title: 'Getting started', summary: 'The one-minute tour of the app.' },
   { slug: 'fundamentals', title: 'Life fundamentals', summary: 'The three rules, and a glossary of every term you’ll hit.' },
   { slug: 'specimens', title: 'Specimen catalogue', summary: 'All 24 verified specimens in the drawer, with their proven periods and displacements.' },
-  { slug: 'features', title: 'Features', summary: 'Lenses, the history ribbon, the Time Sculpture, branching, the field guide, experiments, audio, cinematic mode.' },
+  { slug: 'features', title: 'Features', summary: 'The 8 colour lenses, the history ribbon, the Time Sculpture, branching, the field guide and achievements logbook, experiments, the audio instrument (MIDI, reactivity), cinematic mode, and the guided tour.' },
   { slug: 'shortcuts', title: 'Keyboard shortcuts', summary: 'Every binding, matching the in-app sheet exactly.' },
   { slug: 'how-it-works', title: 'How it works', summary: 'The honest engineering account: the world, the history model, and why Life can’t be reverse-stepped.' },
   { slug: 'verification', title: 'Verification', summary: 'What was actually proven by running the engine — and what wasn’t.' },

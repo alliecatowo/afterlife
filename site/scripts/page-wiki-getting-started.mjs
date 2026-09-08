@@ -49,11 +49,16 @@ export function renderGettingStarted() {
               </p>
             </li>
           </ol>
+          <p>
+            The app also runs a first-run guided tour automatically, with a real
+            spotlight on whatever it's teaching — replay it any time from
+            <kbd>?</kbd> or the compass icon if you skipped it.
+          </p>
           <h2>Where to go next</h2>
           <ul>
             <li><a href="../fundamentals/">Life fundamentals</a> — if the rules themselves aren't clear yet.</li>
             <li><a href="../shortcuts/">Keyboard shortcuts</a> — everything is also reachable from <kbd>?</kbd> in-app.</li>
-            <li><a href="../features/">Features</a> — the full rundown of lenses, branching, the field guide, audio and cinematic mode.</li>
+            <li><a href="../features/">Features</a> — the full rundown of lenses, branching, the field guide, the achievements logbook, audio, and cinematic mode.</li>
           </ul>
 `;
 

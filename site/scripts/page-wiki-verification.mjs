@@ -63,6 +63,48 @@ export function renderVerification() {
             ship an unverified "puffer," the specimen was cut entirely.
           </p>
 
+          <h2 id="colour-and-b3s23">Colour never touches the rule</h2>
+          <p>
+            The 5 newer lenses (lineage, immigration, quadlife, velocity, neighbors —
+            see <a href="../features/#lenses">Features</a> for what each means) add
+            colour state that rides along with every cell. A dedicated test seeds that
+            colour state, actively poisons it, and confirms the resulting live/dead
+            bits come out byte-identical to a run with no colour reasoning applied at
+            all — including a glider's exact shape and period, and two identically
+            seeded engines matching bit-for-bit after 40 steps. Colour also survives
+            rewind, branching and reload bit-exactly, because it's captured directly in
+            history keyframes rather than replayed forward from a default (the fix for
+            a real bug where colour used to be lost on reload, traced to replay
+            skipping edits recorded at the generation-0 baseline).
+          </p>
+
+          <h2 id="production-build">The production build itself is checked</h2>
+          <p>
+            A dedicated Playwright project builds the app for real — <code>vite
+            build</code>, not the dev server — and asserts against actual rendered
+            canvas pixels: every lens (including the 5 multi-hue ones) produces real,
+            richly differentiated, never-white colour, and switching between all 8 in
+            the built bundle produces zero new console errors. This exists because of a
+            real shipped bug: Tailwind v4 + Lightning CSS downlevel design tokens to
+            <code>lab(...)</code> in the production build (the dev server serves
+            <code>oklch(...)</code> verbatim), which broke the old regex-only colour
+            parser and made it silently fall back to solid white for every lens — in
+            production only, which is exactly why it shipped once before this check
+            existed.
+          </p>
+
+          <h2 id="mobile-touch">Mobile touch actually commits</h2>
+          <p>
+            A real bug, now fixed and covered: the touch-input handler used to
+            unconditionally clear the active drag mode on every single-finger release,
+            which meant <strong>100% of one-finger draw/erase/select touches silently
+            failed to commit</strong> on a real touch device — no error, the mark just
+            never appeared. Dedicated mobile end-to-end coverage now asserts a
+            single-finger draw commits on release, a plain tap with no movement also
+            commits, two fingers pan/zoom without drawing, and a second finger landing
+            mid-stroke ends the draw cleanly instead of corrupting it.
+          </p>
+
           <h2 id="limitations">Known limitations</h2>
           <p>Honest gaps, not hidden ones:</p>
           <ul>
@@ -70,18 +112,19 @@ export function renderVerification() {
             <li>Specimen recognition reliably auto-names gap-heavy shapes (the pulsar, the pentadecathlon, both glider guns) only when the shape is the sole occupant of the scanned region — their internal gaps fragment the connected-components fallback into several unnamed pieces if anything else shares the region.</li>
             <li>On narrow screens, the drawer and inspector become slide-over sheets rather than docked columns; unlike the app's dialogs, these sheets are not focus-trapped.</li>
             <li>One hairline colour token (used for the active branch row and similar decorative accents) falls below the 3:1 ratio WCAG's non-text-contrast guidance recommends — a deliberate choice for a purely decorative edge, not an oversight.</li>
+            <li>Web MIDI output and system/mic audio reactivity depend on real browser and hardware support and degrade to an honest disabled state, never a silent no-op, when unavailable.</li>
           </ul>
           <p>
-            220 unit tests across 26 files, plus 38 Playwright end-to-end tests
-            (desktop and mobile viewports), back all of the above; <code>typecheck</code>
-            and <code>build</code> both run clean.
+            516 unit tests across 49 files, plus 94 Playwright end-to-end tests (68
+            desktop, 20 mobile-touch, 6 against a real production build), back all of
+            the above; <code>typecheck</code> and <code>build</code> both run clean.
           </p>
 `;
 
   return renderWikiArticle({
     slug: 'verification',
     title: 'Verification',
-    description: 'What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, and the 24-specimen catalogue — plus the honest limitations.',
+    description: 'What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations.',
     bodyHtml,
   });
 }

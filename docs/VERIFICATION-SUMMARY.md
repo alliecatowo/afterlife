@@ -125,6 +125,91 @@ settling into a repeating pattern. Two remembered block-laying-switch-engine
 constructions were also tried from memory and both failed the same way. Rather
 than ship an unverified "puffer," the specimen was cut.
 
+## 6. Colour: proven cosmetic, proven bit-exact
+
+Everything below was checked against the actual engine (`tests/engine-color.test.ts`),
+not inferred from reading `src/core/lineage.ts`'s doc comments.
+
+- **Colour cannot influence B3/S23.** The test seeds `hue`/`species` colour
+  state, actively poisons it, and confirms the resulting live/dead bits are
+  byte-identical to a run with no colour reasoning applied at all — including
+  a standard glider's exact 5-cell shape and (1,1)-per-4-generations
+  displacement, and two identically-seeded 64x64 engines producing
+  bitwise-identical state (and identical population) after 40 steps each.
+- **Colour reproduces exactly through rewind, branching and reload.** Unlike
+  `age`, a long-lived survivor's colour is never recomputed after its birth,
+  so it has to be captured in history keyframes directly rather than
+  replayed forward from a default — `history.ts` now does this. The bug this
+  fixes: colour (and the bits computed by replaying it) used to not survive
+  a page reload at all. Root cause: replay was skipping edits recorded at
+  the generation-0 baseline, so a fresh `goto()` from a restored keyframe
+  silently dropped gen-0 colour edits. Fixed by no longer treating
+  generation 0 as a no-op replay target.
+- **Lineage inheritance is genuine circular-mean math**, not a nearest-parent
+  pick or a simple average that would wrap incorrectly across the 0°/360°
+  seam — verified directly against `circularMean3`.
+- **Immigration and QuadLife are one simulation, not two.** Both lenses read
+  the same `species` buffer; `immigration` is a coarser 2-bucket view
+  ({1,2}→A, {3,4}→B) of the identical 4-colour data `quadlife` shows at full
+  resolution, so there is no second birth-rule code path that could drift
+  out of sync with B3/S23.
+
+## 7. What the production build itself proves
+
+A dedicated `prod-build` Playwright project (`e2e/prod-build.spec.ts`) builds
+the app for real via `vite build` (not the dev server) and serves it with
+`vite preview`, then asserts against actual rendered canvas pixels:
+
+- Cells render a real, chromatic colour under every lens — never white,
+  never grey. This is the regression test for a real shipped bug: Tailwind
+  v4 + Lightning CSS downlevel `oklch(...)` design tokens to `lab(...)` in
+  the production build (confirmed: the built CSS contains zero `oklch(`
+  occurrences), which broke the old regex-only token parser and made it
+  silently fall back to hardcoded white for every lens, in production only
+  — dev was never affected, which is exactly why it shipped once.
+- `life`/`age`/`activity` are genuinely, richly differentiated colours from
+  each other.
+- `lineage`/`quadlife`/`velocity`/`neighbors` are genuinely multi-hued — a
+  real hue sweep, not one hue rendered at different lightnesses.
+- `immigration` renders exactly two clearly separated populations, not two
+  shades of one hue.
+- Switching between all 8 lenses in the real production bundle produces zero
+  new console errors.
+
+## 8. Mobile touch: the commit path was silently broken, now fixed and covered
+
+`src/interact/input.ts`'s `#endPinch()` used to unconditionally clear
+`#dragMode` on every single-finger touch release — including plain one-finger
+draw/erase/select gestures that never went through a pinch at all — because
+`#stopDrag()` (the method that actually decides whether to commit an edit)
+reads `#dragMode` to make that decision. The practical effect: **100% of
+one-finger draw/erase/select touches silently failed to commit** on a real
+touch device, with no error, no visual sign anything was wrong beyond the
+mark just not appearing. Fixed, and now covered by dedicated assertions in
+the `mobile` Playwright project (390x844, touch-enabled): a single-finger
+draw commits on release, a plain tap with no movement also commits, two
+fingers pan/zoom without drawing, and a second finger landing mid-stroke
+ends the draw cleanly instead of corrupting it.
+
+## 9. Full suite, as actually run
+
+`typecheck` (`tsc --noEmit`): clean. Unit tests: **516 passed, 0 failed**,
+across 49 files (`vitest run`, 6.78s). Production build (`vite build`):
+succeeds; real measured bundle sizes are the app chunk at 533 kB (169 kB
+gzipped) and the lazily-loaded Time Sculpture chunk — which costs nothing
+until you open it — at 996 kB (277 kB gzipped).
+
+End-to-end (`playwright test`, 94 specs: 68 `desktop` + 20 `mobile` + 6
+`prod-build`): a full sequential run completed in **93 passed, 1 failed** —
+`tour.spec.ts`'s "does not auto-show again on a second visit" hit
+Playwright's 45s action timeout waiting for the "Skip tour" button to settle,
+under the resource contention of running the entire suite back-to-back on
+one worker. Re-run in isolation immediately afterward, it passed in 1.7s.
+That's a load-sensitive flake in the test's own click-timing, not a
+regression in the tour itself — but it means the honest current state is
+"94/94 achievable, one flake observed under full-suite load" rather than a
+clean 94/94 in every run.
+
 ## Reading the raw files yourself
 
 - `docs/verification/life.mjs` / `sparse.mjs` — the standalone simulators used
@@ -135,3 +220,8 @@ than ship an unverified "puffer," the specimen was cut.
 - `docs/verification/VERIFICATION.md` — the full log: every command's output,
   full ASCII renders of each scene at multiple generations, and the population
   tables the summaries above are drawn from.
+- `tests/engine-color.test.ts` — the colour/B3-S23 invariance and
+  replay-bit-exactness tests behind §6, run against the real `src/core/engine.ts`
+  and `src/core/history.ts`, not a standalone reimplementation.
+- `e2e/prod-build.spec.ts` and `e2e/mobile.spec.ts` — the real-browser
+  assertions behind §7 and §8, run against an actual built/served app.
