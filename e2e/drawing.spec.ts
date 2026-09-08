@@ -1,7 +1,81 @@
 import { expect, test } from '@playwright/test';
-import { currentGen, dismissTitle, ensurePaused, openApp, realGen } from './utils';
+import {
+  applyEditDirect, currentGen, dismissTitle, ensurePaused, openApp, realGen, worldToScreen,
+} from './utils';
 
 test.describe('drawing', () => {
+  test('BUG 2: a stroke is visible under the cursor WHILE dragging, before mouseup commits it', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+    await ensurePaused(page);
+    await page.keyboard.press('d'); // draw tool
+
+    // A cell far from the opening scene's populated area, forced dead so the
+    // test isn't at the mercy of what's already alive there.
+    const cell = { x: 8, y: 8 };
+    await applyEditDirect(page, [{ x: cell.x, y: cell.y, alive: false }]);
+    await page.waitForTimeout(50);
+
+    const before = await page.evaluate(
+      (c) => (window as unknown as { __AFTERLIFE__: { engine: { get(x: number, y: number): boolean } } })
+        .__AFTERLIFE__.engine.get(c.x, c.y),
+      cell,
+    );
+    expect(before, 'the test cell must start dead').toBe(false);
+
+    const screen = await worldToScreen(page, cell.x + 0.5, cell.y + 0.5);
+    const canvasBox = (await page.locator('#world-canvas').boundingBox())!;
+    await page.mouse.move(canvasBox.x + screen.x, canvasBox.y + screen.y);
+    await page.mouse.down();
+    // Deliberately NOT calling mouse.up() yet — the whole point is what's on
+    // screen WHILE the gesture is still in progress, uncommitted.
+    await page.waitForTimeout(120); // let the dirty-flag-gated render loop pick it up
+
+    // The engine itself must NOT have been touched yet — this is a live
+    // PREVIEW (`WorldRenderer.setStrokePreview`), not a premature mutation;
+    // the atomic-commit contract (ARCHITECTURE.md § Atomic edit commit) is
+    // unchanged by BUG 2's fix.
+    const duringEngine = await page.evaluate(
+      (c) => (window as unknown as { __AFTERLIFE__: { engine: { get(x: number, y: number): boolean } } })
+        .__AFTERLIFE__.engine.get(c.x, c.y),
+      cell,
+    );
+    expect(duringEngine, 'the engine must not mutate until the gesture commits').toBe(false);
+
+    // But the pixel under the cursor must already show paint — sample a
+    // small patch around the cell's centre so a thin grid hairline can't
+    // produce a false negative.
+    const painted = await page.evaluate(
+      ({ sx, sy, dpr }) => {
+        const canvas = document.getElementById('world-canvas') as HTMLCanvasElement;
+        const ctx = canvas.getContext('2d')!;
+        const px = Math.round(sx * dpr);
+        const py = Math.round(sy * dpr);
+        const size = Math.max(1, Math.round(4 * dpr));
+        const { data } = ctx.getImageData(px - size, py - size, size * 2, size * 2);
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 0) return true; // any non-transparent pixel: something was painted here
+        }
+        return false;
+      },
+      { sx: screen.x, sy: screen.y, dpr: await page.evaluate(() => window.devicePixelRatio || 1) },
+    );
+    expect(painted, 'the stroke must be visible under the cursor while still dragging').toBe(true);
+
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    // Once released (and paused, so the commit is immediate — see
+    // `session.ts`'s `onGestureEnd` handler), the real engine now agrees.
+    const afterEngine = await page.evaluate(
+      (c) => (window as unknown as { __AFTERLIFE__: { engine: { get(x: number, y: number): boolean } } })
+        .__AFTERLIFE__.engine.get(c.x, c.y),
+      cell,
+    );
+    expect(afterEngine).toBe(true);
+  });
+
+
   test('a continuous fast diagonal stroke forms a connected line (no gaps)', async ({ page }) => {
     await openApp(page);
     await dismissTitle(page);

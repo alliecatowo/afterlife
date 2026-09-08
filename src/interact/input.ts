@@ -259,6 +259,20 @@ class InputControllerImpl implements InputController {
     this.#pendingMap.set(`${x},${y}`, { x, y, alive });
   }
 
+  /**
+   * BUG 2: hand the current in-progress draw/erase gesture's pending cells to
+   * the renderer so they paint immediately, under the cursor, as the stroke
+   * happens — instead of only becoming visible once the gesture ends AND the
+   * edit is flushed into the engine (which, while playing, doesn't happen
+   * until the next generation boundary). Only called from the freehand
+   * draw/erase drag path; stamp/select/moveSelection already have their own
+   * live preview (the ghost) and commit in one atomic step with no dragging
+   * gap to bridge.
+   */
+  #syncStrokePreview(): void {
+    this.#renderer.setStrokePreview(this.#pendingMap ? [...this.#pendingMap.values()] : null);
+  }
+
   #finishGesture(): void {
     const op = this.pending;
     if (op && this.#engine && this.#gesturePrior) {
@@ -270,6 +284,10 @@ class InputControllerImpl implements InputController {
       if (this.#undoStack.length > UNDO_STACK_LIMIT) this.#undoStack.shift();
     }
     this.#gesturePrior = null;
+    // The stroke's own preview job is done — from here the CALLER (via
+    // `onGestureEnd`/`commit()`) is responsible for the edit's visible
+    // representation, drawn for real once it reaches the engine.
+    this.#renderer.setStrokePreview(null);
     if (op) for (const cb of [...this.#gestureEndCbs]) cb();
   }
 
@@ -394,6 +412,7 @@ class InputControllerImpl implements InputController {
     this.#dragMode = erase ? 'erase' : 'draw';
     this.#lastCell = cell;
     this.#paintCell(cell.x, cell.y, !erase);
+    this.#syncStrokePreview();
   };
 
   #onPointerMove = (e: PointerEvent): void => {
@@ -453,6 +472,7 @@ class InputControllerImpl implements InputController {
         this.#paintCell(p.x, p.y, alive);
       }
       this.#lastCell = cell;
+      this.#syncStrokePreview();
     }
   };
 
@@ -713,6 +733,7 @@ class InputControllerImpl implements InputController {
     bus.emit('selection:changed', { rect: null });
     this.#stampPattern = null;
     this.#renderer.setGhost(null, 0, 0, IDENTITY_TRANSFORM);
+    this.#renderer.setStrokePreview(null);
   }
 }
 

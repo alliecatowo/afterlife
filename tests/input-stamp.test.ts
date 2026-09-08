@@ -28,7 +28,10 @@ function makeFakeRenderer(): WorldRenderer & { ghostCalls: unknown[]; selectionC
     },
     setSelection(rect: Rect | null) { selectionCalls.push(rect); },
     setDiffOverlay() {},
+    setStrokePreview() {},
     setShowGrid() {},
+    invalidate() {},
+    consumeDirty() { return false; },
     async exportImage(_opts?: ExportImageOptions) { return new Blob(); },
     dispose() {},
   };

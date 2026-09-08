@@ -162,7 +162,10 @@ export function initSession(): Session {
     const myToken = ++compareToken;
     try {
       const clone = await history.cloneBranchAt(compareWith, engine.gen);
-      if (myToken === compareToken) compareEngine = clone;
+      if (myToken === compareToken) {
+        compareEngine = clone;
+        compareRenderer.invalidate();
+      }
     } catch {
       // e.g. HistoryWindowError — leave the last good compareEngine in place.
     }
@@ -195,17 +198,28 @@ export function initSession(): Session {
   bus.on('audio:toggle', persistAudioPref);
   bus.on('audio:volume', persistAudioPref);
 
-  // ---- rendering: always live, independent of play state -----------------
+  // ---- rendering: always LIVE (this loop itself never stops), independent
+  // of play state — panning, ghost preview and selection must stay
+  // responsive while paused — but each renderer's actual `draw()` call is
+  // GATED on that renderer's own dirty flag (see `WorldRenderer.consumeDirty`'s
+  // doc, BUG 4). An idle paused world with nothing changing skips both the
+  // main and compare `draw()` entirely: no per-frame `ImageData` rebuild, no
+  // per-cell iteration — just this cheap rAF callback running at ~0 cost.
+  // The world canvas is also skipped while the Time Sculpture is showing
+  // (`worldCanvas` is hidden then; see `showSculptureCanvas`) — no point
+  // painting a hidden canvas every frame.
   let lastFrameTime = 0;
   function frame(now: number): void {
     const dt = lastFrameTime ? Math.min(0.1, (now - lastFrameTime) / 1000) : 0;
     lastFrameTime = now;
     camera.tick(dt);
     renderer.setCamera(camera.camera);
-    renderer.draw(engine);
+    if (!readState().sculptureOpen && renderer.consumeDirty()) {
+      renderer.draw(engine);
+    }
     if (compareEngine && readState().compareWith) {
       compareRenderer.setCamera(camera.camera);
-      compareRenderer.draw(compareEngine);
+      if (compareRenderer.consumeDirty()) compareRenderer.draw(compareEngine);
     }
     requestAnimationFrame(frame);
   }
@@ -275,6 +289,11 @@ export function initSession(): Session {
 
   /** The one place `gen:changed` is emitted from — also fires scene beats. */
   function emitGen(): void {
+    // The renderer has no reference to `engine`'s internal state (`draw()`
+    // takes it as a parameter each call) so it can't detect a step or a
+    // committed edit itself — tell it explicitly. See BUG 4's dirty-flag doc.
+    renderer.invalidate();
+    compareRenderer.invalidate();
     bus.emit('gen:changed', { gen: engine.gen, population: engine.population });
     checkBeats(engine.gen);
   }
@@ -393,14 +412,20 @@ export function initSession(): Session {
     if (!readState().playing) emitGen();
   });
 
-  // ---- lens: mirror the bus intent onto the live renderer -----------------
-  bus.on('lens:changed', ({ lens }) => renderer.setLens(lens));
+  // ---- lens: mirror the bus intent onto both live renderers ---------------
+  bus.on('lens:changed', ({ lens }) => {
+    renderer.setLens(lens);
+    compareRenderer.setLens(lens);
+  });
 
   // ---- grid: `input.ts`'s own 'g' shortcut calls `renderer.setShowGrid`
   // directly, but the Drawer/Settings checkboxes only write to the store —
-  // mirror any store change onto the renderer so every entry point agrees. --
+  // mirror any store change onto both renderers so every entry point agrees. --
   useAppStore.subscribe((state, prev) => {
-    if (state.showGrid !== prev.showGrid) renderer.setShowGrid(state.showGrid);
+    if (state.showGrid !== prev.showGrid) {
+      renderer.setShowGrid(state.showGrid);
+      compareRenderer.setShowGrid(state.showGrid);
+    }
   });
 
   // ---- time sculpture --------------------------------------------------------

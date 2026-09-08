@@ -20,7 +20,10 @@ function makeFakeRenderer(): WorldRenderer {
     setGhost() {},
     setSelection() {},
     setDiffOverlay() {},
+    setStrokePreview() {},
     setShowGrid() {},
+    invalidate() {},
+    consumeDirty() { return false; },
     async exportImage(_opts?: ExportImageOptions) { return new Blob(); },
     dispose() {},
   };

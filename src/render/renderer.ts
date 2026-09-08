@@ -49,8 +49,35 @@ export interface WorldRenderer {
   setSelection(rect: Rect | null): void;
   /** Row-major diff cells over the last selection rect. 0 same / 1 A-only / 2 B-only. */
   setDiffOverlay(cells: Uint8Array | null): void;
+  /**
+   * Live, uncommitted stroke cells (from an in-progress draw/erase gesture)
+   * to paint immediately, before the caller commits them to the engine. Pass
+   * null to clear. See BUG 2: without this, a drawn stroke was invisible
+   * until the gesture ended AND the edit was flushed to the engine (instant
+   * while paused, but delayed to the next generation boundary while
+   * playing) — nothing showed under the cursor while actually dragging.
+   */
+  setStrokePreview(cells: ReadonlyArray<{ x: number; y: number; alive: boolean }> | null): void;
   /** Show/hide the world grid when the zoom level allows (default true). */
   setShowGrid(show: boolean): void;
+  /**
+   * Force the next `consumeDirty()` to report true. For state changes the
+   * renderer can't observe itself (the engine mutating — a step or a
+   * committed edit — since `draw()` takes the engine as a parameter rather
+   * than the renderer holding a reference to it).
+   */
+  invalidate(): void;
+  /**
+   * True if anything visible has changed since the last call (camera, lens,
+   * grid, ghost, selection, diff overlay, stroke preview, an explicit
+   * `invalidate()`, or a `resize()`) — and clears that flag. The render loop
+   * uses this to skip the (comparatively expensive) `draw()` call entirely
+   * when nothing would look different, so an idle paused world costs
+   * ~nothing per frame instead of rebuilding a full `ImageData` 60 times a
+   * second for no visible change. `draw()` itself is unaffected by this flag
+   * — it always draws when called; gating is the caller's job.
+   */
+  consumeDirty(): boolean;
   /** Current CSS-pixel viewport size, for wiring the camera controller. */
   readonly viewport: Readonly<Viewport>;
   exportImage(opts?: ExportImageOptions): Promise<Blob>;
@@ -66,6 +93,55 @@ export const GRID_MIN_SCALE = 8;
 export const GRID_MAJOR_EVERY = 10;
 /** Generations to reach full intensity on the age ramp. */
 export const AGE_RAMP_GENERATIONS = 32;
+
+/** Pure: raw visible world rect (cells) for a camera/viewport, padded by one
+ *  cell, NOT wrapped or bounds-clamped. No canvas needed — testable in isolation. */
+export function computeRawVisibleRect(
+  camera: Readonly<Camera>,
+  viewport: Readonly<Viewport>,
+): Rect {
+  const tl = projectScreenToWorld(camera, viewport, 0, 0);
+  const br = projectScreenToWorld(camera, viewport, viewport.width, viewport.height);
+  const pad = 1;
+  const x = Math.floor(Math.min(tl.x, br.x)) - pad;
+  const y = Math.floor(Math.min(tl.y, br.y)) - pad;
+  const w = Math.ceil(Math.abs(br.x - tl.x)) + pad * 2;
+  const h = Math.ceil(Math.abs(br.y - tl.y)) + pad * 2;
+  return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
+}
+
+/**
+ * Pure: visible rect capped to at most one world-tile per axis (the torus
+ * repeats beyond that — see the module doc's LOD strategy). No canvas needed
+ * — testable in isolation.
+ *
+ * When the raw rect already fits within the world on an axis (the common
+ * case — zoomed in enough, or zoomed out but not past the world's own
+ * extent), this reuses the RAW rect's own `x`/`y` exactly, rather than
+ * recomputing an origin from `camera.x`/`camera.y` independently. Those two
+ * computations round (floor/ceil) slightly differently, so recomputing
+ * introduced up to a 1-cell drift between the rect this function returned
+ * and the rect the raw computation actually derived from the on-screen
+ * corners — invisible most of the time, but right at the boundary where a
+ * zoom changes whether an axis needs clamping, that drift flips which edge
+ * cells are included and structures visibly pop in/out. Only when an axis
+ * genuinely needs clamping (the world is smaller than the viewport shows) do
+ * we re-anchor on the camera, and in that case any anchor is equally valid —
+ * the wrap makes every cell appear exactly once regardless of starting
+ * offset.
+ */
+export function computeVisibleWorldRect(
+  camera: Readonly<Camera>,
+  viewport: Readonly<Viewport>,
+  spec: { width: number; height: number },
+): Rect {
+  const raw = computeRawVisibleRect(camera, viewport);
+  const w = Math.min(raw.w, spec.width);
+  const h = Math.min(raw.h, spec.height);
+  const x = w === raw.w ? raw.x : Math.floor(camera.x - w / 2);
+  const y = h === raw.h ? raw.y : Math.floor(camera.y - h / 2);
+  return { x, y, w, h };
+}
 
 /** Pure: CSS-pixel screen point -> fractional world coords. No canvas needed — testable in isolation. */
 export function projectScreenToWorld(
@@ -122,6 +198,11 @@ class WorldRendererImpl implements WorldRenderer {
   #ghost: GhostState | null = null;
   #diffCells: Uint8Array | null = null;
   #diffRect: Rect | null = null;
+  #strokePreview: Array<{ x: number; y: number; alive: boolean }> | null = null;
+
+  // See `WorldRenderer.consumeDirty()`'s doc. Starts true so the very first
+  // frame after `attach()` always draws.
+  #dirty = true;
 
   // Offscreen buffer reused across frames for the per-cell / coverage paths.
   #cellCanvas: HTMLCanvasElement | null = null;
@@ -159,29 +240,67 @@ class WorldRendererImpl implements WorldRenderer {
     this.#tokIvory = resolveToken('--color-ivory-100', 'oklch(0.96 0.014 92)');
   }
 
+  invalidate(): void {
+    this.#dirty = true;
+  }
+
+  consumeDirty(): boolean {
+    const d = this.#dirty;
+    this.#dirty = false;
+    return d;
+  }
+
   setCamera(camera: Camera): void {
+    if (camera.x !== this.#camera.x || camera.y !== this.#camera.y || camera.scale !== this.#camera.scale) {
+      this.#dirty = true;
+    }
     this.#camera = { ...camera };
   }
 
   setLens(lens: RenderLens): void {
+    if (lens !== this.#lens) this.#dirty = true;
     this.#lens = lens;
   }
 
   setShowGrid(show: boolean): void {
+    if (show !== this.#showGrid) this.#dirty = true;
     this.#showGrid = show;
   }
 
   setGhost(pattern: StampPattern | null, x: number, y: number, transform: StampTransform): void {
+    const prev = this.#ghost;
+    const changed = (prev === null) !== (pattern === null)
+      || (pattern !== null && (
+        prev!.pattern !== pattern || prev!.x !== x || prev!.y !== y
+        || prev!.transform.rotate !== transform.rotate
+        || prev!.transform.flipX !== transform.flipX
+        || prev!.transform.flipY !== transform.flipY
+      ));
+    if (changed) this.#dirty = true;
     this.#ghost = pattern ? { pattern, x, y, transform } : null;
   }
 
   setSelection(rect: Rect | null): void {
+    const prev = this.#selection;
+    const changed = (prev === null) !== (rect === null)
+      || (rect !== null && (prev!.x !== rect.x || prev!.y !== rect.y || prev!.w !== rect.w || prev!.h !== rect.h));
+    if (changed) this.#dirty = true;
     this.#selection = rect;
   }
 
   setDiffOverlay(cells: Uint8Array | null): void {
+    if (cells !== this.#diffCells) this.#dirty = true;
     this.#diffCells = cells;
     this.#diffRect = cells ? this.#selection : null;
+  }
+
+  setStrokePreview(cells: ReadonlyArray<{ x: number; y: number; alive: boolean }> | null): void {
+    // Called continuously while a draw/erase gesture is in progress (see
+    // `@/interact/input.ts`) — always mark dirty rather than diffing, since
+    // a live stroke changing is, by definition, always a visible change the
+    // instant it's called.
+    this.#dirty = true;
+    this.#strokePreview = cells && cells.length > 0 ? [...cells] : null;
   }
 
   resize(): void {
@@ -194,6 +313,7 @@ class WorldRendererImpl implements WorldRenderer {
     const dh = Math.max(1, Math.round(this.#cssH * this.#dpr));
     if (this.#canvas.width !== dw) this.#canvas.width = dw;
     if (this.#canvas.height !== dh) this.#canvas.height = dh;
+    this.#dirty = true;
   }
 
   screenToWorld(px: number, py: number): { x: number; y: number } {
@@ -204,27 +324,11 @@ class WorldRendererImpl implements WorldRenderer {
     return projectWorldToScreen(this.#camera, this.viewport, x, y);
   }
 
-  /** Visible world rect (cells), padded by one cell, NOT wrapped or bounds-clamped. */
-  #rawVisibleRect(): Rect {
-    const tl = this.screenToWorld(0, 0);
-    const br = this.screenToWorld(this.#cssW, this.#cssH);
-    const pad = 1;
-    const x = Math.floor(Math.min(tl.x, br.x)) - pad;
-    const y = Math.floor(Math.min(tl.y, br.y)) - pad;
-    const w = Math.ceil(Math.abs(br.x - tl.x)) + pad * 2;
-    const h = Math.ceil(Math.abs(br.y - tl.y)) + pad * 2;
-    return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
-  }
-
   /** Visible rect capped to at most one world-tile per axis (the torus repeats beyond that),
-   *  centred on the camera so zooming out past the world's extent doesn't blow up iteration cost. */
+   *  centred on the camera so zooming out past the world's extent doesn't blow up iteration cost.
+   *  See the exported `computeVisibleWorldRect` for the pure implementation (BUG 3 fix doc). */
   #visibleWorldRect(spec: { width: number; height: number }): Rect {
-    const raw = this.#rawVisibleRect();
-    const w = Math.min(raw.w, spec.width);
-    const h = Math.min(raw.h, spec.height);
-    const x = Math.floor(this.#camera.x - w / 2);
-    const y = Math.floor(this.#camera.y - h / 2);
-    return { x, y, w, h };
+    return computeVisibleWorldRect(this.#camera, this.viewport, spec);
   }
 
   draw(engine: LifeEngine, overlays?: RenderOverlays): void {
@@ -244,6 +348,8 @@ class WorldRendererImpl implements WorldRenderer {
     } else {
       this.#drawZoomedOut(engine, rect);
     }
+
+    if (this.#strokePreview) this.#drawStrokePreview(this.#strokePreview);
 
     const showGrid = overlays?.grid ?? this.#showGrid;
     if (showGrid && this.#camera.scale >= GRID_MIN_SCALE) {
@@ -339,8 +445,15 @@ class WorldRendererImpl implements WorldRenderer {
   #drawZoomedOut(engine: LifeEngine, rect: Rect): void {
     const spec = engine.spec;
     const scale = this.#camera.scale;
-    const bufW = Math.max(1, Math.round(rect.w * scale));
-    const bufH = Math.max(1, Math.round(rect.h * scale));
+    // Size the coverage buffer in DEVICE pixels (scale * dpr), not CSS
+    // pixels — on a high-DPR display the previous CSS-pixel sizing meant
+    // this buffer covered a quarter as many output pixels as the canvas
+    // actually has at dpr=2, so the final `drawImage` upscaled it, blurring
+    // the aggregation and (worse) making its 1-buffer-pixel-per-CSS-pixel
+    // assumption used by `coverageAlpha` inconsistent with what's really on
+    // screen. See BUG 3's "DPR not accounted for" suspect.
+    const bufW = Math.max(1, Math.round(rect.w * scale * this.#dpr));
+    const bufH = Math.max(1, Math.round(rect.h * scale * this.#dpr));
     const cellsPerPxX = rect.w / bufW;
     const cellsPerPxY = rect.h / bufH;
 
@@ -405,6 +518,33 @@ class WorldRendererImpl implements WorldRenderer {
     const ctx = this.#ctx!;
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(this.#cellCanvas!, 0, 0, bufW, bufH, dx, dy, dw, dh);
+  }
+
+  /**
+   * BUG 2 fix: paint cells from an in-progress, not-yet-committed draw/erase
+   * gesture immediately, so a stroke is visible under the cursor in real
+   * time — regardless of play/pause state and independent of whenever the
+   * caller actually flushes the edit into the engine (instantly while
+   * paused; deferred to the next generation boundary while playing). Alive
+   * cells render as a strong "wet paint" life-coloured fill; erased cells as
+   * a dark cover, since the live cell beneath is still in the engine until
+   * commit.
+   */
+  #drawStrokePreview(cells: ReadonlyArray<{ x: number; y: number; alive: boolean }>): void {
+    const ctx = this.#ctx!;
+    const dpr = this.#dpr;
+    ctx.save();
+    for (const c of cells) {
+      const p0 = this.worldToScreen(c.x, c.y);
+      const p1 = this.worldToScreen(c.x + 1, c.y + 1);
+      const rx = Math.round(p0.x * dpr);
+      const ry = Math.round(p0.y * dpr);
+      const rw = Math.max(1, Math.round(p1.x * dpr) - rx);
+      const rh = Math.max(1, Math.round(p1.y * dpr) - ry);
+      ctx.fillStyle = c.alive ? withAlpha(this.#tokLife, 0.95) : withAlpha(this.#tokLineStrong, 0.95);
+      ctx.fillRect(rx, ry, rw, rh);
+    }
+    ctx.restore();
   }
 
   #drawGrid(rect: Rect): void {
