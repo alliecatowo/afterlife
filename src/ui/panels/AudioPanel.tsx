@@ -13,8 +13,8 @@ import { MAX_DENSITY, MIN_DENSITY } from '@/audio/mapper';
 import { MAX_BPM, MAX_VOICES, MIN_BPM } from '@/audio/scheduler';
 import { MAX_ROOT_MIDI, MIN_ROOT_MIDI, noteName, SCALE_MODES, type ScaleMode } from '@/audio/scale';
 import {
-  MAX_DECAY, MAX_DRONE_FILTER_HZ, MAX_DRONE_WEIGHT, MIN_DECAY, MIN_DRONE_FILTER_HZ,
-  MIN_DRONE_WEIGHT, MIN_VOICE_CAP,
+  AUDIO_PRESETS, MAX_DECAY, MAX_DRONE_FILTER_HZ, MAX_DRONE_WEIGHT, MIN_DECAY, MIN_DRONE_FILTER_HZ,
+  MIN_DRONE_WEIGHT, MIN_VOICE_CAP, PRESET_NAMES, type PresetName,
 } from '@/audio/settings';
 import { useAudioSettingsStore } from '@/audio/settingsStore';
 import { midiController } from '@/audio/midi';
@@ -72,6 +72,18 @@ export function AudioPanel() {
           Enable the soundscape
         </label>
         <Slider label="Volume" value={Math.round(volume * 100)} min={0} max={100} disabled={muted} onChange={(v) => setVolume(v / 100)} format={(v) => `${v}%`} />
+      </Field>
+
+      <Divider />
+
+      <Field label="Preset" description={AUDIO_PRESETS[settings.preset]?.description ?? ''}>
+        <Toggle
+          aria-label="Preset"
+          size="sm"
+          options={PRESET_NAMES.map((name: PresetName) => ({ value: name, label: AUDIO_PRESETS[name].label }))}
+          value={settings.preset}
+          onChange={(v) => settings.applyPreset(v)}
+        />
       </Field>
 
       <Divider />
@@ -164,6 +176,29 @@ export function AudioPanel() {
         onChange={(v) => settings.update({ decay: v })}
         format={mult}
       />
+
+      <Divider />
+
+      <Field label="Movement" description="A 20-minute session shouldn't sit on one static chord — both are driven by real simulation activity, never randomised.">
+        <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
+          <input
+            type="checkbox"
+            checked={settings.harmonicMovement}
+            onChange={(e) => settings.update({ harmonicMovement: e.target.checked })}
+            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
+          />
+          Slow harmonic drift with sustained population trends
+        </label>
+        <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
+          <input
+            type="checkbox"
+            checked={settings.percussion}
+            onChange={(e) => settings.update({ percussion: e.target.checked })}
+            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
+          />
+          Generative percussion during real activity bursts
+        </label>
+      </Field>
 
       <Divider />
 
@@ -263,7 +298,8 @@ function MidiSection({ midi }: { midi: ReturnType<typeof useMidiStore.getState> 
               </label>
               <p className="text-xs text-ivory-300">
                 When mapping is on: churn notes → channel {midi.channel}, discoveries → channel{' '}
-                {((midi.channel) % 16) + 1}, scrub previews → channel {((midi.channel + 1) % 16) + 1}.
+                {((midi.channel) % 16) + 1}, scrub previews → channel {((midi.channel + 1) % 16) + 1}, and
+                drawing/stamping/branching/percussion each take the next channel after that.
               </p>
               <div className="flex items-center justify-between gap-2">
                 <Readout label="Active notes" value={midi.activeNoteCount} digits={2} />

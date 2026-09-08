@@ -110,7 +110,11 @@ export function initSession(): Session {
   const input = createInput({ renderer, camera, engine });
   input.attach(worldCanvas);
   const sculptureController = createSculpture(sculptureHost);
-  const soundscape = createSoundscape();
+  // Real, read-only access for the soundscape's interaction-feedback features
+  // (drawing-as-instrument, proximity-weighted churn, a real population
+  // centroid for pan) — see `@/audio/audio`'s `SoundscapeDeps` doc. Audio
+  // only ever READS `engine`/`input`; it never mutates cell state.
+  const soundscape = createSoundscape({ engine, input });
   const persist = createPersistStore();
   // See `@/ui/cinematic`'s doc: an "auto-pan, hold-on-what's-interesting"
   // full-screen mode, layered on top of the existing camera/presentation

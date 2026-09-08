@@ -300,6 +300,20 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
     bus.on('audio:volume', ({ volume: nextVolume }) => {
       applySetVolume(nextVolume);
     }),
+    // Stamping a specimen gets its own confirmation — only when the tool
+    // that produced this commit was actually 'stamp' (real, current app
+    // state; draw/erase/select commits stay quiet here, they already get
+    // live feedback via `sampleInteraction`'s paint notes while dragging).
+    bus.on('edit:committed', ({ cellCount }) => {
+      if (readState().tool === 'stamp') {
+        brain.onEvent({ kind: 'stamp', cellCount }, now());
+      }
+    }),
+    // Forking a future by editing behind the playhead — a distinct signature,
+    // never confused with an ordinary commit.
+    bus.on('branch:created', ({ fromGen }) => {
+      brain.onEvent({ kind: 'branch', fromGen }, now());
+    }),
   ];
 
   function applySetMuted(next: boolean): void {
