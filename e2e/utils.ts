@@ -100,16 +100,29 @@ export async function currentPopulation(page: Page): Promise<number> {
 /**
  * Click a HUD/panel control by its accessible name, transparently going
  * through the mobile "More controls" sheet first when the control isn't
- * inline (below `lg`, per `Hud.tsx`'s breakpoint — see `HudMoreSheet.tsx`).
- * Desktop-width tests are unaffected (the sheet trigger doesn't render
- * there, so the `isVisible` check below is false and this is just a plain
- * click). Centralising this in one place means a spec doesn't need its own
- * project-name branching to work at both viewports.
+ * inline (below `lg`, per `Hud.tsx`'s breakpoint — see `HudMoreSheet.tsx`),
+ * or through the desktop row's own "More tools" overflow menu when the
+ * control lives there instead of as a dedicated top-level icon (Rules,
+ * Appearance, Acid Art, Cinematic mode, Multiplayer — see `Hud.tsx`'s
+ * `MoreToolsMenu`, the pattern this HUD now uses for every low-frequency
+ * entry so the row can keep growing without re-tuning breakpoints).
+ * Centralising this in one place means a spec doesn't need its own
+ * project-name/menu-location branching to work at both viewports.
  */
 export async function openControl(page: Page, name: string): Promise<void> {
   const more = page.getByRole('button', { name: 'More controls' });
-  if (await more.isVisible().catch(() => false)) await more.click();
-  await page.getByRole('button', { name, exact: true }).click();
+  if (await more.isVisible().catch(() => false)) {
+    await more.click();
+    await page.getByRole('button', { name, exact: true }).click();
+    return;
+  }
+  const direct = page.getByRole('button', { name, exact: true });
+  if (await direct.isVisible().catch(() => false)) {
+    await direct.click();
+    return;
+  }
+  await page.getByRole('button', { name: 'More tools' }).click();
+  await page.getByRole('menuitem', { name: new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).click();
 }
 
 /** Poll `currentGen` until it reaches at least `gen`, up to `timeoutMs`. */

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   applyEditDirect, currentGen, currentPopulation, dismissTitle, ensurePaused, newTouchSession, openApp,
-  suppressTour, worldToScreen,
+  openControl, suppressTour, worldToScreen,
 } from './utils';
 
 /**
@@ -370,5 +370,33 @@ test.describe('small tablet width', () => {
 
     await page.getByRole('button', { name: 'More controls' }).tap();
     await expect(page.getByRole('radiogroup', { name: 'Render lens' })).toBeVisible();
+  });
+});
+
+test.describe('mobile: two previously-unreachable features, now reachable at 390px', () => {
+  test.beforeEach(async ({ page }) => {
+    await suppressTour(page);
+    await openApp(page);
+    await dismissTitle(page);
+  });
+
+  test('the Rules panel opens from the More sheet', async ({ page }) => {
+    await openControl(page, 'Rules');
+    await expect(page.locator('#panel-right')).toContainText('Rules');
+    await expect(page.locator('#panel-right')).toContainText("Conway's Life");
+    await page.getByRole('button', { name: 'Close panel' }).tap();
+  });
+
+  test('the Multiplayer dialog opens from the More sheet and a room can be created', async ({ page }) => {
+    await openControl(page, 'Multiplayer');
+    const dialog = page.getByRole('dialog', { name: 'Multiplayer' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Host a new room' }).tap();
+    // Hosting assigns a real room code and flips into the in-room view —
+    // the same behaviour `tests/ui-multiplayer-panel.test.tsx` proves at the
+    // component level; this confirms it's actually reachable end to end
+    // from a real 390px touch session, no server required
+    // (`BroadcastChannelTransport`).
+    await expect(dialog.getByText(/^[A-Z2-9]{6}$/)).toBeVisible({ timeout: 10_000 });
   });
 });

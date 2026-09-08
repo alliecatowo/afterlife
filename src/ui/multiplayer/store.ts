@@ -71,6 +71,15 @@ interface MultiplayerState {
   desync: DesyncInfo | null;
   error: string | null;
 
+  /** Whether the `MultiplayerPanel` dialog is open. Lifted here (rather than
+   *  `MultiplayerRoot`'s own local `useState`) so an external trigger — the
+   *  HUD's "Multiplayer" entry, mounted via `@/ui/hud/multiplayerLazy` — can
+   *  open/reopen it without needing its own render tree reference to
+   *  whatever mounted `<MultiplayerRoot/>`. Purely UI state; never touched
+   *  by `@/net/**`. */
+  panelOpen: boolean;
+  setPanelOpen(open: boolean): void;
+
   setLocalName(name: string): void;
   setTransportKind(kind: TransportKind): void;
   setRelayUrl(url: string): void;
@@ -127,6 +136,11 @@ export const useMultiplayerStore = create<MultiplayerState>((set, get) => ({
   stall: null,
   desync: null,
   error: null,
+
+  panelOpen: false,
+  setPanelOpen(panelOpen) {
+    set({ panelOpen });
+  },
 
   setLocalName(name) {
     set({ localName: name });

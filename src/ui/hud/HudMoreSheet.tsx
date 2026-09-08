@@ -18,8 +18,12 @@ import { Sheet, Toggle, Legend, IconButton } from '@/ui/primitives';
 import {
   EyeIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon,
   ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon, FilmIcon,
-  LogbookIcon, PaletteIcon,
+  LogbookIcon, PaletteIcon, RuleIcon, PeopleIcon, AsciiIcon,
 } from '@/ui/icons';
+// Loads `@/net`/`@/ui/multiplayer` only once the user actually taps this
+// entry point — see that module's doc and `tests/net-guard.test.ts` for why
+// this file must never statically import either.
+import { requestMultiplayer } from './multiplayerLazy';
 import type { RenderLens } from '@/core/types';
 // Same render-owned legend data `Hud.tsx` uses — keeps the mobile sheet and
 // desktop toolbar's lens legends identical by construction instead of two
@@ -37,6 +41,8 @@ const PANEL_ROWS: { id: Exclude<RightPanelId, null>; label: string; icon: ReactN
   { id: 'audio', label: 'Instrument', icon: <WaveformIcon /> },
   { id: 'settings', label: 'Settings', icon: <SlidersIcon /> },
   { id: 'theme', label: 'Appearance', icon: <PaletteIcon /> },
+  { id: 'rules', label: 'Rules', icon: <RuleIcon /> },
+  { id: 'art', label: 'Acid Art', icon: <AsciiIcon /> },
 ];
 
 function SheetSection({ label, children }: { label: string; children: ReactNode }) {
@@ -191,6 +197,16 @@ export function HudMoreSheet() {
             icon={<QuestionIcon />}
             variant="ghost"
             onClick={() => { setShortcutsOpen(true); setMoreOpen(false); }}
+          />
+          {/* Play with someone else — see `./multiplayerLazy.tsx`'s doc.
+              `@/net`/`@/ui/multiplayer` are only fetched/constructed the
+              instant this is tapped, never before (offline solo play stays
+              account-free and network-free by default). */}
+          <IconButton
+            label="Multiplayer"
+            icon={<PeopleIcon />}
+            variant="ghost"
+            onClick={() => { requestMultiplayer(); setMoreOpen(false); }}
           />
         </div>
       </SheetSection>

@@ -42,6 +42,12 @@ import { useTourStore } from '@/ui/tutorial/tourStore';
 // return. The trigger BUTTON lives in `Hud.tsx`/`HudMoreSheet.tsx` (and
 // correctly disappears in presentation mode, like every other HUD icon).
 import { AchievementsPanel } from '@/ui/achievements';
+// The opt-in multiplayer feature's mount point. Renders NOTHING and fetches
+// no code until the user explicitly asks for it from a HUD entry point —
+// see `@/ui/hud/multiplayerLazy`'s doc and `tests/net-guard.test.ts` for the
+// guarantee this preserves (this file's own static imports never reach
+// `@/net` or `@/ui/multiplayer`, only this local lazy-loading module).
+import { MultiplayerLazyHost } from '@/ui/hud/multiplayerLazy';
 
 const TOOL_KEYS: Record<string, Tool> = { d: 'draw', e: 'erase', p: 'pan', s: 'select' };
 
@@ -408,6 +414,7 @@ export function App() {
       <AboutDialog />
       <TourOverlay />
       <AchievementsPanel open={logbookOpen} onOpenChange={setLogbookOpen} />
+      <MultiplayerLazyHost />
     </TooltipProvider>
   );
 }

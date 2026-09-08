@@ -162,9 +162,11 @@ describe('importing the multiplayer feature does no network work by itself', () 
 
     requestMultiplayer();
 
-    // The real, lazily-loaded multiplayer trigger eventually mounts...
-    await findByRole('button', { name: /Multiplayer|Play with others/ });
-    // ...and asking for it opens the dialog, exactly as the HUD entry point relies on.
+    // The real, lazily-loaded multiplayer feature mounts AND opens its
+    // dialog in one step — exactly what the HUD's own "Multiplayer" entry
+    // points rely on (a single click opens the panel, not "click to mount,
+    // click again to open").
+    await findByRole('dialog', { name: 'Multiplayer' });
     expect(useMultiplayerStore.getState().panelOpen).toBe(true);
   });
 });

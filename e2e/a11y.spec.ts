@@ -45,7 +45,10 @@ test.describe('accessibility: automated axe sweep', () => {
     await openApp(page);
     await dismissTitle(page);
     await ensurePaused(page);
-    await page.getByRole('button', { name: 'Settings' }).click();
+    // `exact: true`: Acid Art's self-mounted trigger (`src/render/artMount.ts`)
+    // added its own "Art mode settings" gear button, which otherwise also
+    // matches a substring search for "Settings".
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const results = await runAxe(page);
     expect(results.violations, describeViolations(results)).toEqual([]);
   });

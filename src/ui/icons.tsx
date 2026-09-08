@@ -418,3 +418,44 @@ export function PaletteIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** The Rules panel's entry point — a small Life-like grid of live/dead
+ *  cells (not a dice, which reads as "random" rather than "B/S rule"). */
+export function RuleIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2" width="12" height="12" rx="1" />
+      <path d="M2 6h12M2 10h12M6 2v12M10 2v12" />
+      <rect x="6" y="2" width="4" height="4" fill="currentColor" stroke="none" />
+      <rect x="2" y="6" width="4" height="4" fill="currentColor" stroke="none" />
+      <rect x="10" y="10" width="4" height="4" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+/** The Acid Art panel's entry point — a glyph/character cell, standing in
+ *  for the ASCII rendering mode. */
+export function AsciiIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2" width="12" height="12" rx="1" />
+      <path d="M5 5.5 3.6 8 5 10.5M11 5.5 12.4 8 11 10.5M8.8 4.5 7.2 11.5" />
+    </Svg>
+  );
+}
+
+/** Two observers — the multiplayer entry point. A shared copy of
+ *  `@/ui/multiplayer/PeopleIcon`'s glyph, promoted into the shared barrel
+ *  per that file's own doc comment, so `Hud.tsx`/`HudMoreSheet.tsx` never
+ *  need a static import from `@/ui/multiplayer` just to draw a button (see
+ *  `@/ui/hud/multiplayerLazy.tsx` and `tests/net-guard.test.ts`). */
+export function PeopleIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="5.5" cy="5" r="2" />
+      <path d="M2 13c0-2.2 1.6-3.5 3.5-3.5S9 10.8 9 13" />
+      <circle cx="11" cy="6" r="1.6" />
+      <path d="M10 9.6c1.7.1 3 1.3 3 3.4" />
+    </Svg>
+  );
+}

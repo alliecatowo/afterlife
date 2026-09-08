@@ -4,21 +4,27 @@
  * from the bus — this component itself only re-renders on low-frequency
  * store changes (lens, speed, playing, muted, presentation).
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import * as RadixDropdown from '@radix-ui/react-dropdown-menu';
 import { bus } from '@/ui/bus';
 import { useAppStore } from '@/ui/store';
 import { useUIState } from '@/ui/uiState';
 import { getSession } from '@/ui/session';
 import { subscribeReadout } from '@/ui/hooks/useSimulationReadout';
+import { CONWAY_RULE_STRING } from '@/core/rule';
 import { IconButton, Readout, Toggle, Divider, Tooltip, Button, Menu } from '@/ui/primitives';
 import type { MenuOption } from '@/ui/primitives';
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
   DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon, FilmIcon,
-  LogbookIcon, ChevronIcon,
+  LogbookIcon, ChevronIcon, RuleIcon, PaletteIcon, PeopleIcon, AsciiIcon,
 } from '@/ui/icons';
 import { HudMoreSheet } from './HudMoreSheet';
+// Loads `@/net`/`@/ui/multiplayer` only once the user taps the "Multiplayer"
+// entry below — see that module's doc and `tests/net-guard.test.ts`. This
+// file must never statically import either `@/net` or `@/ui/multiplayer`.
+import { requestMultiplayer } from './multiplayerLazy';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
 // this HUD only needs its "About" affordance, which doubles as the tour's
 // replay entry point (see `AboutDialog`'s own "Take the guided tour" button).
@@ -77,9 +83,79 @@ function lensDescription(entries: LensLegendEntry[]): string {
  *  over itself constantly instead of reading as an occasional status update. */
 const LIVE_REGION_THROTTLE_MS = 4000;
 
+interface MoreToolsItem {
+  label: string;
+  icon: ReactNode;
+  onSelect: () => void;
+  pressed?: boolean;
+}
+
+/**
+ * The desktop row's own overflow point — the pattern this HUD now leans on
+ * for every LOW-frequency action (as opposed to the render-lens `Menu`
+ * above, which exists purely because 8 options is too wide for a `Toggle`).
+ * `Hud.tsx`'s trailing icon row measures with ZERO spare width at 1440px
+ * (see the comments further down this file) and this session added two
+ * previously-unreachable features (Rules, Multiplayer) plus a pending third
+ * (Appearance, proposed by the `theming` agent) on top of an already-full
+ * row. Rather than re-tuning exact breakpoints for today's count — which is
+ * exactly how this HUD regressed twice before (once too wide, once too
+ * narrow) — new, less-frequently-used entries land HERE by default. A
+ * future agent adding another panel/action should extend `MORE_TOOLS`
+ * (below, in `Hud()`) rather than claiming another fixed-width icon slot.
+ */
+function MoreToolsMenu({ items }: { items: MoreToolsItem[] }) {
+  return (
+    <RadixDropdown.Root>
+      <RadixDropdown.Trigger asChild>
+        {/* A plain `IconButton` (already a real, ref-forwarding `<button>`),
+            NOT wrapped in our `Tooltip` primitive — see the render-lens
+            `Menu` trigger's comment above for why that would silently break
+            the click (`asChild` clones props onto whatever single element
+            `trigger` renders, and `Tooltip` isn't that element). Its own
+            `title` attribute (set by `IconButton` itself) is enough of a
+            hover hint. */}
+        <IconButton label="More tools" icon={<MoreIcon />} />
+      </RadixDropdown.Trigger>
+      <RadixDropdown.Portal>
+        <RadixDropdown.Content
+          align="end"
+          sideOffset={6}
+          aria-label="More tools"
+          className={
+            'z-[var(--z-overlay)] min-w-56 rounded-sm border border-line bg-surface-raised p-1 ' +
+            'shadow-[var(--shadow-float)] focus:outline-none ' +
+            'data-[state=open]:animate-[overlay-in_var(--duration-fast)_var(--ease-entrance)] ' +
+            'data-[state=closed]:animate-[overlay-out_var(--duration-fast)_var(--ease-exit)]'
+          }
+        >
+          {items.map((item) => (
+            <RadixDropdown.Item
+              key={item.label}
+              onSelect={item.onSelect}
+              className={
+                'flex cursor-pointer items-center gap-2.5 rounded-sm px-2.5 py-1.5 text-sm text-ivory-200 ' +
+                'outline-none transition-colors duration-[var(--duration-instant)] ' +
+                'data-[highlighted]:bg-ink-700 data-[highlighted]:text-ivory-100 max-[480px]:min-h-11'
+              }
+            >
+              {item.icon}
+              {item.label}
+              {item.pressed ? (
+                <span className="ml-auto text-micro uppercase tracking-[0.14em] text-ivory-300">open</span>
+              ) : null}
+            </RadixDropdown.Item>
+          ))}
+        </RadixDropdown.Content>
+      </RadixDropdown.Portal>
+    </RadixDropdown.Root>
+  );
+}
+
 export function Hud() {
   const genRef = useRef<HTMLSpanElement>(null);
   const popRef = useRef<HTMLSpanElement>(null);
+  const ruleRef = useRef<HTMLSpanElement>(null);
   const liveRegionRef = useRef<HTMLDivElement>(null);
 
   const playing = useAppStore((s) => s.playing);
@@ -111,6 +187,11 @@ export function Hud() {
   useEffect(() => subscribeReadout((r) => {
     if (genRef.current) genRef.current.textContent = String(r.gen);
     if (popRef.current) popRef.current.textContent = String(r.population);
+    // `Session.setRule()` (the Rules panel's fresh-world operation) always
+    // ends by calling the same `emitGen()` that fires this readout on every
+    // ordinary step — see `RulesPanel.tsx`'s doc and INTEGRATION-NOTES.md's
+    // "rules" entry — so this stays honest without a dedicated bus event.
+    if (ruleRef.current) ruleRef.current.textContent = getSession()?.engine.rule ?? CONWAY_RULE_STRING;
   }), []);
 
   // A polite, THROTTLED live region — a screen-reader-only companion to the
@@ -277,6 +358,23 @@ export function Hud() {
         <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
       </div>
 
+      {/* The active simulation rule (`RulesPanel.tsx`'s own doc — switching
+          rules is a fresh-world operation, and every curated scene/specimen
+          forces Conway back). `lg`-only, like speed/lens below: at the row's
+          already-measured zero-slack width (see further down) this is the
+          least essential of the three readouts for a narrower desktop/tablet
+          window, and the mobile "More" sheet has no width constraint to
+          begin with (it doesn't show this readout at all — a returning user
+          on a phone can still see the active rule inside the Rules panel
+          itself, which the sheet's "Panels" section reaches). */}
+      <div className="hidden shrink-0 lg:block">
+        <Readout
+          label="rule"
+          value={<span ref={ruleRef} data-testid="hud-rule">{CONWAY_RULE_STRING}</span>}
+          digits={6}
+        />
+      </div>
+
       {/* Speed AND lens both move to the mobile HUD's "More" sheet
           (`HudMoreSheet`) below `lg` — see that file's doc comment for why:
           this row simply has no room for either below roughly 1024px, and
@@ -426,19 +524,6 @@ export function Hud() {
             onClick={() => { setPresentation(true); bus.emit('presentation:toggle', { on: true }); }}
           />
         </Tooltip>
-        {/* Per INTEGRATION-NOTES.md's `cinematic` entry: the feature was
-            fully built (auto-pan, interest scoring, its own DOM-root
-            overlay) but only reachable via the 'C' keyboard shortcut —
-            undiscoverable without this button. `Session.cinematic` is the
-            cinematic agent's own public API; no other file of theirs is
-            touched here. */}
-        <Tooltip content="Cinematic mode — full-screen, auto-pan, hands-off">
-          <IconButton
-            label="Cinematic mode"
-            icon={<FilmIcon />}
-            onClick={() => getSession()?.cinematic.enter()}
-          />
-        </Tooltip>
         <Tooltip content="What is this?">
           <IconButton label="About AFTERLIFE" icon={<CompassIcon />} onClick={() => setAboutOpen(true)} />
         </Tooltip>
@@ -448,6 +533,46 @@ export function Hud() {
         <Tooltip content="Keyboard shortcuts (?)">
           <IconButton label="Keyboard shortcuts" icon={<QuestionIcon />} onClick={() => setShortcutsOpen(true)} />
         </Tooltip>
+        {/* The overflow point (see `MoreToolsMenu`'s own doc above): Rules
+            and Multiplayer are new this pass; Cinematic mode moved in from a
+            dedicated icon it used to occupy (freeing width for the "rule"
+            readout and this trigger itself) — it remains just as reachable,
+            still also on the 'c' key per `ShortcutsDialog`. Appearance
+            (`ThemePanel`) lives here too rather than claiming its own
+            10th icon slot, per the `theming` agent's own proposed diff in
+            INTEGRATION-NOTES.md, which flagged the row's zero spare width. */}
+        <MoreToolsMenu
+          items={[
+            {
+              label: 'Rules',
+              icon: <RuleIcon />,
+              pressed: rightPanel === 'rules',
+              onSelect: () => toggleRightPanel('rules'),
+            },
+            {
+              label: 'Appearance',
+              icon: <PaletteIcon />,
+              pressed: rightPanel === 'theme',
+              onSelect: () => toggleRightPanel('theme'),
+            },
+            {
+              label: 'Acid Art',
+              icon: <AsciiIcon />,
+              pressed: rightPanel === 'art',
+              onSelect: () => toggleRightPanel('art'),
+            },
+            {
+              label: 'Cinematic mode — full-screen, auto-pan, hands-off',
+              icon: <FilmIcon />,
+              onSelect: () => getSession()?.cinematic.enter(),
+            },
+            {
+              label: 'Multiplayer — play this world with someone else',
+              icon: <PeopleIcon />,
+              onSelect: () => requestMultiplayer(),
+            },
+          ]}
+        />
       </div>
       <HudMoreSheet />
     </div>
