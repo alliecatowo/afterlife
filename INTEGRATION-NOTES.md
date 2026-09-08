@@ -629,3 +629,89 @@ earned/muted logbook entries themselves persist across reloads.
 
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-08 — integration — final pass: reachability, two real races, one real data-loss bug, HUD overflow
+
+Closed out the queue above. Full write access to every file (per this task's brief); every
+item below was implemented/verified directly, not proposed for someone else.
+
+**Colourful lenses (Priority 1):** the `RenderLens` widening + HUD `Toggle`/legend diff above
+was already applied (commits `9b056e1`/`f9a71fd`, landed by a concurrent pass before this one
+started) — verified rather than redone: all 8 lenses are real `Toggle` options on desktop and
+in `HudMoreSheet.tsx`'s mobile sheet, `LENS_LEGEND[lens]` now goes through
+`@/render/color`'s `safeLensLegend()` (falls back to `life`, tested in
+`tests/render-color-lens.test.ts`), the CVD palette toggle in `SettingsPanel` works and the
+HUD legend recomputes live against it, and `input.ts`'s legacy-3-lens mirror guard is gone
+(`tests/input-lens.test.ts` updated to assert all 8 lenses now reach `useAppStore`/the bus).
+Verified colourfulness by eye at 1440px and 390px (screenshots), not just by test.
+
+Found and fixed one regression this same lens work introduced: legend labels were full
+sentences and the 8-option `Toggle` alone added ~400px, pushing the desktop HUD row past
+1440px with **no visible scroll affordance** — hiding Settings/Mute/Presentation/About/
+Shortcuts. Legend moved to a hover/focus tooltip; the lens `Toggle` now scrolls internally
+within a capped-width wrapper instead of displacing the rest of the row. Confirmed via direct
+`scrollWidth`/`clientWidth` measurement, not just visual inspection.
+
+**`session.ts` branch-switch race (~1 in 6):** two real, independent races, both closed —
+see `src/core/history.ts`'s new `TimelineStore.settled()` and `src/ui/session.ts`'s
+`pauseForScrub()`. (1) `goto()`'s chunked replay mutates the shared `engine` incrementally
+and can leave `engine.gen` at a genuinely intermediate value across a yield — demonstrated in
+`tests/history.test.ts` (even an *unawaited* `goto()` call already advances `engine.gen`
+before returning). Every place `session.ts` read `engine.gen` to decide fork-vs-record now
+awaits `history.settled()` first. (2) Nothing paused playback when a scrub started, so the
+`SimLoop` could keep calling `engine.step()` on the SAME shared engine `goto()`'s replay was
+also mutating — the more severe half of the bug (concurrent writers to one mutable engine, not
+just a stale read). Fixed by pausing synchronously the instant a scrub begins.
+
+**Colour not surviving save/load:** root-caused, not papered over. `TimelineStore.reset()`
+keyframes an EMPTY gen-0 board; `loadEntries()`'s replay loop started at `kfGen + 1`, so any
+edits recorded exactly at the baseline generation — which is how EVERY persisted "hand-drawn
+start" stores its initial pattern (`density: 0`, cells as a gen-0 `EditOp`) — were silently
+dropped. Not a colour-only bug: bits were dropped too, and the existing e2e persistence test
+only ever asserted on the generation NUMBER, never actual population, so this shipped
+undetected. Fixed with `applyBaselineEdits()`, applied in `replaySync`/`replayAsync`/
+`sliceStack`; proven bit-and-colour-exact in `tests/engine-color.test.ts` by replaying the
+same edits through a continuous session vs. a `reset()+loadEntries()` reconstruction and
+diffing the `hue`/`species` buffers directly. Deliberately did **not** add a persisted
+hue/species snapshot or bump `EXPERIMENT_FORMAT_VERSION` — the format was never deficient
+(codec.ts: "we never store a raw cell buffer at all"); the replay was. Adding one would have
+bloated the save for zero correctness benefit.
+
+**Achievements panel:** relocated from a self-mounted floating DOM root (a workaround for a
+concurrent mobile-layout pass owning `Hud.tsx`/`App.tsx` at build time) to a real `IconButton`
+in `Hud.tsx`/`HudMoreSheet.tsx`, matching `About`/`Cinematic`. The dialog itself mounts in
+`App.tsx` alongside `ShortcutsDialog`/`AboutDialog` (not inside `Hud`'s presentation-mode-gated
+return), so it stays functional independent of chrome visibility.
+
+**AboutDialog → guide link:** applied, using `import.meta.env.BASE_URL` rather than the
+hardcoded `/afterlife/guide/` in the proposed diff, so it also works under `vite dev`.
+
+**Edit ripple (audio agent's proposal):** not built. Given the remaining scope (full e2e
+triage was the larger, explicitly-prioritized ask) and that it's explicitly optional, this
+pass focused on wiring/bugs/triage instead. Nothing about the audio soundscape's own honesty
+guarantees depends on it, per that entry's own note.
+
+**Two more real bugs found only by getting e2e green everywhere, not assumed real or fake:**
+- `src/ui/App.tsx`: `#drawer-left`/`#panel-right` were **completely unclickable at desktop
+  widths whenever collapsed/closed**. `data-[open=false]:pointer-events-none` compiles to
+  `.foo[data-open=false]` (specificity 0,2,0); the intended override `md:pointer-events-auto`
+  compiles to plain `.md\:foo` in a media query (0,1,0) — the higher-specificity rule always
+  won regardless of viewport. Verified directly via `getComputedStyle(...).pointerEvents`.
+  Fixed by repeating the same `data-[open=false]` condition in the desktop override so
+  specificity matches and it wins on source order instead of losing outright.
+- `playwright.config.ts`: `mobile.spec.ts` (touch/390px-specific) was also running under the
+  touch-disabled `desktop` project — `desktop`'s exclusion list was updated for
+  `prod-build.spec.ts` but never for `mobile.spec.ts` when that file was added. This alone
+  accounted for most of the previously-reported 19 failures once resource contention from
+  concurrent dev servers was also removed. Excluded it; `ARCHITECTURE.md`'s project
+  description updated to match reality (3 projects now, not 2).
+
+**Final verified state, run in isolation with no other dev servers up:**
+`typecheck` clean · unit tests 516/516 (49 files) · `desktop` e2e 68/68 · `mobile` e2e 20/20 ·
+`prod-build` e2e 6/6 (94/94 e2e total) · `npm run build -- --base=/afterlife/` succeeds,
+`dist/index.html` resolves at `/afterlife/`, `dist/guide/**` flattened correctly with no
+leftover `dist/site/`, and both were verified live via `vite preview` (`/afterlife/`,
+`/afterlife/guide/`, `/afterlife/guide/wiki/specimens/` all 200).
+
+**Blocking?** no.
+**Resolution:** done.
