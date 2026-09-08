@@ -388,12 +388,33 @@ didn't propose exact JSX for that since I don't know its current layout, but the
 is a one-liner: `getSession()?.renderer.setPalette(mode)` (adjust to whatever the real
 accessor is named) plus re-running `buildLensLegends(mode)` for the HUD legend.
 
-**Blocking?** No — `src/render/color.ts`/`renderer.ts` work standalone today (verified
-by `tests/render-color-lens.test.ts`, `tests/render-dirty.test.ts`); only the HUD
-picker (and therefore end-user reachability + the production-build Playwright
-assertions I added in `e2e/prod-build.spec.ts`, which feature-detect the new `Toggle`
-options and report clearly rather than failing hard if they're not wired yet) depend
-on this landing.
+**Update — reachable today via keyboard, NOT via the store/bus:** `src/interact/input.ts`
+(render-owned, see its own header) now maps keys `4`-`8` to the 5 new lenses (`1`-`3`
+already existed for life/age/activity), so every lens is fully reachable and testable
+right now without waiting for the HUD diff above —
+`e2e/prod-build.spec.ts`'s new tests use these keys directly, no feature-detection
+needed. **Important, found the hard way:** `#setLens` calls `renderer.setLens()`
+UNCONDITIONALLY (so the canvas always reflects the right lens), but deliberately does
+**NOT** call `useAppStore.getState().setLens()` / emit `lens:changed` for the 5 new
+ids — only for the original 3. Reason: `Hud.tsx`/`HudMoreSheet.tsx` index
+`LENS_LEGEND[lens]`, a `Record<RenderLens, ...>` with no fallback for an unrecognised
+key; pushing e.g. `'lineage'` into the store made `Legend`'s render crash on
+`undefined.map(...)`, and because nothing upstream caught it, the crash unmounted the
+**entire React tree, including `#world-canvas`** — verified against the real
+production build (`prod-build` Playwright project): three new specs failed with
+`Cannot read properties of null (reading 'getContext')` because the canvas element
+itself was gone. This is exactly the scenario the `RenderLens`/HUD diff above exists to
+close; until it lands, the HUD's own lens toggle/legend will just silently keep
+displaying whichever of the 3 legacy lenses was last selected while the canvas
+underneath has actually moved on — a stale but harmless display, not a crash. The guard
+is in `src/interact/input.ts`'s `#setLens`, commented, and covered by
+`tests/input-lens.test.ts`.
+
+**Blocking?** No — `src/render/color.ts`/`renderer.ts`/`src/interact/input.ts` work
+standalone today (verified by `tests/render-color-lens.test.ts`,
+`tests/render-dirty.test.ts`, `tests/input-lens.test.ts`, and
+`e2e/prod-build.spec.ts` against the real production build); only the HUD's own
+reflected lens/legend state depends on the diff above landing.
 **Resolution:** n/a.
 
 ## 2026-09-08 — audioplus — musical diversity + interaction impact (`src/audio/**`, `src/ui/panels/AudioPanel.tsx`)

@@ -76,8 +76,12 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     vi.restoreAllMocks();
   });
 
+  const LEGACY = new Set(['life', 'age', 'activity']);
+
   for (const { key, lens } of CASES) {
-    it(`"${key}" selects the "${lens}" lens on both the renderer and the store`, () => {
+    it(`"${key}" always drives the RENDERER to the "${lens}" lens`, () => {
+      // The renderer is what actually paints the canvas — this must work for
+      // every lens regardless of the store/HUD guard below.
       const engine = createEngine({ width: 16, height: 16 });
       const renderer = makeFakeRenderer();
       const camera = makeFakeCamera();
@@ -88,13 +92,44 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key }));
 
       expect(renderer.lensCalls).toContain(lens);
-      expect(useAppStore.getState().lens).toBe(lens);
 
       input.dispose();
     });
   }
 
-  it('also emits lens:changed on the bus so other subscribers (e.g. the HUD legend) stay in sync', async () => {
+  it('mirrors the ORIGINAL 3 lenses into useAppStore (Hud.tsx\'s legend record already knows these)', () => {
+    const engine = createEngine({ width: 16, height: 16 });
+    const renderer = makeFakeRenderer();
+    const camera = makeFakeCamera();
+    const input = createInput({ renderer, camera, engine });
+    const canvas = makeCanvas();
+    input.attach(canvas);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2' })); // age
+    expect(useAppStore.getState().lens).toBe('age');
+
+    input.dispose();
+  });
+
+  it('does NOT push the 5 new lenses into useAppStore — Hud.tsx/HudMoreSheet.tsx index a Record<RenderLens,...> legend with no fallback for an unknown key, and indexing it with e.g. "lineage" crashes the whole app (verified against the real production build before this guard existed: the crash unmounted #world-canvas along with everything else). The renderer above is already correct regardless; only the store/HUD mirror waits for INTEGRATION-NOTES.md\'s proposed RenderLens widening.', () => {
+    const engine = createEngine({ width: 16, height: 16 });
+    const renderer = makeFakeRenderer();
+    const camera = makeFakeCamera();
+    const input = createInput({ renderer, camera, engine });
+    const canvas = makeCanvas();
+    input.attach(canvas);
+
+    const before = useAppStore.getState().lens;
+    for (const { key, lens } of CASES) {
+      if (LEGACY.has(lens)) continue;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+      expect(useAppStore.getState().lens, `lens should stay "${before}" after pressing "${key}" (${lens})`).toBe(before);
+    }
+
+    input.dispose();
+  });
+
+  it('bus lens:changed only fires for the 3 legacy lenses, for the same crash-avoidance reason', async () => {
     const { bus } = await import('@/ui/bus');
     const received: unknown[] = [];
     const sub = bus.on('lens:changed', (payload) => received.push(payload));
@@ -106,8 +141,11 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     const canvas = makeCanvas();
     input.attach(canvas);
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' }));
-    expect(received).toEqual([{ lens: 'quadlife' }]);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' })); // quadlife — must NOT emit
+    expect(received).toEqual([]);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2' })); // age — must emit
+    expect(received).toEqual([{ lens: 'age' }]);
 
     sub.dispose();
     input.dispose();
