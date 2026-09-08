@@ -1336,3 +1336,96 @@ coverage in `e2e/persistence.spec.ts` is untouched and still passes.
 
 **Blocking?** no.
 **Resolution:** n/a.
+
+---
+
+## 2026-09-08 — ui — mounted RulesPanel + MultiplayerRoot; HUD overflow menu; final reachability sweep
+
+**Need:** n/a — closing out the queue above. Had write access to `App.tsx`/`Hud.tsx`/
+`HudMoreSheet.tsx`/`PanelRight.tsx`/`uiState.ts`/`icons.tsx`/`ShortcutsDialog.tsx` for this
+pass; `src/render/**`, `ArtPanel.tsx`, `src/ui/store.ts`, `src/styles/**`, `src/ui/theme/**`,
+`ThemePanel.tsx`, `src/export/**`, `ExportPanel.tsx`, `src/net/**`, `src/core/**` were not
+touched (only imported/mounted, per each of those agents' own file-ownership).
+
+**RulesPanel:** applied the `rules` agent's 4-diff proposal, adapted to today's files —
+`uiState.ts` (`'rules'` in `RightPanelId`), `PanelRight.tsx` (new `RuleIcon`, registered),
+`HudMoreSheet.tsx` (row in `PANEL_ROWS`), `Hud.tsx` (rule readout, `hud-rule` testid, wired
+to the existing `subscribeReadout` bridge — no new bus event). Verified the "leaving Conway"
+warning actually surfaces and a non-Conway preset (Seeds) visibly changes behaviour (a static
+2x2 block that's a permanent still-life under Conway explodes past 20 cells within 12
+generations) — see `e2e/rules-and-multiplayer.spec.ts`.
+
+**MultiplayerRoot:** applied the "minimal" mounting diff, but NOT as a static import — see
+`src/ui/hud/multiplayerLazy.tsx`'s own doc. `App.tsx`/`Hud.tsx`/`HudMoreSheet.tsx` never
+statically import `@/net` or `@/ui/multiplayer`; a dynamic `import()` inside
+`requestMultiplayer()` is the one sanctioned seam, called only from an explicit HUD click.
+Lifted `MultiplayerRoot`'s dialog-open state into `useMultiplayerStore.panelOpen` (small,
+additive change to `src/ui/multiplayer/{store,index}.tsx`, per that agent's own suggested
+follow-up) so the HUD trigger can open/reopen it without holding its own reference.
+`tests/net-guard.test.tsx` rewritten (not weakened) — the old blanket "the word 'multiplayer'
+never appears" check stopped being the right test once a real, honestly-labelled button
+exists; now checks for STATIC imports specifically (via a real import-statement parser, not
+a substring match) plus a new behavioural test asserting `MultiplayerLazyHost` renders
+nothing and touches no `BroadcastChannel` until `requestMultiplayer()` is called. Also found
+and fixed a shared-working-tree accident: an unrelated concurrent commit had swept up an
+in-progress draft of this file under its own message, and left the OLD `tests/net-guard.test.ts`
+still tracked alongside the new `.tsx` (both would have run — the old one would have failed
+now that multiplayer is legitimately mounted). Deleted the stale `.ts`.
+
+**Swept for other agents' unmounted proposals, per this pass's explicit brief:**
+- **Acid Art** (`acidart`'s entry above): was reachable via a self-mounted bottom-left trigger
+  (their workaround while `Hud.tsx` was contested). Applied their proposed diff — `'art'` in
+  `RightPanelId`, new `AsciiIcon`, registered in `PanelRight.tsx`/`HudMoreSheet.tsx`/`Hud.tsx`'s
+  overflow menu. Left `artMount.ts`/`ArtTrigger.tsx` (`src/render/**`, not mine to touch) as-is
+  — both entry points now coexist harmlessly; `acidart` can delete their self-mount now that
+  the permanent home exists.
+- **Appearance/ThemePanel** (`theming`'s entry): already wired into `uiState.ts`/`PanelRight.tsx`/
+  `HudMoreSheet.tsx` directly by that agent; only `Hud.tsx`'s own icon was still outstanding
+  (they explicitly flagged the row's zero spare width and left it for whoever owned `Hud.tsx`
+  next). Added to the new overflow menu.
+- **ExportPanel** (`media-export`'s entry): already fully reachable via `PersistPanel.tsx`'s
+  existing "Images" section (their own choice, no `Hud.tsx`/`uiState.ts` touch needed) —
+  nothing to mount.
+
+**HUD scaling — the actual fix for "regressed twice in opposite directions":** rather than
+re-tuning breakpoints for today's exact control count (again), added ONE new overflow point,
+`Hud.tsx`'s `MoreToolsMenu` (a plain Radix `DropdownMenu`, not the render-lens `Menu`
+primitive — that one is a single-select radio group, this one is a heterogeneous action
+list): Rules, Appearance, Acid Art, Cinematic mode, and Multiplayer all live there now.
+Cinematic mode moved in from its own dedicated icon (freeing exactly enough width for the new
+"rule" readout + the menu trigger itself — measured, not assumed: the `lg` row's real content
+is back to fitting 1440px with a few px to spare). Every OTHER existing top-level icon
+(Branches/Compare/Field guide/Experiments/Save & export/Instrument/Settings/Mute/
+Presentation/About/Logbook/Shortcuts) is untouched, so no existing e2e test needed to change
+for those. Future agents adding another panel/action should extend `MORE_TOOLS`'s items array
+rather than claiming a new dedicated icon slot — see that component's own doc comment.
+
+**New/updated e2e:** `e2e/rules-and-multiplayer.spec.ts` (Rules preset switch changes real
+simulation behaviour; Multiplayer stays inert — zero `BroadcastChannel` construction — until
+opened, then a room can actually be created), `e2e/hud-desktop.spec.ts` (every existing +
+new top-level control visible/in-viewport/within-1440px; all 5 "More tools" entries
+independently reachable and functional), `e2e/mobile.spec.ts` (Rules panel and Multiplayer
+dialog both reachable at 390x844 through the existing "More controls" sheet), `e2e/utils.ts`'s
+`openControl()` extended to transparently open the new desktop overflow menu when a target
+isn't a dedicated top-level button. `ShortcutsDialog.tsx` gained the 'A' (Acid Art toggle)
+row it was missing — found while auditing every real `keydown` handler in the app against
+what the sheet actually claims.
+
+**One real, pre-existing bug found and fixed (not mine, but blocking a clean sweep):**
+`e2e/a11y.spec.ts`'s `getByRole('button', { name: 'Settings' })` (no `exact: true`) started
+matching TWO elements once Acid Art's self-mounted "Art mode settings" button existed
+(substring match). Disambiguated rather than weakened.
+
+**One real, pre-existing flake found, NOT mine to fix:** `e2e/mobile.spec.ts`'s heartbeat
+journey test ("dragging the ribbon to its start must move generation backward") fails
+consistently — reproduced identically on a clean checkout with none of this pass's changes —
+in the `mobile` project only. Touch/timeline-scrub races have a documented history in this
+file (see the `mobile`/`integration` agents' entries above); this is `session.ts`/`interact`
+territory, not `Hud.tsx`/`App.tsx`, so left for whoever owns that next.
+
+**Final verified state, run in isolation with no other dev servers up:** `tsc --noEmit`
+clean · unit suite 837/837 (83 files) · `desktop` e2e 87/87 · `mobile` e2e 21/22 (the one
+pre-existing, unrelated flake above) · `prod-build` e2e 6/6.
+
+**Blocking?** no.
+**Resolution:** done.
