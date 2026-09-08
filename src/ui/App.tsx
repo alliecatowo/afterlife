@@ -33,6 +33,9 @@ import { SceneAnnotation } from '@/ui/SceneAnnotation';
 import { ShortcutsDialog } from '@/ui/dialogs/ShortcutsDialog';
 import { ToastLayer, TooltipProvider } from '@/ui/primitives';
 import { shouldIgnoreGlobalShortcut } from '@/interact/globalShortcutGuard';
+import { TourOverlay } from '@/ui/tutorial/TourOverlay';
+import { AboutDialog } from '@/ui/tutorial/AboutDialog';
+import { useTourStore } from '@/ui/tutorial/tourStore';
 
 const TOOL_KEYS: Record<string, Tool> = { d: 'draw', e: 'erase', p: 'pan', s: 'select' };
 
@@ -61,6 +64,7 @@ export function App() {
   const compareWith = useAppStore((s) => s.compareWith);
   const rightPanel = useUIState((s) => s.rightPanel);
   const setRightPanel = useUIState((s) => s.setRightPanel);
+  const titleDismissed = useUIState((s) => s.titleDismissed);
   const dismissTitle = useUIState((s) => s.dismissTitle);
   const setWorldTouched = useUIState((s) => s.setWorldTouched);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
@@ -101,12 +105,43 @@ export function App() {
     return () => root.removeEventListener('pointerdown', onPointerDown, { capture: true });
   }, [dismissTitle, setWorldTouched]);
 
+  // The pointerdown listener above is the only thing that ever dismissed the
+  // title plate, which meant a keyboard-only visitor could never dismiss it
+  // (and, by extension, could never reach the guided tour below, which waits
+  // for that same dismissal) — an oversight this tour work needed fixed
+  // regardless of the tour itself, since "fully keyboard operable" applies to
+  // getting the tour to start at all. Any first keypress now does the same.
+  useEffect(() => {
+    const onKeyDown = () => {
+      // Guard against re-setting an already-true flag on every keystroke —
+      // `dismissTitle()` is a plain zustand `set()`, which notifies
+      // subscribers on every call regardless of whether the value actually
+      // changed, and this listener runs in the capture phase on EVERY key
+      // press app-wide (renaming a branch, typing in a save dialog, ...).
+      if (!useUIState.getState().titleDismissed) dismissTitle();
+    };
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+  }, [dismissTitle]);
+
   // Wire the now-implemented core/render/interact modules into a running
   // universe once the canvases exist. See `@/ui/session` — idempotent, so
   // StrictMode's double-invoke is harmless.
   useEffect(() => {
     if (supported) initSession();
   }, [supported]);
+
+  // The guided tour auto-runs exactly once per browser, the first time the
+  // title plate is dismissed (the same "first real interaction" signal
+  // `setWorldTouched` above already uses) — never before, so it doesn't
+  // compete with the title card, and never gated behind a click specifically
+  // on the world, so a keyboard-only first interaction still triggers it.
+  // `start()` is itself a no-op once `tourStore.seen` is true, so this is
+  // safe to run on every mount; the actual "don't show it again" persistence
+  // lives in `@/ui/tutorial/tourStore`.
+  useEffect(() => {
+    if (titleDismissed) useTourStore.getState().start();
+  }, [titleDismissed]);
 
   // Global keyboard shortcuts NOT already owned by `@/interact/input.ts`
   // (which handles Space, arrows [camera pan], 1/2/3 [lens], g [grid],
@@ -307,6 +342,8 @@ export function App() {
       </div>
       <ToastLayer />
       <ShortcutsDialog />
+      <AboutDialog />
+      <TourOverlay />
     </TooltipProvider>
   );
 }

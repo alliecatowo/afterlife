@@ -1,5 +1,8 @@
 import { useUIState } from '@/ui/uiState';
-import { Dialog, Divider } from '@/ui/primitives';
+import { Dialog, Divider, Button } from '@/ui/primitives';
+// The guided tour is `@/ui/tutorial/**`'s own territory — this dialog only
+// needs a listed, always-available way to replay it (see INTEGRATION-NOTES.md).
+import { useTourStore } from '@/ui/tutorial/tourStore';
 
 const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
@@ -40,14 +43,36 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ['Esc', 'Close dialog / panel / presentation, or cancel the current selection / armed stamp'],
     ],
   },
+  {
+    title: 'Help',
+    rows: [
+      ['Compass icon', 'What is this? — a short explanation, and the tour'],
+      ['Replay tour', 'Walks through every feature again, from the button below'],
+    ],
+  },
 ];
 
 export function ShortcutsDialog() {
   const open = useUIState((s) => s.shortcutsOpen);
   const setOpen = useUIState((s) => s.setShortcutsOpen);
+  const startTour = useTourStore((s) => s.start);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen} title="Keyboard shortcuts" width={480}>
+    <Dialog
+      open={open}
+      onOpenChange={setOpen}
+      title="Keyboard shortcuts"
+      width={480}
+      footer={
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setOpen(false); startTour(true); }}
+        >
+          Replay the guided tour
+        </Button>
+      }
+    >
       <div className="flex flex-col gap-4">
         {GROUPS.map((g, i) => (
           <div key={g.title}>
