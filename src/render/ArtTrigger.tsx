@@ -11,6 +11,7 @@
 import { lazy, Suspense, useState } from 'react';
 import { useArtStore } from './artStore';
 import { Dialog, IconButton, Tooltip } from '@/ui/primitives';
+import { useAppStore } from '@/ui/store';
 
 // Lazy-imported so this tiny always-mounted trigger doesn't pull the whole
 // (much larger) `ArtPanel` — with every primitive, `mediaField`, preset, and
@@ -44,10 +45,27 @@ export function ArtTrigger() {
   const enabled = useArtStore((s) => s.config.enabled);
   const toggleEnabled = useArtStore((s) => s.toggleEnabled);
   const [panelOpen, setPanelOpen] = useState(false);
+  // `App.tsx`'s `#timeline` footer (the History timeline ribbon — see
+  // `@/ui/timeline/Timeline.tsx`) occupies the bottom `--size-timeline` band
+  // of the viewport, and its own bottom-left-anchored toast uses exactly this
+  // `calc()` to float ABOVE that band rather than inside it (see App.tsx).
+  // This trigger used a flat `bottom-3` instead, which sits INSIDE that band
+  // — fine at a wide desktop viewport where the ribbon's own hit box starts
+  // well to the right of this corner, but at a 390px mobile width the ribbon
+  // spans nearly edge-to-edge, so this trigger's 44x44 touch target fully
+  // covered the ribbon's own left edge: a touch meant to scrub the timeline
+  // landed on this button instead and never reached the ribbon at all (see
+  // `e2e/mobile.spec.ts`'s heartbeat journey test). Collapses back to flush
+  // with the true bottom edge in presentation mode, where the footer itself
+  // collapses to zero height (`App.tsx`'s `presentation ? 'h-0' : ...`).
+  const presentation = useAppStore((s) => s.presentation);
 
   return (
     <div
-      className="fixed bottom-3 left-3 z-[var(--z-overlay)] flex items-center gap-1 rounded-sm border border-line bg-surface px-1.5 py-1 shadow-[var(--shadow-hairline)]"
+      className={
+        'fixed left-3 z-[var(--z-overlay)] flex items-center gap-1 rounded-sm border border-line bg-surface px-1.5 py-1 shadow-[var(--shadow-hairline)] ' +
+        (presentation ? 'bottom-3' : 'bottom-[calc(var(--size-timeline)_+_env(safe-area-inset-bottom)_+_var(--spacing)*4)]')
+      }
       style={{ zIndex: 40 }}
     >
       <Tooltip content={enabled ? 'Turn off Art mode (A)' : 'Turn on Art mode — Classic ASCII (A)'}>
