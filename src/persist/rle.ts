@@ -1,6 +1,6 @@
 /**
  * Life 1.06/1.05-compatible RLE codec ("Life RLE", the format used by Golly,
- * LifeWiki, etc). Owned by `persist`.
+ * LifeWiki, etc). Owned by `persist` (rule-generalisation pass: `core`).
  *
  * Grammar (informal):
  *   file    := header* dims body
@@ -12,10 +12,18 @@
  *
  * We tolerate real-world mess: CRLF line endings, a missing trailing "!",
  * whitespace/newlines inside the run data (lines wrapped at ~70 cols), and an
- * omitted "rule=" clause (assumed B3/S23, the LifeWiki convention). We refuse
- * to load any rule that is not equivalent to Conway's Life — see `checkRule`.
+ * omitted "rule=" clause (assumed B3/S23, the LifeWiki convention).
+ *
+ * Rule honesty: now that `@/core/engine` can actually SIMULATE any Life-like
+ * B/S rule (see `@/core/rule.ts`), import accepts one and reports it on
+ * `ParsedPattern.rule` (canonical form) rather than rejecting anything but
+ * Conway. We still refuse to load a genuinely unsupported family — Generations
+ * (3+ states), Hensel/non-totalistic notation, or a non-Moore/Larger-than-Life
+ * neighbourhood — via `UnsupportedRuleError`, whose message names exactly what
+ * was found (delegated to `@/core/rule.ts`'s `parseRule`/`RuleParseError`).
  */
 import type { Rect, StampPattern } from '@/core/types';
+import { CONWAY_RULE_STRING, RuleParseError, parseRule } from '@/core/rule';
 
 /** A parsed RLE pattern, widened with the header metadata worth preserving. */
 export interface ParsedPattern extends StampPattern {
@@ -26,47 +34,39 @@ export interface ParsedPattern extends StampPattern {
   /** `#P`/`#R` offset, if present. */
   offsetX?: number;
   offsetY?: number;
+  /** Canonical B/S rulestring this pattern was authored for (default `"B3/S23"` when the file omits `rule=`). */
+  rule: string;
 }
 
-/** Thrown when an RLE file names a rule other than Conway's Life (B3/S23). */
+/** Thrown when an RLE file names a rule this engine cannot simulate at all. */
 export class UnsupportedRuleError extends Error {
-  constructor(public readonly rawRule: string) {
+  constructor(
+    public readonly rawRule: string,
+    public readonly reason: string = 'not a supported Life-like rule',
+  ) {
     super(
-      `Unsupported rule "${rawRule}" — AFTERLIFE only simulates Conway's Life ` +
-        `(B3/S23) and cannot honestly display this pattern under its own rule.`,
+      `Unsupported rule "${rawRule}": ${reason} — AFTERLIFE simulates any 2-state, ` +
+        `outer-totalistic B/S rule on the 8-cell Moore neighbourhood, but not this.`,
     );
     this.name = 'UnsupportedRuleError';
   }
 }
 
-const digitsEqual = (a: string, b: string): boolean =>
-  [...a].sort().join('') === [...b].sort().join('');
-
 /**
- * Validate a `rule=` clause. Accepts the common ways of spelling Conway's Life:
- * `B3/S23`, `b3/s23`, `S23/B3`, and the historic Life 1.05 `23/3` (survive/birth,
- * no letters). Anything else throws `UnsupportedRuleError` naming the input.
+ * Validate (and normalise) a `rule=` clause. Accepts any Life-like B/S
+ * rulestring `@/core/rule.ts`'s engine can actually simulate — Conway,
+ * HighLife, Seeds, Day & Night, etc — in any of the tolerated spellings
+ * (`B3/S23`, `b3/s23`, `S23/B3`, historic `23/3`). Throws
+ * `UnsupportedRuleError` (naming what was found) for a genuinely unsupported
+ * family: Generations, Hensel/non-totalistic notation, or a non-Moore/
+ * Larger-than-Life neighbourhood. Returns the canonical rulestring.
  */
-export function checkRule(raw: string): void {
-  const s = raw.trim();
-  let birth: string | null = null;
-  let survive: string | null = null;
-
-  let m = /^B(\d*)\/S(\d*)$/i.exec(s);
-  if (m) {
-    birth = m[1]!;
-    survive = m[2]!;
-  } else if ((m = /^S(\d*)\/B(\d*)$/i.exec(s))) {
-    survive = m[1]!;
-    birth = m[2]!;
-  } else if ((m = /^(\d*)\/(\d*)$/.exec(s))) {
-    // Historic Life 1.05 notation: "{survive}/{birth}", no letters.
-    survive = m[1]!;
-    birth = m[2]!;
-  }
-
-  if (birth === null || survive === null || !digitsEqual(birth, '3') || !digitsEqual(survive, '23')) {
-    throw new UnsupportedRuleError(raw);
+export function checkRule(raw: string): string {
+  try {
+    return parseRule(raw).rule;
+  } catch (err) {
+    if (err instanceof RuleParseError) throw new UnsupportedRuleError(raw, err.reason);
+    throw err;
   }
 }
 
@@ -154,7 +154,7 @@ export function fromRLE(rle: string): ParsedPattern {
     throw new Error(`fromRLE: invalid dimensions x=${width}, y=${height}`);
   }
   // Tolerate an omitted rule= clause — LifeWiki convention assumes B3/S23.
-  if (ruleRaw) checkRule(ruleRaw);
+  const rule = ruleRaw ? checkRule(ruleRaw) : CONWAY_RULE_STRING;
 
   let body = lines.slice(dimsIdx + 1).join('');
   const bang = body.indexOf('!'); // tolerate a missing trailing '!'
@@ -162,7 +162,7 @@ export function fromRLE(rle: string): ParsedPattern {
   body = body.replace(/\s+/g, ''); // tolerate whitespace/newlines mid-run
 
   const cells = parseBody(body, width, height);
-  return { name: name ?? 'imported', w: width, h: height, cells, comments, author, offsetX, offsetY };
+  return { name: name ?? 'imported', w: width, h: height, cells, comments, author, offsetX, offsetY, rule };
 }
 
 const MAX_LINE = 70;
@@ -192,12 +192,19 @@ export function toRLE(
   cells: Uint8Array,
   rect: Pick<Rect, 'w' | 'h'>,
   name?: string,
-  meta?: { comments?: string[]; author?: string },
+  meta?: { comments?: string[]; author?: string; rule?: string },
 ): string {
   const { w, h } = rect;
   if (cells.length !== w * h) {
     throw new Error(`toRLE: cells.length (${cells.length}) !== w*h (${w * h})`);
   }
+  // Always the WORLD'S ACTUAL rule (the caller's `meta.rule`, e.g.
+  // `session.engine.rule`) — never a hardcoded Conway default — canonicalised
+  // so a rule string round-trips through export/import identically regardless
+  // of how the caller spelled it. Throws if the caller passes something this
+  // engine can't actually simulate; that's a caller bug (exporting a rule
+  // nothing ever validated), not a normal import-time honesty check.
+  const rule = meta?.rule !== undefined ? parseRule(meta.rule).rule : CONWAY_RULE_STRING;
 
   let minX = w;
   let maxX = -1;
@@ -221,7 +228,7 @@ export function toRLE(
   if (name) headerLines.push(`#N ${name}`);
   if (meta?.author) headerLines.push(`#O ${meta.author}`);
   for (const c of meta?.comments ?? []) headerLines.push(`#C ${c}`);
-  headerLines.push(`x = ${bw}, y = ${bh}, rule = B3/S23`);
+  headerLines.push(`x = ${bw}, y = ${bh}, rule = ${rule}`);
 
   const tokens: string[] = [];
   if (!empty) {

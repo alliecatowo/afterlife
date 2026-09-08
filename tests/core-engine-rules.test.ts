@@ -69,7 +69,7 @@ describe('LifeEngine: generic (non-Conway) step kernel', () => {
     const engine = createEngine({ width: 24, height: 24, rule: 'B2/S' });
     engine.seed('seeds', 0.1);
     const before = new Set<string>();
-    engine.forEachLive({ x: 0, y: 0, w: 24, h: 24 }, (x, y) => before.add(`${x},${y}`));
+    engine.forEachLive({ x: 0, y: 0, w: 24, h: 24 }, (x, y) => { before.add(`${x},${y}`); });
     engine.step();
     engine.forEachLive({ x: 0, y: 0, w: 24, h: 24 }, (x, y) => {
       expect(before.has(`${x},${y}`)).toBe(false);

@@ -65,28 +65,64 @@ describe('RLE import', () => {
     expect(p.comments).toEqual(['The smallest, most common spaceship.']);
   });
 
-  describe('rule rejection', () => {
+  describe('rule handling', () => {
     it('accepts common Conway rule spellings', () => {
       for (const rule of ['B3/S23', 'b3/s23', '23/3', 'S23/B3']) {
         expect(() => checkRule(rule)).not.toThrow();
+        expect(checkRule(rule)).toBe('B3/S23');
       }
     });
 
-    it('rejects HighLife (B36/S23) with a specific, honest message', () => {
+    it('defaults an omitted rule= clause to B3/S23', () => {
+      const p = fromRLE('x = 3, y = 3\nbob$2bo$3o!');
+      expect(p.rule).toBe('B3/S23');
+    });
+
+    it('accepts HighLife (B36/S23) and sets the world\'s rule accordingly', () => {
       const highlife = 'x = 3, y = 3, rule = B36/S23\nbob$2bo$3o!';
-      expect(() => fromRLE(highlife)).toThrow(UnsupportedRuleError);
+      const p = fromRLE(highlife);
+      expect(p.rule).toBe('B36/S23');
+      expect(liveCoords(p.cells, p.w, p.h)).toEqual(GLIDER_COORDS);
+    });
+
+    it('accepts Seeds (B2/S) too, and canonicalises messy spellings', () => {
+      const p = fromRLE('x = 1, y = 1, rule = b2/s\no!');
+      expect(p.rule).toBe('B2/S');
+    });
+
+    it('rejects a Generations rule (3+ slash segments), naming what was found', () => {
+      const generations = 'x = 3, y = 3, rule = B3/S23/3\nbob$2bo$3o!';
+      expect(() => fromRLE(generations)).toThrow(UnsupportedRuleError);
       try {
-        fromRLE(highlife);
+        fromRLE(generations);
         expect.unreachable();
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedRuleError);
-        expect((err as Error).message).toContain('B36/S23');
-        expect((err as Error).message.toLowerCase()).toContain('b3/s23');
+        expect((err as UnsupportedRuleError).rawRule).toBe('B3/S23/3');
+        expect((err as Error).message).toMatch(/Generations/i);
       }
     });
 
-    it('rejects Seeds (B2/S) as well', () => {
-      expect(() => fromRLE('x = 1, y = 1, rule = B2/S\no!')).toThrow(UnsupportedRuleError);
+    it('rejects Hensel (non-totalistic) notation, naming it', () => {
+      const hensel = 'x = 3, y = 3, rule = B2n3/S23-a4i\nbob$2bo$3o!';
+      expect(() => fromRLE(hensel)).toThrow(UnsupportedRuleError);
+      try {
+        fromRLE(hensel);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).toMatch(/Hensel/i);
+      }
+    });
+
+    it('rejects a Larger-than-Life / non-Moore neighbourhood specifier, naming it', () => {
+      const ltl = 'x = 3, y = 3, rule = R2,C0,S6..12,B7..12,NM\nbob$2bo$3o!';
+      expect(() => fromRLE(ltl)).toThrow(UnsupportedRuleError);
+      try {
+        fromRLE(ltl);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).toMatch(/Larger-than-Life|neighbourhood/i);
+      }
     });
   });
 });
@@ -184,5 +220,29 @@ describe('RLE round-trip', () => {
     const cells = fromCoords([[10, 10]], w, h);
     const text = toRLE(cells, { w, h });
     expect(text).toMatch(/x = 1, y = 1, rule = B3\/S23/);
+  });
+
+  describe('a non-Conway rule round-trips honestly (export writes the WORLD\'S actual rule)', () => {
+    const rules = ['B36/S23', 'B2/S', 'B3678/S34678', 'B1357/S1357', 'S23/B3'];
+    for (const rule of rules) {
+      it(`glider-shaped fixture under "${rule}"`, () => {
+        const p1 = fromRLE(GLIDER_RLE.replace('rule = B3/S23', `rule = ${rule}`));
+        const text = toRLE(p1.cells, { w: p1.w, h: p1.h }, p1.name, { rule: p1.rule });
+        expect(text).toMatch(new RegExp(`rule = ${p1.rule.replace('/', '\\/')}`));
+        const p2 = fromRLE(text);
+        expect(p2.rule).toBe(p1.rule);
+        expect(Array.from(p2.cells)).toEqual(Array.from(p1.cells));
+      });
+    }
+  });
+
+  it('toRLE defaults to B3/S23 when no rule is given (never silently writes a caller-supplied one it did not validate)', () => {
+    const cells = fromCoords([[0, 0]], 1, 1);
+    expect(toRLE(cells, { w: 1, h: 1 })).toMatch(/rule = B3\/S23/);
+  });
+
+  it('toRLE throws for a rule it cannot simulate — a caller bug, not an import-time honesty check', () => {
+    const cells = fromCoords([[0, 0]], 1, 1);
+    expect(() => toRLE(cells, { w: 1, h: 1 }, undefined, { rule: 'B3/S23/3' })).toThrow();
   });
 });
