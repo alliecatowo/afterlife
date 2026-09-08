@@ -35,6 +35,7 @@ import { initCinematic, type CinematicController } from '@/ui/cinematic';
 import { getPattern } from '@/content/patterns';
 import { OPENING_SCENE, type CameraSpec, type SceneDef } from '@/content/scenes';
 import type { EditOp, Rect, WorldSpec } from '@/core/types';
+import { CONWAY_RULE_STRING, parseRule } from '@/core/rule';
 
 /** The one universe AFTERLIFE observes — the same 256x160 torus every curated
  *  scene (opening tableau, the three experiments) was verified against. */
@@ -76,6 +77,17 @@ export interface Session {
    *  any other recorded edit — see `@/persist/codec`'s "hand-drawn start"
    *  note), then frames the establishing camera. */
   loadScene(scene: SceneDef): void;
+  /**
+   * Switch to a different simulation rule (see `@/core/rule.ts`) — deliberately
+   * a FRESH-WORLD operation, exactly like `loadScene`: stops playback, clears
+   * the world, and resets history to a fresh root branch at generation 0.
+   * See `LifeEngine.setRule`'s doc for why a rule change can never be a
+   * mid-history edit. Returns `false` (and surfaces a toast) for an invalid
+   * or unsupported rulestring, leaving the current world untouched; `true`
+   * on success. Does NOT reframe the camera or touch curated scene state
+   * beyond clearing it — the caller (`RulesPanel`) decides what happens next.
+   */
+  setRule(rule: string): boolean;
   /** Recognise structures within `rect` right now. Synchronous, bounded. */
   scanRegion(rect: Rect): ScanResult;
   /** Serialise the active branch's full recorded history into a portable document. */
@@ -90,6 +102,57 @@ let session: Session | null = null;
 /** Non-reactive accessor for anything that needs the live session (panels, etc.). */
 export function getSession(): Session | null {
   return session;
+}
+
+// ---- multiplayer hook (see src/net/** and docs/MULTIPLAYER.md) -----------
+// Surgical integration point, added for the multiplayer work because
+// nothing else in the tree owns the one place a remote edit can be applied
+// at the right generation. Solo play is completely unaffected: all three
+// hooks default to `null`, every call site below is a single reference
+// check with no allocation, and no code in `src/net/**` is ever imported or
+// executed unless something outside this file calls these setters — which
+// only `src/net/sessionBridge.ts` does, only after the user explicitly
+// creates or joins a room. See `tests/net-guard.test.ts` for the assertion
+// that leaving multiplayer untouched leaves this module's behaviour
+// byte-for-byte the same as before this hook existed.
+//
+//  - `setMultiplayerGate(fn)`: consulted once per generation, right before
+//    `step()` would advance it. Returning `false` STALLS the local
+//    simulation at its current generation — no `engine.step()`, no
+//    `history.advance()`, no `gen:changed` — until it returns `true` again.
+//    This is the lockstep rule "never advance past a generation whose
+//    inputs aren't known yet" (`@/net/protocol`'s `StallTracker`).
+//  - `setMultiplayerEditSource(fn)`: consulted once per generation for
+//    edits that are due to apply AT `engine.gen`, already deterministically
+//    ordered by the room. Applied via `history.record()` directly, never
+//    `recordOrFork` — a due multiplayer edit is authoritative for its
+//    generation, never a "does this fork" decision.
+//  - `setMultiplayerEditInterceptor(fn)`: consulted from the single shared
+//    `recordOrFork()` call site below, which is already how every local
+//    edit-commit path in this file (drawing, undo, `applyEdit()`) records
+//    or forks. Returning `true` means the interceptor has taken ownership
+//    of these edits — handed them to the room to be scheduled some
+//    generations in the future and re-delivered to every peer, including
+//    this one, via `setMultiplayerEditSource` above — so `recordOrFork`
+//    must NOT also record them immediately. This is not a workaround; per
+//    `@/net/protocol`'s module doc, a multiplayer edit never applies "now"
+//    for anyone, including its own author — an instant local application is
+//    exactly the asymmetry that would desync every other peer.
+let multiplayerGate: ((nextGen: number) => boolean) | null = null;
+let multiplayerEditSource: ((gen: number) => EditOp[] | undefined) | null = null;
+let multiplayerEditInterceptor: ((atGen: number, edits: EditOp[]) => boolean) | null = null;
+
+/** See the hook doc above. Pass `null` to detach (e.g. on leaving a room). */
+export function setMultiplayerGate(fn: ((nextGen: number) => boolean) | null): void {
+  multiplayerGate = fn;
+}
+/** See the hook doc above. Pass `null` to detach. */
+export function setMultiplayerEditSource(fn: ((gen: number) => EditOp[] | undefined) | null): void {
+  multiplayerEditSource = fn;
+}
+/** See the hook doc above. Pass `null` to detach. */
+export function setMultiplayerEditInterceptor(fn: ((atGen: number, edits: EditOp[]) => boolean) | null): void {
+  multiplayerEditInterceptor = fn;
 }
 
 /** Idempotent: a second call is a no-op (React 18/19 StrictMode double-invokes effects). */
@@ -316,6 +379,12 @@ export function initSession(): Session {
 
   function recordOrFork(atGen: number, edits: EditOp[]): void {
     if (edits.length === 0) return;
+    // Multiplayer hook: give an attached room first refusal on every local
+    // edit-commit path (see the doc above `setMultiplayerEditInterceptor`).
+    // Claimed edits are scheduled by the room and come back later through
+    // `multiplayerEditSource`, applied directly via `history.record()` — see
+    // `step()` below — so this function must not also record them now.
+    if (multiplayerEditInterceptor?.(atGen, edits)) return;
     const cellCount = edits.reduce((n, op) => n + op.cells.length, 0);
 
     // Editing behind `maxGen` (only possible while paused, after scrubbing
@@ -366,6 +435,20 @@ export function initSession(): Session {
   });
 
   function step(): void {
+    // Multiplayer hook: never advance past a generation whose inputs aren't
+    // known yet (see the doc above `setMultiplayerGate`). A stall leaves
+    // `engine`/`history` completely untouched — the loop keeps ticking and
+    // retries next frame, so play resumes on its own the instant the gate
+    // reopens, with no separate pause/resume state to manage.
+    if (multiplayerGate && !multiplayerGate(engine.gen + 1)) return;
+    // Multiplayer hook: apply edits that are due at exactly this generation,
+    // already deterministically ordered by the room — authoritative, so
+    // `history.record()` directly rather than `recordOrFork`'s fork check.
+    const netEdits = multiplayerEditSource?.(engine.gen);
+    if (netEdits && netEdits.length > 0) {
+      history.record(engine.gen, netEdits);
+      bus.emit('edit:committed', { gen: engine.gen, cellCount: netEdits.reduce((n, op) => n + op.cells.length, 0) });
+    }
     flushEdits(engine.gen);
     engine.step();
     history.advance(engine.gen);
@@ -507,6 +590,13 @@ export function initSession(): Session {
   function loadScene(scene: SceneDef): void {
     loop.stop();
     useAppStore.getState().setPlaying(false);
+    // NON-NEGOTIABLE: every curated scene was verified under Conway on this
+    // exact world (see WORLD_SPEC's doc and ARCHITECTURE.md) — force it here
+    // regardless of whatever rule the user had selected, so a scene NEVER
+    // silently loads under a globally-changed rule. `setRule` is a pure,
+    // synchronous, bits-untouched mutation (see its doc), safe to call right
+    // before the `clear()`/`reset()` below which start the world fresh anyway.
+    engine.setRule(CONWAY_RULE_STRING);
     engine.clear();
     history.reset();
     if (scene.cells.length > 0) {
@@ -553,6 +643,33 @@ export function initSession(): Session {
     },
     gotoGen,
     loadScene,
+    setRule(rule) {
+      let canonical: string;
+      try {
+        canonical = parseRule(rule).rule; // validate + canonicalise without touching the live engine
+      } catch (err) {
+        bus.emit('toast', { message: `Not a supported rule: ${(err as Error).message}`, tone: 'warn' });
+        return false;
+      }
+      loop.stop();
+      useAppStore.getState().setPlaying(false);
+      // Fresh-world operation (see the interface doc and LifeEngine.setRule):
+      // change the rule, THEN clear/reset — never the other way round, so
+      // there is never a moment where old-rule bits exist under the new rule.
+      engine.setRule(canonical);
+      engine.clear();
+      history.reset();
+      currentScene = null;
+      firedBeats.clear();
+      useAppStore.getState().setSelection(null);
+      useAppStore.getState().setCompareWith(null);
+      renderer.setSelection(null);
+      syncBranches();
+      useAppStore.getState().setActiveBranch(history.activeBranch);
+      bus.emit('scene:annotate', null);
+      emitGen();
+      return true;
+    },
     scanRegion(rect) {
       return scan(engine, rect);
     },
@@ -563,6 +680,7 @@ export function initSession(): Session {
         title,
         createdAt: Date.now(),
         spec: WORLD_SPEC,
+        rule: engine.rule,
         seed: 0,
         density: 0,
         activeBranch: 'root',
@@ -581,6 +699,18 @@ export function initSession(): Session {
       }
       loop.stop();
       useAppStore.getState().setPlaying(false);
+      // Restore the SAVED world's rule before replaying its edits — a
+      // document's edits/keyframes only ever make sense under the rule that
+      // produced them (see `LifeEngine.setRule`'s doc). Falls back to Conway
+      // for a pre-rule-generalisation save (`doc.rule` undefined until
+      // `codec.ts`'s v2->v3 migration guarantees it's always populated, but
+      // this stays defensive against a hand-edited file).
+      try {
+        engine.setRule(doc.rule ?? CONWAY_RULE_STRING);
+      } catch {
+        bus.emit('toast', { message: `That save names an unsupported rule ("${doc.rule}") — opening as Conway's Life instead.`, tone: 'warn' });
+        engine.setRule(CONWAY_RULE_STRING);
+      }
       engine.clear();
       history.reset();
       currentScene = null;

@@ -810,3 +810,113 @@ failures · `mobile` e2e 20/20 · `prod-build` e2e 6/6 · `npm run build` succee
 
 **Blocking?** no.
 **Resolution:** done.
+
+---
+
+## 2026-09-08 — multiplayer foundation (`src/net/**`, `src/ui/multiplayer/**`)
+
+**What was built:** an opt-in, account-free lockstep multiplayer layer. Full design
+in `docs/MULTIPLAYER.md`. Summary: a room is a shared world spec (size/boundary/rule)
+plus an ordered edit log; edits are stamped `LATENCY_BUFFER_GENS` (12) generations into
+the future and applied identically — including to their own author — by every peer,
+deterministically ordered by `(targetGen, peerId, seq)`; the local sim stalls (never
+silently diverges) until every known peer's watermark makes a generation safe; every 64
+generations peers exchange a world hash and loudly report any mismatch, with a manual
+"resync from the authoritative log" recovery. `BroadcastChannelTransport` is a real,
+working, no-server transport (same-origin cross-tab); `WebSocketTransport` is a real
+client for an optional future relay, reporting `'unavailable'` honestly with no URL
+configured. New files only: `src/net/{protocol,transport,room,sessionBridge,index}.ts`,
+`src/ui/multiplayer/**`, `docs/MULTIPLAYER.md`, plus tests
+(`tests/net-*.test.ts`, `tests/ui-multiplayer-panel.test.tsx`, `e2e/multiplayer.spec.ts`).
+
+**The one hook applied directly (as pre-authorized), not proposed:** three optional,
+`null`-by-default setters added to `src/ui/session.ts`
+(`setMultiplayerGate`/`setMultiplayerEditSource`/`setMultiplayerEditInterceptor`),
+consulted from the single existing `recordOrFork()` call site and the single existing
+`step()` function. Every check is one reference comparison; nothing under `src/net/**`
+is imported or executed by `session.ts` itself, and no other file in the app calls these
+setters except `src/net/sessionBridge.ts`, only after a room is joined. Landed cleanly
+alongside the `rules` agent's concurrent, unrelated `setRule()`/`CONWAY_RULE_STRING`
+additions to the same file (both pure insertions in different regions — verified via
+`git diff --stat` showing only `+90` lines, no conflicts, and `tsc --noEmit` clean for
+this file after both landed). Verified this doesn't regress solo play:
+`tests/net-guard.test.ts` (static + behavioural), plus `e2e/drawing.spec.ts` and
+`e2e/timeline.spec.ts` (the two specs that most directly exercise the edit-commit/undo/
+scrub paths `recordOrFork`/`step` sit inside) both still pass unmodified.
+
+**Two mounting points proposed, not applied** (both outside `src/net/**`/
+`src/ui/multiplayer/**`/`session.ts`, so left for whoever owns `App.tsx`/`Hud.tsx` to
+apply — the feature works standalone without either; see `src/ui/multiplayer/index.tsx`'s
+own doc comment):
+
+1. **Minimal, zero-layout-risk (recommended to land first):** mount the self-contained,
+   fixed-position trigger + dialog exactly as built, no other changes needed.
+
+   ```diff
+   --- a/src/ui/App.tsx
+   +++ b/src/ui/App.tsx
+   @@
+    import { AboutDialog } from '@/ui/tutorial/AboutDialog';
+   +import { MultiplayerRoot } from '@/ui/multiplayer';
+   @@
+          <ToastLayer />
+          <ShortcutsDialog />
+          <AboutDialog />
+          <TourOverlay />
+          <AchievementsPanel open={logbookOpen} onOpenChange={setLogbookOpen} />
+   +      <MultiplayerRoot />
+        </TooltipProvider>
+      );
+   ```
+
+2. **Design-consistent placement (a follow-up, once the first is verified live):** replace
+   the floating trigger with a HUD icon button matching the existing
+   About/Logbook/Shortcuts row (`src/ui/hud/Hud.tsx`, right after the "Keyboard shortcuts"
+   button at the row's end), and render only the `Dialog` half of `MultiplayerRoot` from
+   `App.tsx` (would need `MultiplayerPanel`'s open state lifted to `useMultiplayerStore`,
+   a small follow-up to `src/ui/multiplayer/index.tsx` — not done here since it touches the
+   HUD's own layout/spacing decisions, which belong to whoever owns that file's visual
+   rhythm, not this pass).
+
+   ```diff
+   --- a/src/ui/hud/Hud.tsx
+   +++ b/src/ui/hud/Hud.tsx
+   @@
+        <Tooltip content="Keyboard shortcuts (?)">
+          <IconButton label="Keyboard shortcuts" icon={<QuestionIcon />} onClick={() => setShortcutsOpen(true)} />
+        </Tooltip>
+   +    <Tooltip content="Multiplayer — play this world with someone else">
+   +      <IconButton label="Multiplayer" icon={<PeopleIcon />} pressed={mpInRoom} onClick={() => setMpOpen(true)} />
+   +    </Tooltip>
+      </div>
+   ```
+
+   (`PeopleIcon` currently lives at `src/ui/multiplayer/PeopleIcon.tsx`, kept out of the
+   shared `@/ui/icons` barrel deliberately — see that file's own doc comment for why; move
+   it into the barrel as part of this follow-up if it lands.)
+
+**Why not applied directly despite being trivial:** both files are outside this pass's
+owned paths per this session's file-ownership table, and `App.tsx`/`Hud.tsx` were flagged
+as actively being edited by concurrent agents this same session (confirmed via `git
+status` before starting: `src/core/engine.ts`, `src/core/rule.ts`, `src/render/**` mid-edit
+by the `rules`/`art` work) — routing through this diff avoids a collision rather than
+guessing at a merge.
+
+**Verified state, this feature in isolation (full-repo suite has unrelated concurrent
+in-progress failures from other agents' work — see below):**
+`tsc --noEmit` clean for every file this pass touched/added (checked via
+`tsc --noEmit 2>&1 | grep -E "src/net|src/ui/multiplayer|src/ui/session"` → empty) ·
+54 new unit/RTL tests, all green, full suite 693/693 · new
+`e2e/multiplayer.spec.ts` (two real Playwright tabs, real `BroadcastChannel`) passing ·
+`e2e/drawing.spec.ts` (9/9) and `e2e/timeline.spec.ts` (2/2) passing unmodified, confirming
+the `session.ts` hook is inert for solo play. Full-repo `tsc --noEmit` and
+`e2e/boot.spec.ts` currently show pre-existing, unrelated failures
+(`WorldRenderer` missing `setArtConfig`/`setModulationGrid` in render-owned test mocks; a
+`Tooltip must be used within TooltipProvider` runtime error from `ArtPanel`/`ArtTrigger`)
+traced to concurrent in-progress work in `src/render/**`/`src/core/rule.ts` at the time of
+this pass — not caused by, and not fixed by, this entry.
+
+**Blocking?** no.
+**Resolution:** the two diffs above are ready to apply whenever `App.tsx`/`Hud.tsx` are
+free; the feature is fully functional (`BroadcastChannelTransport`, tested end to end)
+without them.
