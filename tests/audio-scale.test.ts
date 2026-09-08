@@ -87,7 +87,7 @@ describe('audio/scale — alternate scale modes (the panel\'s scale picker)', ()
     // the original pentatonic was built to avoid; lydian's major-7th (11) is
     // a deliberate, standard color tone a full octave up, not this clash.
     for (const mode of SCALE_MODES) {
-      expect(SCALES[mode].includes(1)).toBe(false);
+      expect((SCALES[mode] as readonly number[]).includes(1)).toBe(false);
     }
   });
 
