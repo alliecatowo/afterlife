@@ -563,3 +563,48 @@ mobile-robustness scope.
 
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-07 — tutorial — tour spotlight fix + achievements logbook
+**Need:** n/a — informational record, no frozen-file change requested.
+
+**Tour spotlight (`src/ui/tutorial/**`):** replaced `CoachMark`'s per-frame `requestAnimationFrame`
+repositioning loop with an event-driven `recompute()` (window resize/scroll, `camera:changed`,
+`ResizeObserver`/`IntersectionObserver` on the resolved target element, and `useAppStore`/
+`useUIState` subscriptions for drawer/panel open-close, each triggering a short BOUNDED settle
+poll to track the CSS transition rather than looping forever) — addresses the reported "jumpy"
+complaint and the CPU concern from the render-loop optimisation pass. Added a real spotlight:
+a single `pointer-events: none` element using the box-shadow "9999px spread" technique for the
+dim + a layered inset ring for focus, positioned/sized from `placeCoachMark`'s new `spotlight`
+field (target bbox padded by `SPOTLIGHT_PADDING`, always less than `TARGET_GAP` so it can never
+overlap the card). `targeting.ts`'s `world`-kind resolver now sizes the cutout from the live
+camera scale (`session.camera.camera.scale`) instead of a 1×1 point. Card/spotlight ease via
+CSS transition (cut under `prefers-reduced-motion`), coordinates snapped to device pixels.
+**Verified the critical invariant is intact**: `e2e/tour-spotlight.spec.ts` asserts the dimming
+layer exists, the cutout is positioned over the real target's bounding box, resize/world-camera
+tracking works, AND — the specific regression called out for this task — that the highlighted
+control and the world canvas underneath the dimmed area both remain genuinely clickable through
+the overlay (`stamping-and-selection.spec.ts`/`persistence.spec.ts`'s RLE round-trip both still
+pass unmodified).
+
+**Achievements (`src/content/achievements.ts`, `src/ui/achievements/**`):** a naturalist's-log
+extension of `@/content/discoveries`, not a points layer — see that module's doc for the full
+list and what real state earns each entry. `App.tsx`/`Hud.tsx`/`panels/**` are other agents'
+territory this pass, so — same reasoning `@/ui/cinematic` already used for its own overlay — the
+logbook mounts itself (a small quiet trigger tab + `Dialog`, plus the `l` shortcut) into its own
+DOM root, booted from a `useEffect` in `TourOverlay` (already unconditionally rendered by
+`App.tsx`) rather than proposing another `App.tsx` edit for one line. New persisted key
+`afterlife:v1:achievements`, via the same `STORAGE_PREFIX`-reuse pattern `tourStore`/the audio
+agent's settings both already use — no changes to `@/persist/**`.
+
+**Still imperfect:** per the mobile agent's note two entries above, the Logbook trigger tab can
+sit close to/overlap the cinematic overlay's own bottom bar by a few px at very narrow widths —
+cosmetic, both stay independently readable; a proper fix is a real HUD icon button next to the
+other panel toggles once someone with write access to `Hud.tsx` picks up either agent's request
+above. "Witnessed a collision" is a heuristic (a followed discovery transitioning to `lost`) since
+`@/content/recognition` doesn't model collisions explicitly — documented in `store.ts`'s comment.
+Achievement progress counters that aren't a single boolean flag (alive-streak length, distinct-
+specimen tally) are session-local like the rest of the app's live discovery state; only the
+earned/muted logbook entries themselves persist across reloads.
+
+**Blocking?** no.
+**Resolution:** n/a.
