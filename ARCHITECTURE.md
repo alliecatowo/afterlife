@@ -2,9 +2,10 @@
 
 *A playable observatory for tiny universes. Every future leaves a trace.*
 
-This is the parallel-work bible. Six agents build this app simultaneously without talking
-to each other. That only works if everyone respects the file ownership table and the
-contracts in `src/core/types.ts`.
+AFTERLIFE was originally built by seven agents working the tree in parallel, coordinated
+only by a file-ownership table and the shared contracts in `src/core/types.ts`, then
+merged by a single integration pass. The app is finished; this document now describes
+the architecture that resulted, for anyone extending or auditing it.
 
 ---
 
@@ -53,32 +54,28 @@ object3D transforms and instanced matrices. It does not `setState` per frame.
 
 ---
 
-## 3. File ownership — historical (parallel build phase only)
+## 3. Who owns what, today
 
-The table below described the seven-agent parallel-build phase and is now **obsolete**.
-That phase is over: every module listed compiled, typechecked and passed its tests, and a
-single integration agent then had full write access to the entire tree (including every
-file previously listed as frozen) to wire the modules together, resolve the gaps filed in
-`INTEGRATION-NOTES.md`, and add the end-to-end test suite under `e2e/`. There is no longer
-a file-ownership boundary to respect — this is kept only as a map of "who originally wrote
-what", useful context for understanding a module's internal conventions.
+The app was originally built by seven agents working the tree in parallel behind a
+file-ownership table, then merged by a single integration pass (see
+`INTEGRATION-NOTES.md` for that handoff's resolved gaps — it's a historical record now,
+not an open queue). That phase is finished. There is no ownership boundary left to
+respect; anyone touching this tree today has full write access to all of it. What's
+below is a map of the current module boundaries and who originally wrote each one, kept
+because it's still useful context for a module's internal conventions.
 
-| Original agent | Wrote | Notes |
-| --- | --- | --- |
-| **core** | `src/core/**` | engine, history, rng, loop. Pure TS, no DOM, no React. |
-| **render** | `src/render/**`, `src/interact/**` | Canvas2D world renderer, camera, pointer/keyboard input. |
-| **ui** | `src/ui/**` (incl. `src/ui/primitives/**`), `src/styles/**` | React chrome + the design-system primitives. |
-| **sculpture** | `src/sculpture/**` | R3F Time Sculpture. Mounts into `#sculpture-canvas`. |
-| **content** | `src/content/**` | Curated scenes/experiments, specimen corpus, recognition, discoveries. |
-| **audio** | `src/audio/**` | WebAudio soundscape. |
-| **persist** | `src/persist/**` | localStorage, import/export, RLE codec. |
-
-The following files were frozen during the parallel phase (architect-owned contracts:
-`src/core/types.ts`, `src/ui/bus.ts`, `src/ui/store.ts`, tooling config, design tokens) and
-are **no longer frozen** — the integration pass added events to `bus.ts` (`history:undo`,
-`scene:annotate`) exactly as `INTEGRATION-NOTES.md` had anticipated, and extended
-`session.ts` to own scene loading, undo, discoveries, experiments and persistence. Treat
-`INTEGRATION-NOTES.md` as a historical record of the handoff, not an open queue.
+| Module | Path | Originally built by | Purpose |
+| --- | --- | --- | --- |
+| Core | `src/core/**` | core | Engine, history/branching, RNG, the fixed-timestep loop. Pure TS — no DOM, no React. |
+| Render | `src/render/**` | render | Canvas2D world renderer, camera math, lens coloring. |
+| Interact | `src/interact/**` | render | Pointer/keyboard input → bus intents; global shortcut guard (dialogs/typing-targets suppress app shortcuts). |
+| UI shell | `src/ui/*.tsx`, `src/ui/*.ts` | ui | `App.tsx` (shell + DOM anchors), `bus.ts`, `store.ts`, `session.ts` (owns scene loading, undo, discoveries, experiments, persistence wiring), `uiState.ts`, `discoveries.ts`, `experiments.ts`. |
+| UI subtrees | `src/ui/{hud,drawer,panels,timeline,dialogs,hooks,primitives}/**` | ui | HUD, drawer, right-hand panels (Branches/Compare/Experiments/FieldGuide/Persist/Settings), the timeline ribbon, the shortcuts dialog, `useSimulationReadout`/`useReducedMotion`, and the unstyled-Radix design-system primitives. |
+| Sculpture | `src/sculpture/**` | sculpture | The R3F Time Sculpture: scene, camera rig, instance geometry/budgeting, WebGL-support detection, PNG export, 2D fallback. Mounts into `#sculpture-canvas`, lazy-loaded as its own bundle chunk. |
+| Content | `src/content/**` | content | Curated scenes (`scenes.ts`), the 24-specimen corpus (`specimens.ts`), pattern recognition (`recognition.ts`), the three authored experiments (`experiments.ts`), the Field Guide's discovery model (`discoveries.ts`), the RLE pattern library (`patterns.ts`). Import the `@/content` barrel unless you're already inside the module. |
+| Audio | `src/audio/**` | audio | WebAudio soundscape. `audio.ts` is the only impure/stateful file (owns the `AudioContext`, gesture-gated); `brain.ts`/`mapper.ts`/`scheduler.ts`/`scale.ts`/`synth.ts`/`events.ts`/`context.ts` are pure and independently tested. |
+| Persist | `src/persist/**` | persist | `store.ts` is the public entry point (localStorage, import/export, versioned doc format); `codec.ts`, `localStorage.ts`, `rle.ts` are internals — reach into them only from inside this module. |
+| Styles | `src/styles/**` | ui | `tokens.css` (the `@theme` design tokens), `base.css`, `motion.css`. |
 
 Still true and worth keeping:
 - Cross-module communication is `bus` (high-frequency, per-generation signals) or
@@ -94,16 +91,34 @@ Still true and worth keeping:
 
 ```
 src/
-  core/       types.ts (frozen vocabulary) · engine.ts · history.ts · rng.ts (done) · loop.ts
-  render/     renderer.ts (Canvas2D) · camera.ts
-  interact/   input.ts (pointer/keyboard → bus intents)
-  ui/         App.tsx (shell + anchors) · bus.ts (frozen) · store.ts (frozen)
-              hooks/useSimulationReadout.ts (frozen) · primitives/** (design system)
-  sculpture/  sculpture.ts (R3F, #sculpture-canvas)
-  content/    patterns.ts (RLE library, discovery detection)
-  audio/      audio.ts (WebAudio, gesture-gated)
-  persist/    store.ts (localStorage, JSON export, RLE codec)
-  styles/     tokens.css (frozen @theme) · base.css (frozen)
+  core/       types.ts (shared vocabulary) · engine.ts · history.ts (branching TimelineStore)
+              · rng.ts · loop.ts (fixed-timestep imperative driver)
+  render/     renderer.ts (Canvas2D) · camera.ts · color.ts (lens ramps)
+  interact/   input.ts (pointer/keyboard → bus intents) · globalShortcutGuard.ts
+  ui/         App.tsx (shell + DOM anchors) · bus.ts · store.ts · session.ts (live Session,
+              also exposed as window.__AFTERLIFE__ in dev) · uiState.ts · discoveries.ts
+              · experiments.ts · icons.tsx · TitlePlate.tsx · WorldHint.tsx
+              · WorldStateOverlay.tsx · SceneAnnotation.tsx
+    hud/          Hud.tsx (top status/transport bar)
+    drawer/       Drawer.tsx (#drawer-left: tools, patterns, lenses)
+    panels/       PanelRight.tsx + BranchesPanel/ComparePanel/ExperimentsPanel/
+                  FieldGuidePanel/PersistPanel/SettingsPanel (#panel-right)
+    timeline/     Timeline.tsx (#timeline) · ribbon.ts · historyRing.ts
+    dialogs/      ShortcutsDialog.tsx
+    hooks/        useSimulationReadout.ts (≤10Hz useSyncExternalStore bridge) · useReducedMotion.ts
+    primitives/   Button, IconButton, Toggle, Slider, Panel, Field, Tooltip, Readout,
+                  Legend, Divider, Toast, Dialog — unstyled Radix, painted with tokens
+  sculpture/  SculptureApp.tsx (mounts into #sculpture-canvas, lazy chunk) · SculptureScene.tsx
+              · geometry.ts · mapping.ts · budget.ts (instance-count reduction) · export.ts
+              (PNG export) · webgl.ts (support detection) · tokens.ts · Fallback2D.tsx
+              · SculptureLoading.tsx
+  content/    scenes.ts (4 curated scenes) · specimens.ts (24-entry corpus) · recognition.ts
+              (scan/classify) · experiments.ts (3 authored challenges) · discoveries.ts
+              · patterns.ts (RLE library) · MiniaturePreview.tsx · index.ts (barrel)
+  audio/      audio.ts (stateful entry point) · brain.ts · mapper.ts · scheduler.ts
+              · scale.ts · synth.ts · events.ts · context.ts (all pure except audio.ts)
+  persist/    store.ts (public entry point) · codec.ts · localStorage.ts · rle.ts
+  styles/     tokens.css (@theme design tokens) · base.css · motion.css
 ```
 
 ### DOM anchors provided by `src/ui/App.tsx`
