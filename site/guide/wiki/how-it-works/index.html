@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>How it works — AFTERLIFE</title>
-    <meta name="description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, and why Life cannot be reverse-simulated." />
+    <meta name="description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, why Life cannot be reverse-simulated, how pluggable rules and account-free multiplayer both work." />
     <link rel="canonical" href="https://alliecatowo.github.io/afterlife/guide/wiki/how-it-works/" />
     <link rel="icon" type="image/svg+xml" href="/afterlife/guide/assets/favicon.svg" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="AFTERLIFE" />
     <meta property="og:title" content="How it works — AFTERLIFE" />
-    <meta property="og:description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, and why Life cannot be reverse-simulated." />
+    <meta property="og:description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, why Life cannot be reverse-simulated, how pluggable rules and account-free multiplayer both work." />
     <meta property="og:url" content="https://alliecatowo.github.io/afterlife/guide/wiki/how-it-works/" />
     <meta property="og:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
     <meta property="og:image:width" content="1200" />
@@ -20,7 +20,7 @@
 
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="How it works — AFTERLIFE" />
-    <meta name="twitter:description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, and why Life cannot be reverse-simulated." />
+    <meta name="twitter:description" content="The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, why Life cannot be reverse-simulated, how pluggable rules and account-free multiplayer both work." />
     <meta name="twitter:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
 
     <link rel="stylesheet" href="/site/shared/site.css" />
@@ -64,7 +64,7 @@
             <a href="/afterlife/guide/">Guide</a> <span aria-hidden="true">/</span> <a href="/afterlife/guide/wiki/">Wiki</a> <span aria-hidden="true">/</span> <span aria-current="page">How it works</span>
           </nav>
           <h1>How it works</h1>
-          <p class="wiki-article__lede">The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, and why Life cannot be reverse-simulated.</p>
+          <p class="wiki-article__lede">The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, why Life cannot be reverse-simulated, how pluggable rules and account-free multiplayer both work.</p>
 
           <h2 id="the-world">The world</h2>
           <p>
@@ -133,6 +133,44 @@
             generation before the present normally truncates that branch's future —
             unless you ask to <a href="../features/#branching-and-compare">branch</a>
             instead, which is the entire mechanism behind "alternate futures."
+          </p>
+
+          <h2 id="rules-are-pluggable">Rules are pluggable, but never mid-history</h2>
+          <p>
+            B3/S23 isn't hardwired into the step loop — the engine holds an 18-entry
+            lookup table (one entry per "was this cell alive, and how many live
+            neighbours does it have" combination) and looks the next state up
+            directly, so any Life-like B/S rule runs through the exact same code path.
+            Conway's own rule keeps a separate, hand-written fast path that the engine
+            switches to automatically whenever the active rule happens to canonicalise
+            to exactly B3/S23, which is why supporting other rules didn't come at the
+            expense of Conway's own performance (measured: well under 1% difference).
+          </p>
+          <p>
+            What the lookup table can't do is retroactively apply to history that's
+            already been recorded. A saved edit and a keyframe both describe
+            <em>what changed</em>, not <em>what rule produced the change</em> — so
+            switching rules always starts a brand-new world (playback stops, the
+            board clears, history resets) rather than reinterpreting old history under
+            a rule that never actually ran it.
+          </p>
+
+          <h2 id="multiplayer-without-a-server">Multiplayer without a server</h2>
+          <p>
+            Because a world is already "a seed plus a sparse, timestamped edit log,"
+            sharing one is mostly a networking problem, not a simulation one: instead
+            of ever sending the grid itself, every peer sends the same tiny edits
+            everyone already knows how to replay. Each edit is time-stamped to land
+            about a second in the future relative to the sender's own clock — for
+            every peer, including the sender — so nobody's own edits ever apply
+            "instantly" while everyone else's arrive late; that symmetry is what keeps
+            every peer's recorded history identical. If two edits ever land on the
+            same generation, every peer sorts them by the same rule (which peer, then
+            which of that peer's own edits), so there's never a need to ask a server
+            who goes first. The simulation simply won't advance past a generation
+            whose inputs might still be outstanding, and every so often peers compare
+            a cheap checksum of their own worlds so a genuine disagreement is loud and
+            recoverable rather than a silent, slowly-diverging bug.
           </p>
 
           <nav class="wiki-pager" aria-label="Wiki pages">

@@ -193,22 +193,61 @@ ends the draw cleanly instead of corrupting it.
 
 ## 9. Full suite, as actually run
 
-`typecheck` (`tsc --noEmit`): clean. Unit tests: **516 passed, 0 failed**,
-across 49 files (`vitest run`, 6.78s). Production build (`vite build`):
-succeeds; real measured bundle sizes are the app chunk at 533 kB (169 kB
-gzipped) and the lazily-loaded Time Sculpture chunk — which costs nothing
-until you open it — at 996 kB (277 kB gzipped).
+`typecheck` (`tsc --noEmit`): clean. Unit tests: **837 passed, 0 failed**,
+across 83 files (`vitest run`). Production build (`vite build`): succeeds;
+real measured bundle sizes (Vite/rolldown's automatic chunk splitting, not
+one monolithic "app" chunk) are `app` at 287.5 kB (89.9 kB gzipped) plus
+`primitives` at 344.3 kB (109.4 kB gzipped) — together the initial JS needed
+to open the app, 632 kB / 199 kB gzipped combined — and two lazily-loaded
+chunks that cost nothing until opened: the Time Sculpture at 1.02 MB (284.9
+kB gzipped) and multiplayer at 21.0 kB (7.1 kB gzipped).
 
-End-to-end (`playwright test`, 94 specs: 68 `desktop` + 20 `mobile` + 6
-`prod-build`): a full sequential run completed in **93 passed, 1 failed** —
-`tour.spec.ts`'s "does not auto-show again on a second visit" hit
-Playwright's 45s action timeout waiting for the "Skip tour" button to settle,
-under the resource contention of running the entire suite back-to-back on
-one worker. Re-run in isolation immediately afterward, it passed in 1.7s.
-That's a load-sensitive flake in the test's own click-timing, not a
-regression in the tour itself — but it means the honest current state is
-"94/94 achievable, one flake observed under full-suite load" rather than a
-clean 94/94 in every run.
+End-to-end (`playwright test`, 115 specs: 87 `desktop` + 22 `mobile` + 6
+`prod-build`): the one currently-known flake is in `mobile.spec.ts`'s
+heartbeat-journey test (scrub → edit → compare → sculpt by touch), which
+intermittently fails a "dragging the ribbon backward must move the
+generation backward" assertion under full-suite load. Unlike the
+click-timing flake this section used to describe (now fixed — see
+`INTEGRATION-NOTES.md`'s historical log for the `dismissTitle()`/camera-poll
+fixes), this one is a real, reproducible race between a scrub's chunked
+replay and something reading `engine.gen` mid-flight, in
+`session.ts`/`interact`/`history.ts` territory — tracked, not silently
+tolerated. Everything else passes in a full sequential run.
+
+## 10. Newer claims: the default lens, rule presets, and theming
+
+Verified the same way as everything above — by actually running the engine
+or the validator, not asserted:
+
+- **Default lens.** With zero interaction, the opening scene at generation 0
+  shows several genuinely distinct, significantly-represented hue buckets
+  under the new default lens (`lineage`) — measured at 12 in an actual run,
+  using the same bucketing method `prod-build.spec.ts` uses for the other 7
+  lenses (`e2e/default-lens.spec.ts`; the committed assertion is a robust ≥3
+  threshold, not an exact count).
+- **Rule presets.** Every one of the 10 curated Life-like presets'
+  headline claims (HighLife's self-replication, Day & Night's period-2
+  block oscillation, Seeds' explosive growth, Maze/Mazectric's contrasting
+  fates from an identical soup, Replicator's one-cell-to-ring parity,
+  Life without Death's monotonic growth, 2×2's bounded churn, Coral's
+  freeze-then-reaccrete behaviour) was actually run against the real engine
+  and is re-checked by `tests/content-rules.test.ts` on every commit.
+  Diamoeba was tried at four densities on a 128×128 torus and dropped after
+  none produced its claimed stable diamond blobs.
+- **The generalised rule kernel's cost.** Measured on a 512×512 board, 200
+  steps after a 20-step warmup, same harness before/after generalising the
+  engine beyond hardcoded B3/S23: **3.2598 ms/step → 3.2856 ms/step** (+0.8%,
+  within run-to-run noise) — Conway's own hand-unrolled fast path is
+  untouched and still dispatched to whenever the active rule is B3/S23.
+- **Theming.** `src/ui/theme/validate.ts`'s accent-distance check is
+  calibrated to the shipped default theme's own closest real pair (age vs.
+  warn), measured at an OKLab distance of 0.0491 — every theme, built-in or
+  custom, must clear at least 0.045. Measured directly (computing
+  `accentDistances()` for all 5 shipped themes): Observatory's own worst pair
+  is exactly the calibration value, 0.0491; the 4 newer themes clear the
+  floor by a wider margin, with their own worst pairs ranging from 0.0711
+  (Ivory Plate) to 0.0956 (High Contrast) — comfortably above the 0.045
+  floor, confirmed by `tests/theme-validate.test.ts`.
 
 ## Reading the raw files yourself
 

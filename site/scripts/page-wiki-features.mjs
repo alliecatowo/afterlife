@@ -14,6 +14,15 @@ export function renderFeatures() {
             the drawer, and every lens shows a short legend explaining what its colour
             means.
           </p>
+          <p>
+            The default lens is <strong>Lineage</strong>, not Life. Life is, by
+            design, a single fixed hue — correct for what it means (alive, honestly,
+            nothing more), but it made a brand-new, zero-configuration visit read as a
+            flat monochrome world. Lineage is colourful <em>and</em> still honest:
+            colour means inherited ancestry, not decoration. The opening scene shows
+            several genuinely distinct family-line hues at generation 0 with no
+            interaction at all. Life remains one keypress away (<kbd>1</kbd>).
+          </p>
           <ul>
             <li><strong>Life</strong> — the plain view: alive or dead, one accent colour.</li>
             <li><strong>Age</strong> — a spectral ramp from young to long-lived, so structures that have persisted for a long time visually separate from freshly-born cells.</li>
@@ -28,6 +37,141 @@ export function renderFeatures() {
             A colourblind-safe palette (the standard Okabe-Ito swatches, verified
             distinguishable under protanopia, deuteranopia and tritanopia) is a toggle
             in Settings, applied to the discrete Immigration/QuadLife lenses.
+          </p>
+
+          <h2 id="acid-art">Acid Art: ASCII, the modulation field, and colour automation</h2>
+          <p>
+            Beyond the honest lenses above, an opt-in <strong>Art mode</strong>
+            (<kbd>A</kbd>, or the HUD) redraws the same live cells as characters from a
+            monospace glyph set — JetBrains Mono, the app's own numeral face — chosen
+            by real per-cell state: age, activity, lineage hue, local density, live
+            neighbour count. Every glyph is rasterised to an offscreen canvas
+            <strong>once</strong> per character set and cached; the draw path blits
+            that cached raster and recolours it, never calling the text engine per
+            cell per frame, so a full 256×160 grid of characters stays cheap.
+          </p>
+          <p>
+            A <strong>modulation field</strong> — procedural value-noise, radial and
+            linear gradients, an animated plasma, or a real image/video/webcam source
+            you provide — can additionally warp glyph choice, hue, brightness or
+            jitter. This is decoration layered on top of the simulation, never a
+            second source of truth: nothing in Art mode can change which cells are
+            alive, and turning it off restores the honest lens exactly, byte for byte.
+            A one-shot action can also seed the world <em>from</em> an image, by
+            thresholding its luminance into a real edit — an honest one-time
+            conversion, not a hidden second world.
+          </p>
+          <p>
+            Up to 4 deterministic <strong>LFOs</strong> — sine, triangle, saw, or a
+            random walk, each a pure function of absolute time, so they're replay-safe
+            by construction — can drive hue rotation, palette cycling, glyph-set
+            switching, field motion, trail length, or brightness. Custom colour
+            palettes and fading trails are both supported. Four presets (Classic
+            ASCII, Ember, Bloom, Monolith) and a "Randomise" button get you started;
+            everything is saved locally and can be exported/imported as JSON. Art mode
+            is <strong>off by default</strong> — the shipped look is completely
+            unchanged until you opt in.
+          </p>
+
+          <h2 id="themes">Themes</h2>
+          <p>
+            Five built-in themes, switchable from Settings or the HUD's "More tools"
+            menu: <strong>Observatory</strong> (the unchanged default — a dusk-lit
+            instrument room), <strong>Ivory Plate</strong> (a warm, light
+            natural-history-plate palette for daylight legibility), <strong>High
+            Contrast</strong>, <strong>Phosphor</strong> (an amber CRT observatory),
+            and <strong>Cyanotype</strong> (a blueprint exposure). Switching a theme
+            writes 21 design tokens as CSS custom properties directly onto the page —
+            no reload, no rebuild — and the world canvas re-themes itself
+            automatically, because its colours already resolve through the same
+            tokens at draw time.
+          </p>
+          <p>
+            Every theme, including a custom one you build and export/import, is held
+            to the same bar: the 8 lenses' accent colours (life, age, activity, time,
+            branch A/B, diff, warn) must stay at least as mutually distinguishable —
+            measured as a minimum distance in OKLab colour space — as they are in
+            Observatory's own closest real pair. A custom theme that fails this check
+            (for example, setting two different concepts to visually the same colour)
+            cannot be saved. Site theming (this guide/wiki) is not part of this
+            feature — it's an app-only capability today.
+          </p>
+
+          <h2 id="rules">Rules: beyond Conway's own B3/S23</h2>
+          <p>
+            The Rules panel offers 10 curated Life-like presets beyond Conway's
+            original — <strong>HighLife</strong> (genuine self-replicators),
+            <strong>Day &amp; Night</strong>, <strong>Seeds</strong>,
+            <strong>Maze</strong> and its thinner sibling <strong>Mazectric</strong>,
+            <strong>Replicator</strong> (a parity rule where every pattern eventually
+            copies itself), <strong>Life without Death</strong> (a one-way ratchet —
+            once born, a cell never dies), <strong>2×2</strong>, and
+            <strong>Coral</strong> — plus a field for any custom B/S rulestring. Every
+            preset's headline claim in the panel was actually run against the engine,
+            not asserted from familiarity with the rule's reputation; see
+            <a href="../verification/#rules">Verification</a> for the exact numbers,
+            and for the one rule (Diamoeba) that was tried and dropped after its usual
+            claim failed to reproduce.
+          </p>
+          <p>
+            <strong>Changing the rule always starts a fresh world.</strong> It's not
+            possible to switch rules partway through a running history: a recorded
+            edit or a saved keyframe has no way to record which rule produced it, so
+            replaying old history under a newly-chosen rule would silently
+            reinterpret it under a rule that never actually ran it. Choosing a new
+            rule stops playback, clears the board, and resets history — the same
+            honest trade-off as loading a different scene.
+          </p>
+
+          <h2 id="multiplayer">Multiplayer</h2>
+          <p>
+            An opt-in, account-free way to share one universe with someone else, using
+            a technique called <strong>deterministic lockstep</strong>: instead of ever
+            sending world state over the wire, every peer sends the same tiny edits
+            everyone already knows how to replay, timed to land about a second in the
+            future for everybody — including the person who drew them, so nobody's own
+            edits ever jump the queue. Every peer computes the identical result from
+            the identical inputs; nobody is a server. If two peers' clocks disagree
+            about the same cell, both apply the edits in the same agreed order and get
+            the same answer. The simulation pauses rather than guesses whenever an
+            input might still be outstanding, and every so often peers compare a
+            checksum of their own worlds and loudly flag it if the two have ever
+            drifted apart, with a one-click resync.
+          </p>
+          <p>
+            Today this works with <strong>no server and no account</strong>: open the
+            app in two browser tabs, host a room in one, join with the room code in
+            the other. That's not a demo of a future feature — it's the real thing,
+            using the browser's own cross-tab messaging. A room's shared identity
+            includes the active rule, so two peers running different rules simply
+            can't connect to the same room rather than silently computing different
+            futures. Nothing about multiplayer costs a solo player anything: the code
+            for it isn't even downloaded until you open the Multiplayer panel.
+          </p>
+
+          <h2 id="export">Video export</h2>
+          <p>
+            The Save &amp; export panel can render an offline, deterministic replay of
+            your world — a fresh copy of the engine, stepped forward and fed the same
+            recorded edits your session already has, never the live simulation you're
+            watching — out as a <strong>WebM video</strong> or a
+            <strong>zipped sequence of PNG frames</strong>, matching whatever lens,
+            theme, or Art mode configuration you actually have on screen. Exports are
+            bounded (frame count and resolution are capped, with an honest
+            reduction notice rather than a silent truncation) and cancellable
+            mid-render.
+          </p>
+          <p>
+            Three things were designed for this feature and deliberately <strong>cut
+            rather than shipped half-working</strong>: animated GIF export (a complete
+            encoder was built, but there was no independent way to confirm the files
+            it produced actually open correctly in a real viewer), audio export (the
+            pieces needed exist and were confirmed reusable, but the environment this
+            was built in couldn't actually exercise them before shipping), and a Time
+            Sculpture turntable export. <strong>Exported video is currently
+            silent.</strong> None of these were quietly dropped — see the project's
+            own contributor notes for exactly what exists and what it would take to
+            finish each one.
           </p>
 
           <h2 id="history-ribbon">The history ribbon</h2>
@@ -115,6 +259,17 @@ export function renderFeatures() {
             event rates, is available as an opt-in texture.
           </p>
           <p>
+            The sustained drone underneath all of this is driven by two measured,
+            decaying signals — how fast the world is churning, and how fast its
+            population's centre of mass is actually moving — each fed only by real
+            per-interval measurements. The practical effect: a paused, frozen, or
+            extinct world decays to genuine silence within a few seconds on its own,
+            and the underlying audio engine auto-suspends shortly after, so a quiet
+            tab costs no CPU. Gating on a <em>rate</em> rather than a raw count was a
+            deliberate fix — gating on a raw count meant a faster simulation speed
+            could cancel out its own effect on the very thing controlling the drone.
+          </p>
+          <p>
             Notes can also be routed to a real external synthesiser or DAW over
             <strong>Web MIDI</strong> — port and channel selection, optional mapping of
             event classes to separate channels, guaranteed note-offs (every note-on
@@ -166,7 +321,7 @@ export function renderFeatures() {
   return renderWikiArticle({
     slug: 'features',
     title: 'Features',
-    description: 'The 8 colour lenses, the history ribbon, the Time Sculpture, branching and compare, the field guide and achievements logbook, experiments, the audio instrument (timbres, presets, MIDI, reactivity), cinematic mode, and the guided tour.',
+    description: 'The 8 colour lenses (default: Lineage), Acid Art (ASCII/glyph rendering), 5 themes, 10 Life-like rules, opt-in multiplayer, video export, the history ribbon, the Time Sculpture, branching and compare, the field guide and achievements logbook, experiments, the audio instrument, cinematic mode, and the guided tour.',
     bodyHtml,
   });
 }

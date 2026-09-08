@@ -1,12 +1,74 @@
-# Integration Notes (APPEND-ONLY)
+# Integration Notes
 
-Frozen files (`package.json`, `tsconfig.json`, `vite.config.ts`, `mise.toml`,
-`index.html`, `src/core/types.ts`, `src/ui/bus.ts`, `src/ui/store.ts`,
-`src/ui/hooks/useSimulationReadout.ts`, `src/styles/tokens.css`, `src/styles/base.css`,
-`ARCHITECTURE.md`, `DESIGN.md`) may not be edited by implementation agents.
+This file started as an append-only coordination log for the original parallel,
+multi-agent build (the format template a few paragraphs down, and the "frozen files"
+list, are both artifacts of that phase — the parallel-build phase is over; see
+ARCHITECTURE.md §3). It's grown into a genuinely useful record of *why* the app looks
+the way it does, so rather than delete any of it, this pass reorganised it into two
+parts:
 
-Need something changed in one? **Append** an entry at the bottom of this file. Never edit
-or delete another agent's entry. Format:
+1. **"Current state" (immediately below)** — a maintained summary of what's actually
+   still true, still open, or still worth knowing on a first read. Skim this first.
+2. **"Historical build log" (everything after the `===` divider)** — the original,
+   unedited, chronological entries, kept verbatim because they contain real design
+   rationale, exact diffs, and (importantly) the full resurrection notes for work that
+   was built and then deliberately cut. Nothing below the divider has been deleted or
+   rewritten; new work should still be documented in prose in the relevant README/
+   ARCHITECTURE/CONTRIBUTING doc rather than appended here.
+
+## Current state
+
+**Ownership.** The file-ownership table that structured the original build is
+historical. Anyone touching this tree today has full write access to all of it — see
+`ARCHITECTURE.md` §3 for the module map that resulted, kept because it's still useful
+context for each module's internal conventions.
+
+**Landed and integrated, this feature wave:** the default render lens (`lineage`, not
+`life`); Acid Art (ASCII/glyph rendering, the modulation field, LFO automation) via the
+HUD's own "Acid Art" entry; 5 runtime themes with an OKLab accent-distance validator; a
+generalised, pluggable rule engine (10 verified presets, a lookup-table kernel, Conway's
+own fast path kept) with the Rules panel mounted in the HUD; opt-in deterministic-
+lockstep multiplayer (`BroadcastChannelTransport` working today, `WebSocketTransport`
+ready for a relay), reachable via the HUD behind a lazy `import()`; offline deterministic
+video/PNG-sequence export from the Save & export panel; and an audio drone rework driven
+by measured churn-rate/motion dynamics with auto-suspend after idle silence. All of the
+above are documented in the README, ARCHITECTURE.md, and the site wiki — this log is
+supporting detail, not the primary source for a new contributor.
+
+**Cut, with a resurrection path — don't lose these notes:**
+- **Animated GIF export** — a complete median-cut quantiser + GIF-flavoured LZW encoder
+  + GIF89a container writer were built and typechecked, then deleted because the only
+  verification available was a self-authored round-trip decoder, with no real
+  third-party GIF reference decoder to confirm produced files actually open correctly.
+  Full detail in the "media-export" entry below (search for "Cut from this pass").
+- **Audio export** (deterministic offline render, and muxed WebM+audio) — the pure
+  `SoundscapeBrain`/`SynthGraph` pieces were confirmed reusable against an
+  `OfflineAudioContext` via a safe structural cast, which would make it genuinely
+  deterministic. Cut because `OfflineAudioContext` isn't exercisable in this project's
+  jsdom/Vitest environment. **Exported video is currently silent.** Same entry as above.
+- **Time Sculpture turntable export** — designed (orbit the existing camera, reuse the
+  existing PNG-export path per frame) but cut, untested against real WebGL. Same entry.
+- **Site theming** — the app's 5 runtime themes were never ported to `site/**`. See the
+  "color (theming)" entry below for the suggested approach (duplicate the token maps
+  into `site/shared/theme.ts`, don't import `src/ui/theme/**` from the site).
+
+See `CONTRIBUTING.md`'s "known rough edges / good first tasks" for the full current
+list, including smaller items (the mobile heartbeat-journey e2e flake, `ArtPanel`'s
+hex-only colour input, `Hud.tsx`'s zero-slack icon row).
+
+**Numbers, as last actually measured (see README.md/ARCHITECTURE.md for the current
+figures — trust those over this file if they ever disagree):** 837 unit tests across 83
+files; 115 Playwright specs (87 desktop + 22 mobile + 6 `prod-build`) with one known
+flake in `mobile.spec.ts`'s heartbeat-journey test; the Conway-vs-generalised-rule
+kernel measured at 3.2598 → 3.2856 ms/step (+0.8%, within noise) on a 512×512 board.
+
+===
+
+## Historical build log (append-only, chronological — kept verbatim for reference)
+
+The original coordination format is below. It applied for the duration of this app's
+initial multi-agent build; the "frozen files" list and the "append, never edit" rule
+were load-bearing only while that parallel-build phase was active.
 
 ```
 ## <date> — <agent> — <file>
@@ -15,6 +77,14 @@ or delete another agent's entry. Format:
 **Blocking?** yes/no — can you proceed with a local workaround meanwhile?
 **Resolution:** (architect fills this in)
 ```
+
+Frozen files at the time (`package.json`, `tsconfig.json`, `vite.config.ts`,
+`mise.toml`, `index.html`, `src/core/types.ts`, `src/ui/bus.ts`, `src/ui/store.ts`,
+`src/ui/hooks/useSimulationReadout.ts`, `src/styles/tokens.css`, `src/styles/base.css`,
+`ARCHITECTURE.md`, `DESIGN.md`) could not be edited by implementation agents directly —
+several entries below route a needed change through this file instead of editing one of
+these directly, which is why you'll see "proposed diff, not applied" language on early
+entries even for changes that did eventually land.
 
 ---
 

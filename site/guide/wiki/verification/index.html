@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>Verification — AFTERLIFE</title>
-    <meta name="description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
+    <meta name="description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, the default lens, rule presets, theming, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
     <link rel="canonical" href="https://alliecatowo.github.io/afterlife/guide/wiki/verification/" />
     <link rel="icon" type="image/svg+xml" href="/afterlife/guide/assets/favicon.svg" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="AFTERLIFE" />
     <meta property="og:title" content="Verification — AFTERLIFE" />
-    <meta property="og:description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
+    <meta property="og:description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, the default lens, rule presets, theming, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
     <meta property="og:url" content="https://alliecatowo.github.io/afterlife/guide/wiki/verification/" />
     <meta property="og:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
     <meta property="og:image:width" content="1200" />
@@ -20,7 +20,7 @@
 
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Verification — AFTERLIFE" />
-    <meta name="twitter:description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
+    <meta name="twitter:description" content="What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, the default lens, rule presets, theming, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations." />
     <meta name="twitter:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
 
     <link rel="stylesheet" href="/site/shared/site.css" />
@@ -64,7 +64,7 @@
             <a href="/afterlife/guide/">Guide</a> <span aria-hidden="true">/</span> <a href="/afterlife/guide/wiki/">Wiki</a> <span aria-hidden="true">/</span> <span aria-current="page">Verification</span>
           </nav>
           <h1>Verification</h1>
-          <p class="wiki-article__lede">What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations.</p>
+          <p class="wiki-article__lede">What was actually proven by simulating the engine — still lifes, oscillators, spaceships, the four authored scenes, determinism, the default lens, rule presets, theming, colour/B3-S23 invariance, the production build, mobile touch, and the 24-specimen catalogue — plus the honest limitations.</p>
 
           <p>
             Every claim on this page was checked by actually simulating the rule —
@@ -157,6 +157,72 @@
             existed.
           </p>
 
+          <h2 id="default-lens">The default lens is measurably colourful</h2>
+          <p>
+            The default lens changed from Life to Lineage (see
+            <a href="../features/#lenses">Features</a>). This was checked, not just
+            argued for by design intent: with zero interaction, the opening scene at
+            generation 0 shows several genuinely distinct, significantly-represented
+            hue buckets — measured at <strong>12</strong> in an actual run, using the
+            same colour-bucketing method the production-build lens tests use for the
+            other 7 lenses. The committed regression test asserts a robust ≥3 as its
+            threshold rather than an exact count, so it doesn't become flaky as the
+            opening scene's own content changes over time.
+          </p>
+
+          <h2 id="rules">Rule presets: verified, not assumed from reputation</h2>
+          <p>
+            Beyond Conway's own B3/S23, 10 curated Life-like rule presets ship in the
+            Rules panel. Every preset's headline claim was actually run against the
+            real engine and is re-checked by the app's own test suite on every commit
+            — a claim that can't be reproduced there doesn't belong in the preset
+            list:
+          </p>
+          <ul>
+            <li><strong>HighLife</strong> — a seeded 5-cell pentomino produces 4 exact copies of itself by generation 5 (population 5 → 20), genuine self-replication, before the copies collide and collapse to extinction by generation 10.</li>
+            <li><strong>Day &amp; Night</strong> — a solid 3×3 block becomes a stable oscillator, its population cycling 9, 9, 5, 5 indefinitely, rather than freezing (as under Conway) or dying.</li>
+            <li><strong>Seeds</strong> — a single 2×2 block explodes to a population of 128 within 12 generations on a 64×64 torus.</li>
+            <li><strong>Maze</strong> — a 96×96 random soup at density 0.4 locks to an exactly static 5072-cell structure by around generation 40.</li>
+            <li><strong>Mazectric</strong> — the identical starting soup instead settles into a perfect period-6 population cycle, visibly thinner than Maze's frozen result.</li>
+            <li><strong>Replicator</strong> — a single live cell dies, but every one of its 8 neighbours is born, turning one cell into an exact 8-cell ring after one generation — the parity mechanism behind the whole "Replicator" rule family.</li>
+            <li><strong>Life without Death</strong> — seeded with 15% random noise, population never once decreases across 60 generations, checked every step.</li>
+            <li><strong>2×2</strong> — a 96×96 soup at density 0.3, run 400 generations, stays bounded (roughly 1700–2200 cells) without collapsing to zero or exploding to the board's full capacity.</li>
+            <li><strong>Coral</strong> — a solid 16×16 block grows briefly then freezes into an exactly static 612-cell structure; a sparse random soup instead dies back hard first, then steadily re-accretes rather than either freezing or collapsing.</li>
+          </ul>
+          <p id="diamoeba-cut" class="callout">
+            <strong>Diamoeba was tried and dropped.</strong> It's reputed to organise a
+            dense random soup into stable diamond-shaped blobs, but that behaviour is
+            reportedly sensitive to a narrow initial-density band. Uniform soups were
+            tried at four densities on a 128×128 torus: the two lower densities went
+            fully extinct, one decayed to extinction more slowly, and the highest
+            exploded to fill literally every cell on the board — no stable diamond
+            blobs at any density tried. Rather than ship an unverified headline claim,
+            it was left out.
+          </p>
+          <p>
+            The generalised rule kernel (a lookup table indexed once per cell, rather
+            than a hardcoded B3/S23 branch) costs essentially nothing when the active
+            rule is still Conway's own: measured on a 512×512 board, 200 steps after a
+            20-step warmup, the same test harness before and after generalising the
+            engine measured <strong>3.2598 ms/step → 3.2856 ms/step</strong> — a 0.8%
+            difference, within normal run-to-run noise. Conway's own hand-unrolled
+            fast path is kept and dispatched to whenever the active rule canonicalises
+            to exactly B3/S23.
+          </p>
+
+          <h2 id="theming">Every theme clears the same bar the default does</h2>
+          <p>
+            The app's 5 built-in themes, and any custom theme a user builds, are held
+            to a programmatic check: the 8 lenses' semantic accent colours (life, age,
+            activity, time, branch A/B, diff, warn) must stay at least a minimum
+            distance apart in OKLab colour space, pairwise. That minimum isn't an
+            arbitrary number — it's calibrated to the shipped default theme's own
+            closest real pair (age vs. warn), measured at a distance of
+            <strong>0.0491</strong>. A custom theme that would make two different
+            concepts read as visually the same colour fails this check and can't be
+            saved.
+          </p>
+
           <h2 id="mobile-touch">Mobile touch actually commits</h2>
           <p>
             A real bug, now fixed and covered: the touch-input handler used to
@@ -177,11 +243,17 @@
             <li>On narrow screens, the drawer and inspector become slide-over sheets rather than docked columns; unlike the app's dialogs, these sheets are not focus-trapped.</li>
             <li>One hairline colour token (used for the active branch row and similar decorative accents) falls below the 3:1 ratio WCAG's non-text-contrast guidance recommends — a deliberate choice for a purely decorative edge, not an oversight.</li>
             <li>Web MIDI output and system/mic audio reactivity depend on real browser and hardware support and degrade to an honest disabled state, never a silent no-op, when unavailable.</li>
+            <li>Animated GIF export, audio export, and a Time Sculpture turntable export were all designed and partially built, then cut rather than shipped without a way to verify them — see <a href="../features/#export">Features</a>. Exported video is currently silent.</li>
+            <li>Site theming (this guide/wiki) was scoped and deliberately not built — the app's 5 runtime themes are an app-only feature today.</li>
           </ul>
           <p>
-            516 unit tests across 49 files, plus 94 Playwright end-to-end tests (68
-            desktop, 20 mobile-touch, 6 against a real production build), back all of
+            837 unit tests across 83 files, plus 115 Playwright end-to-end tests (87
+            desktop, 22 mobile-touch, 6 against a real production build), back all of
             the above; <code>typecheck</code> and <code>build</code> both run clean.
+            One flake is currently known: a mobile-only touch test that scrubs, edits,
+            compares and opens the Time Sculpture in one continuous journey
+            intermittently hits a real, reproducible race in the history-scrub path
+            under full-suite load, rather than a click-timing flake.
           </p>
 
           <nav class="wiki-pager" aria-label="Wiki pages">

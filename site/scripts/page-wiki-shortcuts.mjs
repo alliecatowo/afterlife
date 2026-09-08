@@ -38,6 +38,7 @@ const GROUPS = [
       ['1–8', 'Render lens — life / age / activity / lineage / immigration / quadlife / velocity / neighbors'],
       ['V', 'Presentation mode'],
       ['C', 'Cinematic mode — auto-pan, full-screen, hands-off (any input pauses it; Esc exits)'],
+      ['A', 'Toggle Acid Art mode — ASCII/glyph rendering, the modulation field, colour automation'],
       ['?', 'This sheet'],
       ['Esc', 'Close dialog / panel / presentation, or cancel the current selection / armed stamp'],
     ],

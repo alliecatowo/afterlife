@@ -66,8 +66,8 @@ because it's still useful context for a module's internal conventions.
 
 | Module | Path | Originally built by | Purpose |
 | --- | --- | --- | --- |
-| Core | `src/core/**` | core | Engine, history/branching, RNG, the fixed-timestep loop. Pure TS — no DOM, no React. |
-| Render | `src/render/**` | render | Canvas2D world renderer, camera math, lens coloring (`color.ts` — all 8 `ColorLens` palettes, ramps, and CSS-colour resolution). |
+| Core | `src/core/**` | core | Engine, history/branching, RNG, the Life-like rule model (`rule.ts` — any B/S rulestring, an 18-entry lookup table, Conway's own fast path kept and dispatched to via `LifeRule.isConway`), the fixed-timestep loop. Pure TS — no DOM, no React. |
+| Render | `src/render/**` | render | Canvas2D world renderer, camera math, lens coloring (`color.ts` — all 8 `ColorLens` palettes, ramps, CSS-colour resolution, and `relativeLuminance()` for theme-aware ramp lightness), plus Acid Art: `glyphs.ts`/`glyphAtlas.ts` (glyph vocabulary + the cached offscreen raster atlas), `field.ts`/`mediaField.ts` (the modulation field — procedural sources and real image/video/webcam capture), `lfo.ts` (deterministic, replay-safe automation), `artConfig.ts`/`artStore.ts` (the whole Art mode config, persisted, sanitised against corrupt input). |
 | Interact | `src/interact/**` | render | Pointer/keyboard input → bus intents; global shortcut guard (dialogs/typing-targets suppress app shortcuts). |
 | UI shell | `src/ui/*.tsx`, `src/ui/*.ts` | ui | `App.tsx` (shell + DOM anchors), `bus.ts`, `store.ts`, `session.ts` (owns scene loading, undo, discoveries, experiments, persistence wiring, and initializing cinematic mode), `uiState.ts`, `discoveries.ts`, `experiments.ts`. |
 | UI subtrees | `src/ui/{hud,drawer,panels,timeline,dialogs,hooks,primitives}/**` | ui | HUD (incl. `HudMoreSheet`, the sub-`lg` bottom sheet for lens/speed controls), drawer, right-hand panels (Branches/Compare/Experiments/FieldGuide/Persist/Settings/Audio), the timeline ribbon, the shortcuts dialog, `useSimulationReadout`/`useReducedMotion`, and the unstyled-Radix design-system primitives. |
@@ -78,8 +78,11 @@ because it's still useful context for a module's internal conventions.
 | Content | `src/content/**` | content | Curated scenes (`scenes.ts`), the 24-specimen corpus (`specimens.ts`), pattern recognition (`recognition.ts`), the three authored experiments (`experiments.ts`), the Field Guide's discovery model (`discoveries.ts`), the RLE pattern library (`patterns.ts`), the tour's step content (`tour.ts`), the 14-entry achievement definitions (`achievements.ts`). Import the `@/content` barrel unless you're already inside the module. |
 | Audio | `src/audio/**` | audio | WebAudio soundscape. `audio.ts` is the only impure/stateful file (owns the `AudioContext`, gesture-gated); `brain.ts`/`mapper.ts`/`scheduler.ts`/`scale.ts`/`synth.ts`/`events.ts`/`context.ts`/`harmony.ts`/`reactivity.ts` are pure and independently tested. `settings.ts`/`settingsStore.ts` hold the tweakable instrument (timbres, presets, harmonic movement, percussion); `midi.ts`/`midiStore.ts` are the Web MIDI output bridge; `capture.ts`/`captureStore.ts` are the impure system/mic capture plumbing that calls into pure `reactivity.ts`. |
 | Persist | `src/persist/**` | persist | `store.ts` is the public entry point (localStorage, import/export, versioned doc format); `codec.ts`, `localStorage.ts`, `rle.ts` are internals — reach into them only from inside this module. |
+| Theme | `src/ui/theme/**` | color (theming) | `themes.ts` (5 built-in `ThemeDefinition`s — `observatory` is byte-identical to `tokens.css`), `tokens.ts` (the 21-token `ThemeTokens` shape), `apply.ts` (writes tokens onto `documentElement` at runtime, no rebuild), `validate.ts` (missing-token/bad-colour/accent-collision/contrast checks), `custom.ts` (user-built themes), `store.ts`/`persistence.ts`. Does not touch `src/styles/**` — themes are pure runtime overrides layered on top. |
+| Net | `src/net/**` | multiplayer | Pure protocol/room/transport logic for opt-in lockstep multiplayer — no DOM, no React, no dependency on `@/core/**`. See §12. Paired UI in `src/ui/multiplayer/**` (`ui`-adjacent). Never imported eagerly — see §15. |
+| Export | `src/export/**` | media-export | Offline deterministic video/PNG-sequence export — an independent replay, never the live engine/history/camera. See §13. |
 | Styles | `src/styles/**` | ui | `tokens.css` (the `@theme` design tokens), `base.css`, `motion.css`. |
-| Site | `site/**` | site | The static guide/wiki, generated at build time — see §10. Not part of the `src/` app; served as its own static tree under `/guide/**`. |
+| Site | `site/**` | site | The static guide/wiki, generated at build time — see §16. Not part of the `src/` app; served as its own static tree under `/guide/**`. |
 
 Still true and worth keeping:
 - Cross-module communication is `bus` (high-frequency, per-generation signals) or
@@ -98,19 +101,41 @@ src/
   core/       types.ts (shared vocabulary, incl. RenderLens's 8 lens ids) · engine.ts
               · history.ts (branching TimelineStore) · lineage.ts (colour-genetics: circular-
               mean hue inheritance, Immigration/QuadLife species birth rule — pure, never
-              read by the B3/S23 step decision) · rng.ts · loop.ts (fixed-timestep driver)
+              read by the B3/S23 step decision) · rule.ts (any B/S Life-like rule; an 18-entry
+              lookup table; Conway's own hand-unrolled fast path, dispatched to via
+              `LifeRule.isConway`) · rng.ts · loop.ts (fixed-timestep driver)
   render/     renderer.ts (Canvas2D) · camera.ts · color.ts (all `ColorLens` palettes/ramps,
-              CSS-colour resolution via a 1x1 canvas round-trip, the CVD Okabe-Ito palette)
+              CSS-colour resolution via a 1x1 canvas round-trip, the CVD Okabe-Ito palette,
+              `relativeLuminance()`) — plus Acid Art: glyphs.ts (glyph vocabulary + driver→
+              character selection) · glyphAtlas.ts (the cached offscreen glyph raster —
+              rasterised once per character set/device-px bucket, never per cell per frame)
+              · field.ts (pure modulation-field sampling: value-noise/radial/linear/plasma)
+              · mediaField.ts (impure image/video/webcam capture, explicit-gesture-gated)
+              · lfo.ts (sine/triangle/saw/random-walk, each a pure function of absolute time
+              — deterministic and replay-safe by construction) · artConfig.ts (the whole Art
+              mode config, sanitised against corrupt/hand-edited input) · artStore.ts
+              (persisted zustand store) · artMount.ts/ArtTrigger.tsx (self-mounted
+              reachability, superseded by the HUD's own "Acid Art" entry but left in place)
   interact/   input.ts (pointer/keyboard/touch → bus intents) · globalShortcutGuard.ts
-  ui/         App.tsx (shell + DOM anchors) · bus.ts · store.ts · session.ts (live Session,
-              also exposed as window.__AFTERLIFE__ in dev; wires cinematic mode) · uiState.ts
+  ui/         App.tsx (shell + DOM anchors) · bus.ts · store.ts (default `lens: 'lineage'`) ·
+              session.ts (live Session, also exposed as window.__AFTERLIFE__ in dev; wires
+              cinematic mode, `setRule()`, the 3 optional multiplayer hooks) · uiState.ts
               · discoveries.ts · experiments.ts · icons.tsx · TitlePlate.tsx · WorldHint.tsx
               · WorldStateOverlay.tsx · SceneAnnotation.tsx
-    hud/          Hud.tsx (top status/transport bar, the 8-lens legend) · HudMoreSheet.tsx
-                  (sub-`lg` bottom sheet exposing lens/speed controls otherwise `display:none`)
+    hud/          Hud.tsx (top status/transport bar, the 8-lens legend, the rule readout,
+                  `MoreToolsMenu` — Rules/Appearance/Acid Art/Cinematic/Multiplayer) ·
+                  HudMoreSheet.tsx (sub-`lg` bottom sheet exposing lens/speed/every panel
+                  otherwise `display:none`) · multiplayerLazy.tsx (the one sanctioned lazy-
+                  import seam for `@/net`/`@/ui/multiplayer` — see §15)
     drawer/       Drawer.tsx (#drawer-left: tools, patterns, lenses)
     panels/       PanelRight.tsx + BranchesPanel/ComparePanel/ExperimentsPanel/
-                  FieldGuidePanel/PersistPanel/SettingsPanel/AudioPanel (#panel-right)
+                  FieldGuidePanel/PersistPanel/SettingsPanel/AudioPanel/RulesPanel/
+                  ThemePanel/ArtPanel/ExportPanel (#panel-right)
+    theme/        themes.ts (5 built-in themes) · tokens.ts · apply.ts · validate.ts
+                  (OKLab accent-distance + WCAG contrast checks) · custom.ts · store.ts ·
+                  persistence.ts — see §14
+    multiplayer/  index.tsx (`MultiplayerRoot`, mounted via `hud/multiplayerLazy.tsx`) ·
+                  MultiplayerPanel.tsx · PeerGlyph.tsx · PeopleIcon.tsx · colors.ts · store.ts
     timeline/     Timeline.tsx (#timeline) · ribbon.ts · historyRing.ts
     dialogs/      ShortcutsDialog.tsx
     tutorial/     tourStore.ts · TourOverlay.tsx · CoachMark.tsx (world-anchored spotlight)
@@ -139,6 +164,18 @@ src/
               note-offs, panic) · reactivity.ts (pure feature extraction) · capture.ts/
               captureStore.ts (impure getDisplayMedia/getUserMedia plumbing — only ever
               touches presentation/tempo, never `@/core`) — all pure except audio.ts/capture.ts
+  net/        protocol.ts (pure: RoomSpec, StampedEdit, EditLog, StallTracker, DesyncMonitor,
+              FNV-1a hashBits) · room.ts (LockstepRoom — wires a Transport to protocol.ts) ·
+              transport.ts (BroadcastChannelTransport, real today; WebSocketTransport, ready
+              for an optional relay) · sessionBridge.ts (the only file connecting a room to a
+              real Session) · index.ts — see §12. No DOM, no `@/core` dependency; UI lives in
+              `ui/multiplayer/**` above.
+  export/     index.ts · replay.ts (independent-engine deterministic replay) ·
+              worldFrameSource.ts/hiddenCanvas.ts (a second WorldRenderer on a real, sized,
+              visibility:hidden canvas) · webmRecorder.ts (MediaRecorder + captureStream) ·
+              pngZipExport.ts/zip.ts/crc32.ts (hand-written STORED-entry zip) · limits.ts ·
+              estimate.ts · presets.ts · pacing.ts · filename.ts/annotate.ts · errors.ts ·
+              types.ts — see §13.
   persist/    store.ts (public entry point) · codec.ts · localStorage.ts · rle.ts
   styles/     tokens.css (@theme design tokens) · base.css · motion.css
 site/
@@ -235,6 +272,17 @@ In practice:
 
 `RenderLens` (`src/core/types.ts`) now lists all 8 lenses: `life` / `age` /
 `activity` / `lineage` / `immigration` / `quadlife` / `velocity` / `neighbors`.
+**`src/ui/store.ts`'s default is `lineage`, not `life`.** `life` is, by design,
+a single fixed hue (DESIGN.md: "each colour has ONE fixed meaning"), which
+read as a flat monochrome first impression on a zero-configuration visit;
+`lineage` is colourful (a newborn's hue is the circular mean of its 3
+parents') without being decorative — colour still means something real
+(ancestry), and colliding populations visibly interbreed. `life` remains
+fully available (number key `1`, the HUD lens menu). `e2e/default-lens.spec.ts`
+asserts the opening scene at generation 0 shows several genuinely distinct,
+significantly-represented hue buckets under the new default with zero
+interaction (measured at 12 in practice; the committed assertion is a robust
+≥3 threshold, not an exact count).
 `src/render/color.ts` additionally defines `ColorLens` as the same union — a
 render-owned superset kept from before `RenderLens` itself was widened; the
 two types are equal today, and `ColorLens` is deliberately left in place as
@@ -322,17 +370,163 @@ lets `e2e/utils.ts` assert on exact engine/history state (population inside a bb
 generation bypassing the throttled HUD readout, `screenToWorld`/`worldToScreen`) rather than
 guessing from pixels.
 
-**Actually measured, this pass:** `typecheck` clean; `npm test` — 516 passed, 0 failed,
-across 49 files (6.78s); `npm run build` succeeds and produces (real, measured sizes) an
-app chunk of 533 kB / 169 kB gzipped and a lazily-loaded Sculpture chunk of 996 kB / 277 kB
-gzipped; `npm run e2e` — 94 specs (68 desktop + 20 mobile + 6 prod-build), 93 passed in a
-full sequential run with one `tour.spec.ts` flake under full-suite resource contention
-(confirmed to pass in 1.7s when re-run in isolation — see
-[`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.md) §9 for detail).
+**Actually measured, this pass:** `typecheck` clean; `npm test` — 837 passed, 0 failed,
+across 83 files; `npm run build` succeeds. Real, measured chunk sizes from that build (Vite/
+rolldown's automatic splitting, not one monolithic "app" chunk): `app` 287.5 kB / 89.9 kB
+gzipped + `primitives` 344.3 kB / 109.4 kB gzipped make up the initial JS needed to open the
+app (632 kB / 199 kB gzipped combined); the lazily-loaded Time Sculpture chunk is 1.02 MB /
+284.9 kB gzipped and the lazily-loaded multiplayer chunk is 21.0 kB / 7.1 kB gzipped — neither
+loads until that feature is actually opened, per §15. `npm run e2e` — 115 specs (87 desktop +
+22 mobile + 6 prod-build); last full sequential run had one known flake, `mobile.spec.ts`'s
+heartbeat-journey test (a real, reproducible race between a scrub's chunked replay and a
+mid-flight read of `engine.gen` — `session.ts`/`interact`/`history.ts` territory, not a
+click-timing flake like the historical `tour.spec.ts` one it replaced as "the one known
+flake"). See [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.md) §9 for detail.
 
 ---
 
-## 11. The site build: `site/**`, the multi-page build, and `postbuild`
+## 11. Rules: pluggable Life-like rules
+
+`src/core/rule.ts` generalises the engine beyond hardcoded B3/S23 to any outer-totalistic
+B/S rule on the 8-cell Moore neighbourhood. A `LifeRule` is a canonical `B<digits>/S<digits>`
+string plus an 18-entry `Uint8Array` lookup table (`table[was * 9 + n]` → next state) that
+`engine.ts`'s step kernel indexes directly — no per-cell function call, no branch on rule
+identity in the hot loop. Conway's own hand-unrolled fast path is kept as a separate branch
+in `engine.ts`, dispatched to whenever `LifeRule.isConway` is true, which is why changing the
+active rule costs essentially nothing when that rule is Conway's own: measured on a 512×512
+board, 200 steps after a 20-step warmup, same harness before/after, **3.2598 ms/step → 3.2856
+ms/step (+0.8%, within run-to-run noise)**.
+
+**Deliberately not supported** (`parseRule` names what was found rather than failing
+silently): Generations rules (3+ states — this engine is binary alive/dead only, and
+`Snapshot` is frozen that way in `types.ts`), non-totalistic "Hensel" notation, and non-Moore
+neighbourhoods (Larger-than-Life, von Neumann, hexagonal) — the step kernel is hardwired to
+the 8-cell Moore neighbourhood.
+
+`src/content/rules.ts` curates 10 presets (Conway, HighLife, Day & Night, Seeds, Maze,
+Mazectric, Replicator, Life without Death, 2×2, Coral), each with a `verified` claim that was
+actually run against the real engine and re-checked by `tests/content-rules.test.ts` — a
+claim that can't be reproduced there doesn't belong in the file. Diamoeba was tried (four
+densities on a 128×128 torus) and dropped after none produced its claimed stable diamond
+blobs, rather than shipped unverified.
+
+**Changing the rule is a fresh-world operation, never a mid-history edit.**
+`Session.setRule()` (`src/ui/session.ts`) stops playback, sets the new rule, then clears the
+engine and resets history — in that order. This isn't a missing feature: a recorded `EditOp`
+or a keyframe has no field for "which rule produced this," so replaying old history under a
+newly-changed rule would silently reinterpret it under a rule that never actually ran it. A
+persisted save records its rule (falling back to Conway if absent, for saves from before this
+feature existed) and restores it before replay. `src/persist/rle.ts`'s import path now
+simulates whatever supported Life-like rule an `.rle` file's header specifies, and names the
+rule family plainly if it asks for one outside the supported set, rather than silently
+re-running an unsupported pattern under B3/S23.
+
+## 12. Multiplayer: opt-in deterministic lockstep
+
+`src/net/**` (pure logic, no DOM, no dependency on `@/core/**`) plus `src/ui/multiplayer/**`
+(the UI). Full design and rationale in [`docs/MULTIPLAYER.md`](./docs/MULTIPLAYER.md) — this
+section is the short version for orientation.
+
+A room is a shared `RoomSpec`: world size, boundary, **the rule string** (so two peers on
+different rules refuse to connect — `describeWorldMismatch` — rather than silently computing
+different futures from the same edits), a seed, and a start generation. No peer is
+authoritative. Every peer runs the identical `LifeEngine.step()`, fed the identical edits at
+the identical generations, and therefore computes the identical result — the same determinism
+guarantee that already makes `TimelineStore.goto()` bit-exact, distributed across peers
+instead of across time on one machine.
+
+- **Edits are never sent as state, only as edits, stamped into the future.** `stampEdit`
+  schedules every edit — including the sender's own — `LATENCY_BUFFER_GENS` (12, ≈1s at the
+  default 12 gens/sec) generations after the sender's local generation at submit time. This
+  symmetry (nobody, not even the author, sees their own edit land "now") is what keeps every
+  peer's recorded history identical from the next generation onward.
+- **Deterministic ordering.** Two edits landing on the same generation are ordered by
+  `(targetGen, peerId, seq)` (`compareStampedEdits`) — every peer computes this independently
+  from the same wire data, so no server is needed to agree on a last-write-wins outcome.
+- **Stall, never silently diverge.** `StallTracker.safeGen()` is the highest generation no
+  known peer can still contest, given every peer's last-reported watermark; `LockstepRoom.
+  canAdvanceTo()` gates `session.ts`'s `step()` on it (via the `setMultiplayerGate` hook — the
+  only one of three optional, `null`-by-default hooks `session.ts` exposes for this feature).
+  A stalled room freezes the world at its last safe generation and resumes automatically the
+  instant the slow peer catches up — never a silent skip-ahead.
+- **Desync detection.** Every `HASH_INTERVAL_GENS` (64 — the same cadence `history.ts`
+  keyframes at) generations, every peer broadcasts an FNV-1a hash of its own world
+  (`hashBits`); a mismatch is a loud `'desync'` event with a manual "resync from the
+  authoritative log" recovery, never a silent absorb.
+- **Transports.** `BroadcastChannelTransport` works today, with no server and no account —
+  two same-origin tabs joining the same room code are genuinely connected by the browser's own
+  `BroadcastChannel` API, which is what `e2e/multiplayer.spec.ts` drives end to end with two
+  real tabs. `WebSocketTransport` is a real client, ready for an optional relay
+  (`docs/MULTIPLAYER.md` §10 covers what a compliant relay must — and must not — do); with no
+  URL configured it reports `'unavailable'` immediately, never a hanging spinner.
+
+## 13. Export: offline deterministic replay
+
+`src/export/**`. `replay.ts` builds an independent `LifeEngine` via `TimelineStore.
+cloneBranchAt` (the same mechanism the compare view already uses) and steps it forward
+re-applying real recorded `EditOp`s in the same apply-then-step order `history.ts`'s own
+internal replay uses — it never touches the live engine, history, or camera.
+`worldFrameSource.ts` drives a second `WorldRenderer` on a real, sized, `visibility:hidden`
+canvas (`hiddenCanvas.ts` — a detached or `display:none` canvas reports a zero layout box,
+which breaks `WorldRenderer.resize()`), reading whatever lens/theme/Art config is live at
+export time. Two outputs: `webmRecorder.ts` (`MediaRecorder` + `canvas.captureStream(0)` +
+manual `track.requestFrame()`, codec-detected, degrading to an honest `ExportUnsupportedError`
+rather than a broken file) and `pngZipExport.ts` (a hand-written STORED-entry `zip.ts`/
+`crc32.ts` — PNG is already compressed, so no second compression pass). Both are cancellable
+via `AbortSignal` and bounded (`limits.ts` stride-samples frame count and caps resolution,
+always surfacing a human-readable reduction note rather than silently truncating).
+
+**Cut from this feature, deliberately, not half-shipped:** animated GIF export, audio export
+(both a deterministic offline render and muxed WebM+audio), and a Time Sculpture turntable
+export were all designed and partially built, then removed rather than shipped without
+verification the available environment couldn't provide (no reference GIF decoder to check
+against; `OfflineAudioContext` unavailable in jsdom/Vitest; the turntable export needs real
+WebGL to verify frame-by-frame). **Exported WebM video is currently silent.** See
+`CONTRIBUTING.md`'s "known rough edges" for exactly what exists to resurrect each one.
+
+## 14. Theming
+
+`src/ui/theme/**`. Five shipped `ThemeDefinition`s (`themes.ts`): Observatory (byte-identical
+to `src/styles/tokens.css` — applying it is a strict no-op against a page that never touched
+theming), Ivory Plate (light), High Contrast, Phosphor, Cyanotype. `apply.ts` writes all 21
+`ThemeTokens` as CSS custom properties directly onto `documentElement` at runtime — no
+rebuild, and the canvas re-themes itself automatically because `src/render/color.ts` already
+resolves accent colours through `getComputedStyle` (`resolveCssColor`'s 1x1-canvas
+round-trip, §8's production-bug fix). `src/styles/tokens.css`/`base.css` are never edited by
+this system — themes are pure runtime overrides layered on top, which is what keeps
+Observatory pixel-identical to the pre-theming app.
+
+`validate.ts` enforces two things on every theme, shipped or custom: every one of the 21
+tokens present and a parseable `oklch()`, and every pair of the 8 semantic accents at least
+`MIN_ACCENT_DISTANCE` (0.045) apart in OKLab space — calibrated to Observatory's own closest
+real pair (age vs. warn, measured at 0.0491), so the bar is "at least as distinguishable as
+the shipped default," not an arbitrary number. `custom.ts` lets a user build/export/import
+their own theme, validated the same way before it can be saved. **`site/**` does not theme
+itself** — scoped, deliberately not built (see `CONTRIBUTING.md`).
+
+## 15. The lazy-import boundary
+
+Two feature areas must cost a solo, offline user nothing — not an extra network fetch, not
+extra parse/eval time, not a single byte of their initial bundle:
+
+- **`@/net` / `@/ui/multiplayer`.** `App.tsx`, `Hud.tsx` and `HudMoreSheet.tsx` never
+  statically import either. The one sanctioned seam is `src/ui/hud/multiplayerLazy.tsx`:
+  `MultiplayerLazyHost` is mounted unconditionally by `App.tsx` and renders nothing until its
+  `requestMultiplayer()` — called only from an explicit HUD click — does a real dynamic
+  `import('@/ui/multiplayer')`. `tests/net-guard.test.tsx` proves this three independent ways:
+  a real import-statement parser finds no static import of `@/net`/`@/ui/multiplayer` in the
+  shell or the lazy loader itself; merely importing `@/net` (however it's reached) constructs
+  zero `Transport`s; and mounting `MultiplayerLazyHost` exactly as `App.tsx` does renders an
+  empty DOM and touches neither module until `requestMultiplayer()` runs.
+- **The Time Sculpture** (`src/sculpture/**`) — its own bundle chunk (§10's measured 1.02 MB /
+  284.9 kB gzipped), mounted only when a history range is actually lifted into 3D.
+
+Anyone adding another large optional feature should follow the same shape: an
+always-mounted, empty-until-asked host component plus a real dynamic `import()` behind an
+explicit user action, with a guard test in `net-guard.test.tsx`'s style — a static source
+check plus a behavioural "importing it does nothing by itself" check.
+
+## 16. The site build: `site/**`, the multi-page build, and `postbuild`
 
 `site/**` is a second, independent static site — the marketing landing page plus an
 8-page wiki (index + 7 topics) — built alongside the app and deployed to the same

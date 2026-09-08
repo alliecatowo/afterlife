@@ -169,16 +169,23 @@ delay for its own sake.
 Nothing above runs unless a user explicitly opens the multiplayer panel and
 presses "Host" or "Join":
 
-- `src/ui/App.tsx` and `src/ui/hud/Hud.tsx` do not import anything from
-  `src/net/**` or `src/ui/multiplayer/**` — enforced by a static source check
-  in `tests/net-guard.test.ts`, not just a promise. `<MultiplayerRoot/>` is
-  built and tested but genuinely never mounted by the app today (see
-  `INTEGRATION-NOTES.md` for the exact one-line diff to mount it).
-- Merely importing `src/net/**` or `src/ui/multiplayer/**` constructs zero
-  `Transport`s and makes zero network calls — also asserted directly in
-  `tests/net-guard.test.ts`. A `BroadcastChannel`/`WebSocket` is only ever
-  constructed inside `useMultiplayerStore`'s `hostRoom()`/`joinRoom()`
-  actions, which only run when a user clicks the corresponding button.
+- `src/ui/App.tsx` and `src/ui/hud/Hud.tsx`/`HudMoreSheet.tsx` do not
+  **statically** import anything from `src/net/**` or `src/ui/multiplayer/**`
+  — enforced by a real import-statement parser in `tests/net-guard.test.tsx`,
+  not just a promise. `<MultiplayerRoot/>` is reachable today from the HUD's
+  "More tools" menu (and, at narrow widths, the mobile sheet) via the one
+  sanctioned seam: `src/ui/hud/multiplayerLazy.tsx`'s `requestMultiplayer()`,
+  which does a real dynamic `import('@/ui/multiplayer')` only when that entry
+  is actually clicked.
+- Merely importing `src/net/**` or `src/ui/multiplayer/**` (however it's
+  reached) constructs zero `Transport`s and makes zero network calls — also
+  asserted directly in `tests/net-guard.test.tsx`, including a behavioural
+  check that mounting `MultiplayerLazyHost` (exactly as `App.tsx` does,
+  unconditionally) renders nothing and touches neither module until
+  `requestMultiplayer()` is actually called. A `BroadcastChannel`/`WebSocket`
+  is only ever constructed inside `useMultiplayerStore`'s `hostRoom()`/
+  `joinRoom()` actions, which only run when a user clicks the corresponding
+  button.
 - `src/ui/session.ts` gained exactly three optional hooks
   (`setMultiplayerGate`/`setMultiplayerEditSource`/
   `setMultiplayerEditInterceptor`), each defaulting to `null`. Every call

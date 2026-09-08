@@ -70,12 +70,50 @@ export function renderHowItWorks() {
             unless you ask to <a href="../features/#branching-and-compare">branch</a>
             instead, which is the entire mechanism behind "alternate futures."
           </p>
+
+          <h2 id="rules-are-pluggable">Rules are pluggable, but never mid-history</h2>
+          <p>
+            B3/S23 isn't hardwired into the step loop — the engine holds an 18-entry
+            lookup table (one entry per "was this cell alive, and how many live
+            neighbours does it have" combination) and looks the next state up
+            directly, so any Life-like B/S rule runs through the exact same code path.
+            Conway's own rule keeps a separate, hand-written fast path that the engine
+            switches to automatically whenever the active rule happens to canonicalise
+            to exactly B3/S23, which is why supporting other rules didn't come at the
+            expense of Conway's own performance (measured: well under 1% difference).
+          </p>
+          <p>
+            What the lookup table can't do is retroactively apply to history that's
+            already been recorded. A saved edit and a keyframe both describe
+            <em>what changed</em>, not <em>what rule produced the change</em> — so
+            switching rules always starts a brand-new world (playback stops, the
+            board clears, history resets) rather than reinterpreting old history under
+            a rule that never actually ran it.
+          </p>
+
+          <h2 id="multiplayer-without-a-server">Multiplayer without a server</h2>
+          <p>
+            Because a world is already "a seed plus a sparse, timestamped edit log,"
+            sharing one is mostly a networking problem, not a simulation one: instead
+            of ever sending the grid itself, every peer sends the same tiny edits
+            everyone already knows how to replay. Each edit is time-stamped to land
+            about a second in the future relative to the sender's own clock — for
+            every peer, including the sender — so nobody's own edits ever apply
+            "instantly" while everyone else's arrive late; that symmetry is what keeps
+            every peer's recorded history identical. If two edits ever land on the
+            same generation, every peer sorts them by the same rule (which peer, then
+            which of that peer's own edits), so there's never a need to ask a server
+            who goes first. The simulation simply won't advance past a generation
+            whose inputs might still be outstanding, and every so often peers compare
+            a cheap checksum of their own worlds so a genuine disagreement is loud and
+            recoverable rather than a silent, slowly-diverging bug.
+          </p>
 `;
 
   return renderWikiArticle({
     slug: 'how-it-works',
     title: 'How it works',
-    description: 'The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, and why Life cannot be reverse-simulated.',
+    description: 'The toroidal 256×160 world, deterministic replay from keyframes and sparse edits, the 4096-generation history window, why Life cannot be reverse-simulated, how pluggable rules and account-free multiplayer both work.',
     bodyHtml,
   });
 }
