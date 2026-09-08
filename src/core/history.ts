@@ -346,11 +346,32 @@ class TimelineStoreImpl implements TimelineStore {
     return { kfGen, snapshot: b.keyframes.get(kfGen)!, colorSnapshot };
   }
 
+  /**
+   * Apply any edits recorded exactly AT `gen` to `target` — used to cover the
+   * baseline generation of a replay, which the `kfGen + 1` step loop below
+   * never visits itself. For a keyframe produced by `record()`'s own
+   * `gen === engine.gen` fast path, that keyframe's snapshot already bakes in
+   * whatever was recorded there, so re-applying here is a genuine no-op
+   * (`EditOp`s are absolute `set`s — see ARCHITECTURE.md § Atomic edit commit
+   * — and `LifeEngine.set()` itself short-circuits when a cell is already in
+   * the requested state). For a keyframe that predates its entries (e.g. a
+   * freshly-`reset()` branch's empty gen-0 keyframe, populated separately by
+   * `loadEntries()` for a persisted "hand-drawn start" — `density: 0` plus
+   * edits recorded at generation 0), this is NOT a no-op: without it, a
+   * reopened experiment's very first generation replayed as empty, silently
+   * dropping its initial pattern (and the colour it seeded) entirely.
+   */
+  private applyBaselineEdits(target: LifeEngine, b: BranchRecord, kfGen: Generation): void {
+    const ops = b.entries.get(kfGen);
+    if (ops) for (const op of ops) applyEditOp(target, op);
+  }
+
   /** Synchronous replay for internal maintenance (window shifts, branch forks). No yielding. */
   private replaySync(target: LifeEngine, b: BranchRecord, targetGen: Generation): void {
     const { kfGen, snapshot, colorSnapshot } = this.findBaseline(b, targetGen);
     target.restore(snapshot);
     target.restoreColors(colorSnapshot);
+    this.applyBaselineEdits(target, b, kfGen);
     for (let g = kfGen + 1; g <= targetGen; g++) {
       target.step();
       const ops = b.entries.get(g);
@@ -369,6 +390,7 @@ class TimelineStoreImpl implements TimelineStore {
     const { kfGen, snapshot, colorSnapshot } = this.findBaseline(b, targetGen);
     target.restore(snapshot);
     target.restoreColors(colorSnapshot);
+    this.applyBaselineEdits(target, b, kfGen);
     const total = Math.max(1, targetGen - kfGen);
     let sinceYield = 0;
     const checkAbort = (): void => {
@@ -624,6 +646,11 @@ class TimelineStoreImpl implements TimelineStore {
     const scratch = this.engine.clone();
     const { kfGen, snapshot } = this.findBaseline(b, fromGen);
     scratch.restore(snapshot);
+    // Same fix as replaySync/replayAsync's `applyBaselineEdits`: a slice
+    // starting exactly at a keyframe generation that predates its own
+    // entries (e.g. a freshly-reset branch's gen-0 keyframe, right after
+    // reopening a persisted "hand-drawn start") must not silently omit them.
+    this.applyBaselineEdits(scratch, b, kfGen);
     let cursor = kfGen;
     const out: Uint8Array[] = [];
     let sinceYield = 0;

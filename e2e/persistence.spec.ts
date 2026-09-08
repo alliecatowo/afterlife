@@ -1,6 +1,24 @@
 import { expect, test } from '@playwright/test';
 import { applyEditDirect, dismissTitle, ensurePaused, openApp, realGen, waitForGen, worldToScreen } from './utils';
 
+/** Real engine content (not just the generation number) — population, and one
+ *  live cell's lineage hue — via the dev-only `window.__AFTERLIFE__` hook. */
+async function worldFingerprint(page: import('@playwright/test').Page): Promise<{ population: number; sampleX: number; sampleY: number; sampleHue: number }> {
+  return page.evaluate(() => {
+    const s = (window as unknown as { __AFTERLIFE__: { engine: { spec: { width: number; height: number }; population: number; get(x: number, y: number): boolean; hueAt(x: number, y: number): number } } }).__AFTERLIFE__;
+    const { engine } = s;
+    const { width, height } = engine.spec;
+    let sampleX = -1;
+    let sampleY = -1;
+    for (let y = 0; y < height && sampleX < 0; y++) {
+      for (let x = 0; x < width; x++) {
+        if (engine.get(x, y)) { sampleX = x; sampleY = y; break; }
+      }
+    }
+    return { population: engine.population, sampleX, sampleY, sampleHue: sampleX >= 0 ? engine.hueAt(sampleX, sampleY) : -1 };
+  });
+}
+
 test.describe('persistence', () => {
   test('save a named experiment, reload the page, reopen it — state is restored', async ({ page }) => {
     await openApp(page);
@@ -8,6 +26,13 @@ test.describe('persistence', () => {
     await waitForGen(page, 22, 15_000);
     await ensurePaused(page);
     const savedGen = await realGen(page);
+    // Real world content, not just the generation number — this is exactly
+    // what a gen-0-edit-dropping replay bug (see @/core/history.ts's
+    // applyBaselineEdits) would silently break: the generation number can
+    // still be right while the world itself replayed as empty.
+    const savedFingerprint = await worldFingerprint(page);
+    expect(savedFingerprint.population).toBeGreaterThan(0);
+    expect(savedFingerprint.sampleX).toBeGreaterThanOrEqual(0);
 
     await page.getByRole('button', { name: 'Save & export' }).click();
     const titleInput = page.getByRole('textbox').first();
@@ -32,6 +57,14 @@ test.describe('persistence', () => {
     await page.waitForTimeout(400);
 
     expect(await realGen(page)).toBe(savedGen);
+    // The world itself — including its lineage colour, reconstructed purely
+    // by deterministic replay, never a stored snapshot — must match exactly,
+    // not just the generation counter.
+    const reopenedFingerprint = await worldFingerprint(page);
+    expect(reopenedFingerprint.population).toBe(savedFingerprint.population);
+    expect(reopenedFingerprint.sampleX).toBe(savedFingerprint.sampleX);
+    expect(reopenedFingerprint.sampleY).toBe(savedFingerprint.sampleY);
+    expect(reopenedFingerprint.sampleHue).toBeCloseTo(savedFingerprint.sampleHue, 5);
   });
 
   test('RLE export -> import round-trips the same pattern through the UI', async ({ page }) => {

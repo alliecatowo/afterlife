@@ -201,4 +201,35 @@ describe('history.ts: colour is bit-exact across rewind and branching, exactly l
     await history.goto(4);
     expect(engine.hueAt(4, 4)).toBeCloseTo(hueAtGen0, 5);
   });
+
+  it('loadEntries() — the path a reopened persisted experiment uses — reproduces hue/species exactly, not a position-hash default (see @/persist/codec.ts and history.ts\'s applyBaselineEdits)', async () => {
+    const width = 24;
+    const height = 24;
+
+    // A "continuous" reference session: the initial pattern is a recorded
+    // gen-0 EditOp (exactly how a persisted "hand-drawn start" is shaped —
+    // codec.ts never stores an engine.seed() call, only recorded edits).
+    const cells = [
+      { x: 4, y: 4, alive: true }, { x: 5, y: 4, alive: true }, { x: 4, y: 5, alive: true }, { x: 5, y: 5, alive: true }, // block
+      { x: 10, y: 10, alive: true }, { x: 11, y: 10, alive: true }, { x: 12, y: 10, alive: true }, // blinker
+      { x: 1, y: 0, alive: true }, { x: 2, y: 1, alive: true }, { x: 0, y: 2, alive: true }, { x: 1, y: 2, alive: true }, { x: 2, y: 2, alive: true }, // glider
+    ];
+    const reference = createEngine({ width, height });
+    const refHistory = createTimelineStore({ engine: reference });
+    refHistory.record(0, [{ kind: 'set', cells }]);
+    const targetGen = 120;
+    while (reference.gen < targetGen) { reference.step(); refHistory.advance(reference.gen); }
+
+    // A "reopened" session: exactly applyExperimentDoc()'s sequence
+    // (engine.clear() + history.reset(), THEN loadEntries() from the saved
+    // edits — never engine.seed()).
+    const reopened = createEngine({ width, height });
+    const reopenedHistory = createTimelineStore({ engine: reopened });
+    reopenedHistory.reset();
+    await reopenedHistory.loadEntries([{ gen: 0, edits: [{ kind: 'set', cells }] }], targetGen);
+
+    expect(reopened.snapshot().bits).toEqual(reference.snapshot().bits);
+    expect(reopened.snapshotColors().hue).toEqual(reference.snapshotColors().hue);
+    expect(reopened.snapshotColors().species).toEqual(reference.snapshotColors().species);
+  });
 });

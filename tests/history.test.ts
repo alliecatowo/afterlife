@@ -268,6 +268,44 @@ describe('sliceStack', () => {
   });
 });
 
+describe('loadEntries: restoring a persisted "hand-drawn start" (density: 0, edits recorded at generation 0)', () => {
+  it('applies a gen-0 edit instead of silently dropping it — the exact shape a reopened saved experiment uses (see @/persist/codec.ts\'s "hand-drawn start" doc)', async () => {
+    const engine = createEngine({ width: 16, height: 16 });
+    const history = createTimelineStore({ engine });
+    const glider: EditOp = {
+      kind: 'set',
+      cells: [
+        { x: 1, y: 0, alive: true },
+        { x: 2, y: 1, alive: true },
+        { x: 0, y: 2, alive: true },
+        { x: 1, y: 2, alive: true },
+        { x: 2, y: 2, alive: true },
+      ],
+    };
+    // Mirrors `applyExperimentDoc()`: reset() first (baseline keyframe is an
+    // EMPTY gen-0 board, populated separately from the doc's edits), THEN
+    // loadEntries(). Before the fix, replayAsync/replaySync's step loop
+    // started at kfGen + 1, never visiting entries recorded AT kfGen (0) —
+    // the glider (and any colour it seeded) vanished entirely.
+    history.reset();
+    await history.loadEntries([{ gen: 0, edits: [glider] }], 0);
+    expect(engine.population).toBe(5);
+    expect(engine.get(1, 0)).toBe(true);
+  });
+
+  it('a gen-0 edit also survives a LATER goto(), not just the initial load', async () => {
+    const engine = createEngine({ width: 16, height: 16 });
+    const history = createTimelineStore({ engine });
+    const glider: EditOp = { kind: 'set', cells: [{ x: 1, y: 0, alive: true }, { x: 2, y: 1, alive: true }, { x: 0, y: 2, alive: true }, { x: 1, y: 2, alive: true }, { x: 2, y: 2, alive: true }] };
+    history.reset();
+    await history.loadEntries([{ gen: 0, edits: [glider] }], 20);
+    expect(history.maxGen).toBe(20);
+    await history.goto(0);
+    expect(engine.population).toBe(5);
+    expect(engine.get(1, 0)).toBe(true);
+  });
+});
+
 describe('keyframes', () => {
   it('advance() materialises a keyframe every KEYFRAME_INTERVAL generations, keeping deep gotos fast without extra correctness cost', async () => {
     const engine = createEngine({ width: 16, height: 16 });
