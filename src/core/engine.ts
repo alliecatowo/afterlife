@@ -47,6 +47,7 @@
 
 import { makeRng } from './rng';
 import { circularMean3, quadSpeciesFromParents, regionHue, regionSpecies, spontaneousHue, spontaneousSpecies } from './lineage';
+import { CONWAY_RULE, parseRule, type LifeRule } from './rule';
 import type {
   CellCoord,
   Generation,
@@ -57,13 +58,47 @@ import type {
   WorldSpec,
 } from './types';
 
+export type { LifeRule } from './rule';
+export { CONWAY_RULE_STRING, RuleParseError, isValidRuleString, parseRule, ruleStringsEqual, serializeRule } from './rule';
+
 export interface LifeEngine {
   /** Immutable shape of this universe. */
   readonly spec: WorldSpec;
+  /**
+   * Canonical B/S rulestring in force (see `@/core/rule.ts`), e.g. `"B3/S23"`.
+   * Defaults to Conway's Life. Part of this world's identity exactly like
+   * `spec` — persist/snapshot/replay it alongside the bits. Fixed for this
+   * engine's life EXCEPT via `setRule()`, which is deliberately restricted —
+   * see that method's doc for why a rule change is a fresh-world operation,
+   * not a mid-history edit.
+   */
+  readonly rule: string;
   /** Current generation index. Starts at 0, increments once per `step()`. */
   readonly gen: Generation;
   /** Count of live cells in the current generation. O(1) — maintained incrementally. */
   readonly population: number;
+
+  /**
+   * Change the active rule in place (same object identity — every other
+   * module holding a reference to this engine keeps working unchanged).
+   * Takes effect starting with the NEXT `step()`; never touches
+   * bits/gen/age/activity/hue/species itself.
+   *
+   * DELIBERATE RESTRICTION (see ARCHITECTURE.md / INTEGRATION-NOTES.md): this
+   * is a fresh-WORLD operation, not a recordable mid-history edit. `Snapshot`
+   * and `EditOp` (both frozen in `@/core/types.ts`) have no field for "which
+   * rule produced the step that led here" — a `TimelineStore` keyframe is
+   * only ever valid under the ONE rule that was active for its branch's
+   * entire life. Callers MUST only call this immediately after starting a
+   * fresh history (`history.reset()` with no branches worth keeping, exactly
+   * like loading a new scene) — never while any branch has replayable
+   * generations under the OLD rule, or `goto()`/`branchFrom()` replay across
+   * that boundary would silently apply the wrong rule to old generations.
+   * `TimelineStore` does not enforce this itself (it has no hook into rule
+   * changes at all, by design); the caller (session orchestration) owns the
+   * invariant. Throws the same way `parseRule` does for an invalid rulestring.
+   */
+  setRule(rule: string): void;
 
   /** Read a cell. Coordinates wrap toroidally, so any integer is valid. */
   get(x: number, y: number): boolean;
@@ -193,6 +228,8 @@ export interface EngineOptions {
   height: number;
   /** Multiplier applied to every cell's activity each step. Default 0.88. */
   activityDecay?: number;
+  /** B/S rulestring (see `@/core/rule.ts`), e.g. `"B36/S23"` for HighLife. Default Conway's `"B3/S23"`. Throws `RuleParseError` if invalid/unsupported. */
+  rule?: string;
 }
 
 const DEFAULT_ACTIVITY_DECAY = 0.88;
@@ -269,14 +306,23 @@ class DenseTorusEngine implements LifeEngine {
   private hue: Float32Array;
   private species: Uint8Array;
   /** Reused scratch buffer for gathering a birth's 3 parent indices — avoids
-   *  an array allocation per birth on the `step()` hot path. */
+   *  an array allocation per birth on the `step()` hot path. Only meaningful
+   *  for births with EXACTLY 3 parents (Conway's own precondition); the
+   *  generic table-driven path's births can have 0..8 live neighbours, so it
+   *  degrades colour inheritance gracefully instead of using this — see
+   *  `inheritColorGeneric`. */
   private readonly parentScratch = new Int32Array(3);
+
+  private ruleObj: LifeRule;
+  /** `ruleObj.table`, hoisted for the same reason `step()` hoists every other
+   *  buffer into a local before its hot loop. */
+  private ruleTable: Uint8Array;
 
   private _gen: Generation = 0;
   private _population = 0;
 
   constructor(options: EngineOptions) {
-    const { width, height, activityDecay } = options;
+    const { width, height, activityDecay, rule } = options;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
       throw new Error(`createEngine: width/height must be positive integers, got ${width}x${height}`);
     }
@@ -289,10 +335,27 @@ class DenseTorusEngine implements LifeEngine {
     this.activity = new Uint8Array(n);
     this.hue = new Float32Array(n);
     this.species = new Uint8Array(n);
+    this.ruleObj = rule !== undefined ? parseRule(rule) : CONWAY_RULE;
+    this.ruleTable = this.ruleObj.table;
   }
 
   get gen(): Generation {
     return this._gen;
+  }
+
+  get rule(): string {
+    return this.ruleObj.rule;
+  }
+
+  setRule(rule: string): void {
+    const parsed = parseRule(rule);
+    this.setRuleObj(parsed);
+  }
+
+  /** Internal — shares an already-parsed `LifeRule` (e.g. with `clone()`) without reparsing. */
+  private setRuleObj(r: LifeRule): void {
+    this.ruleObj = r;
+    this.ruleTable = r.table;
   }
 
   get population(): number {
@@ -368,7 +431,26 @@ class DenseTorusEngine implements LifeEngine {
     this.species[idx] = quadSpeciesFromParents(this.species[p0]!, this.species[p1]!, this.species[p2]!);
   }
 
+  /**
+   * Advance exactly one generation. Dispatches to whichever kernel matches
+   * the active rule — see the two private methods below. This branch is
+   * per-STEP, not per-cell, so it costs nothing measurable next to the
+   * per-cell work inside either kernel.
+   */
   step(): Generation {
+    return this.ruleObj.isConway ? this.stepConway() : this.stepGeneric();
+  }
+
+  /**
+   * SPECIALISED fast path for exactly Conway's B3/S23 — the birth/survive
+   * decision (`n === 3 || (n === 2 && was === 1)`) is hand-unrolled instead
+   * of going through `ruleTable`, which measurably matters at the sizes this
+   * app runs (see INTEGRATION-NOTES.md's rule-generalisation entry for the
+   * measured before/after). Kept byte-for-byte identical to the pre-
+   * generalisation implementation. `stepGeneric()` below is the same
+   * algorithm parameterised by `ruleTable` for every other rule.
+   */
+  private stepConway(): Generation {
     const w = this.spec.width;
     const h = this.spec.height;
     const cur = this.current;
@@ -501,6 +583,116 @@ class DenseTorusEngine implements LifeEngine {
     return this._gen;
   }
 
+  /**
+   * Birth-only colour bookkeeping for `stepGeneric()`. Unlike `inheritColor`
+   * (Conway-only, always exactly 3 alive neighbours by construction), a
+   * generic rule's birth can have any live-neighbour count its `B` set
+   * contains — including 0 (a rule like `B0/S...` births into fully empty
+   * neighbourhoods) or more than 3. Blends whatever's actually there: pads
+   * by repeating the last found parent if fewer than 3 alive neighbours
+   * exist, and falls back to the same deterministic position/generation
+   * "spontaneous" colour `set()` uses when there are none at all. Purely
+   * cosmetic — see the module doc; never influences `nv`.
+   */
+  private inheritColorGeneric(
+    idx: number, x: number, y: number,
+    i0: number, i1: number, i2: number, i3: number, i4: number, i5: number, i6: number, i7: number,
+    v0: number, v1: number, v2: number, v3: number, v4: number, v5: number, v6: number, v7: number,
+  ): void {
+    const scratch = this.parentScratch;
+    let pc = 0;
+    if (v0 === 1) scratch[pc++] = i0;
+    if (v1 === 1) scratch[pc++] = i1;
+    if (v2 === 1) scratch[pc++] = i2;
+    if (v3 === 1) scratch[pc++] = i3;
+    if (v4 === 1) scratch[pc++] = i4;
+    if (v5 === 1) scratch[pc++] = i5;
+    if (v6 === 1) scratch[pc++] = i6;
+    if (v7 === 1) scratch[pc++] = i7;
+    if (pc === 0) {
+      this.hue[idx] = spontaneousHue(x, y, this._gen);
+      this.species[idx] = spontaneousSpecies(x, y, this._gen);
+      return;
+    }
+    for (let k = pc; k < 3; k++) scratch[k] = scratch[k - 1]!;
+    const p0 = scratch[0]!;
+    const p1 = scratch[1]!;
+    const p2 = scratch[2]!;
+    this.hue[idx] = circularMean3(this.hue[p0]!, this.hue[p1]!, this.hue[p2]!);
+    this.species[idx] = quadSpeciesFromParents(this.species[p0]!, this.species[p1]!, this.species[p2]!);
+  }
+
+  /**
+   * Generic table-driven kernel for every non-Conway rule (`@/core/rule.ts`'s
+   * `LifeRule.table`, indexed `was * 9 + n`). Structurally identical to
+   * `stepConway()` (same interior/border-column split, same double-buffer,
+   * same age/activity/colour bookkeeping) with only the birth/survive
+   * decision generalised — deliberately kept as a parallel implementation
+   * rather than a single parameterised method, so Conway's hand-unrolled
+   * comparison never pays for an extra table lookup or branch.
+   */
+  private stepGeneric(): Generation {
+    const w = this.spec.width;
+    const h = this.spec.height;
+    const cur = this.current;
+    const nxt = this.next;
+    const age = this.age;
+    const activity = this.activity;
+    const hue = this.hue;
+    const species = this.species;
+    const decay = this.decay;
+    const table = this.ruleTable;
+    let pop = 0;
+
+    for (let y = 0; y < h; y++) {
+      const yUp = y === 0 ? h - 1 : y - 1;
+      const yDown = y === h - 1 ? 0 : y + 1;
+      const rowUp = yUp * w;
+      const row = y * w;
+      const rowDown = yDown * w;
+
+      for (let x = 0; x < w; x++) {
+        const xL = x === 0 ? w - 1 : x - 1;
+        const xR = x === w - 1 ? 0 : x + 1;
+        const idx = row + x;
+        const iUL = rowUp + xL, iU = rowUp + x, iUR = rowUp + xR;
+        const iL = row + xL, iR = row + xR;
+        const iDL = rowDown + xL, iD = rowDown + x, iDR = rowDown + xR;
+        const vUL = cur[iUL]!, vU = cur[iU]!, vUR = cur[iUR]!;
+        const vL = cur[iL]!, vR = cur[iR]!;
+        const vDL = cur[iDL]!, vD = cur[iD]!, vDR = cur[iDR]!;
+        const n = vUL + vU + vUR + vL + vR + vDL + vD + vDR;
+        const was = cur[idx]!;
+        const nv = table[was * 9 + n]!;
+        nxt[idx] = nv;
+        if (nv === 1) {
+          pop++;
+          if (was === 1) {
+            age[idx] = age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE;
+          } else {
+            age[idx] = 1;
+            this.inheritColorGeneric(
+              idx, x, y,
+              iUL, iU, iUR, iL, iR, iDL, iD, iDR,
+              vUL, vU, vUR, vL, vR, vDL, vD, vDR,
+            );
+          }
+        } else {
+          age[idx] = 0;
+          hue[idx] = 0;
+          species[idx] = 0;
+        }
+        activity[idx] = nv !== was ? 255 : Math.floor(activity[idx]! * decay);
+      }
+    }
+
+    this.current = nxt;
+    this.next = cur;
+    this._population = pop;
+    this._gen += 1;
+    return this._gen;
+  }
+
   snapshot(): Snapshot {
     return { gen: this._gen, bits: this.current.slice() };
   }
@@ -546,6 +738,11 @@ class DenseTorusEngine implements LifeEngine {
     copy.species.set(this.species);
     copy._gen = this._gen;
     copy._population = this._population;
+    // Share the same immutable `LifeRule` object (never mutated after
+    // construction — see `@/core/rule.ts`) rather than reparsing; also
+    // correctly carries a rule set via `setRule()` after construction, which
+    // the constructor's own `options.rule` can't see.
+    copy.setRuleObj(this.ruleObj);
     return copy;
   }
 
