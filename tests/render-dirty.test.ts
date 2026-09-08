@@ -110,4 +110,28 @@ describe('BUG 4: WorldRenderer dirty-flag gating', () => {
     r.resize();
     expect(r.consumeDirty()).toBe(true);
   });
+
+  it('setLens accepts every new "lineage family" lens id and only marks dirty on an actual change', () => {
+    const r = createRenderer();
+    r.attach(makeCanvas());
+    r.consumeDirty();
+    for (const lens of ['lineage', 'immigration', 'quadlife', 'velocity', 'neighbors'] as const) {
+      r.setLens(lens);
+      expect(r.consumeDirty()).toBe(true);
+      r.setLens(lens);
+      expect(r.consumeDirty()).toBe(false);
+    }
+  });
+
+  it('setPalette only marks dirty on an actual change', () => {
+    const r = createRenderer();
+    r.attach(makeCanvas());
+    r.consumeDirty();
+    r.setPalette('default'); // same as the default — no-op
+    expect(r.consumeDirty()).toBe(false);
+    r.setPalette('cvd');
+    expect(r.consumeDirty()).toBe(true);
+    r.setPalette('cvd');
+    expect(r.consumeDirty()).toBe(false);
+  });
 });

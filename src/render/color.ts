@@ -318,11 +318,19 @@ export function buildNeighborRamp(l = 0.80, c = 0.16): RGB[] {
  * is exactly the mistake this option exists to avoid. This is the one
  * deliberate, documented exception to "all palettes derived from the design
  * tokens where possible."
+ *
+ * Authored as `oklch(...)` literals (converted from the canonical Okabe-Ito
+ * hex values #E69F00/#56B4E9/#009E73/#D55E00 via the standard sRGB->OKLab
+ * matrices) rather than hex strings, matching this module's existing
+ * convention for every hardcoded fallback colour: it's what lets
+ * `resolveCssColor`'s pure-OKLCH-math fallback resolve them in environments
+ * with no canvas 2D context at all (SSR, jsdom unit tests) — a hex string
+ * would only resolve via the canvas round-trip, i.e. only in a real browser.
  */
-const CVD_ORANGE = '#E69F00';
-const CVD_SKY_BLUE = '#56B4E9';
-const CVD_BLUISH_GREEN = '#009E73';
-const CVD_VERMILLION = '#D55E00';
+const CVD_ORANGE = 'oklch(0.753 0.158 76.8)';
+const CVD_SKY_BLUE = 'oklch(0.735 0.117 236.2)';
+const CVD_BLUISH_GREEN = 'oklch(0.620 0.130 165.5)';
+const CVD_VERMILLION = 'oklch(0.621 0.170 47.5)';
 
 /**
  * The 4 QuadLife species colours. Default palette reuses 4 existing design
@@ -338,7 +346,7 @@ const CVD_VERMILLION = '#D55E00';
  */
 export function resolveQuadPalette(mode: PaletteMode = 'default'): RGB[] {
   if (mode === 'cvd') {
-    return [CVD_ORANGE, CVD_SKY_BLUE, CVD_BLUISH_GREEN, CVD_VERMILLION].map((hex) => resolveCssColor(hex));
+    return [CVD_ORANGE, CVD_SKY_BLUE, CVD_BLUISH_GREEN, CVD_VERMILLION].map((css) => resolveCssColor(css));
   }
   return [
     resolveToken('--color-accent-life', 'oklch(0.87 0.155 155)').rgb,

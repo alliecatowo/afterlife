@@ -16,10 +16,18 @@
 import type { LifeEngine } from '@/core/engine';
 import { transformPattern, wrap } from '@/core/engine';
 import type {
-  CellCoord, Rect, RenderLens, RenderOverlays, StampPattern, StampTransform,
+  CellCoord, Rect, RenderOverlays, StampPattern, StampTransform,
 } from '@/core/types';
 import type { Camera, Viewport } from './camera';
-import { resolveToken, withAlpha, type TokenColor } from './color';
+import {
+  resolveToken, resolveCssColor, withAlpha, type TokenColor,
+  type ColorLens, type PaletteMode, type RGB,
+  buildHueRamp, sampleHueRamp, buildNeighborRamp, buildRgbRamp, sampleRgbRamp,
+  resolveQuadPalette, resolveImmigrationPalette, quadColorForSpecies, immigrationColorForSpecies,
+  blendRgbWeighted,
+} from './color';
+
+export type { ColorLens } from './color';
 
 export interface ExportImageOptions {
   /** Multiplier over CSS pixel size. Default 2. */
@@ -35,7 +43,19 @@ export interface WorldRenderer {
   /** Bind to a canvas; sets up the DPR-aware backing store. Idempotent. */
   attach(canvas: HTMLCanvasElement): void;
   setCamera(camera: Camera): void;
-  setLens(lens: RenderLens): void;
+  /**
+   * `ColorLens` is a superset of the architect-owned `RenderLens` (life/age/
+   * activity) that also covers the "lineage" family added for the colourful
+   * rewrite (lineage/immigration/quadlife/velocity/neighbors) — see
+   * `@/render/color.ts`'s doc and `INTEGRATION-NOTES.md` for the pending
+   * `RenderLens` widening this anticipates.
+   */
+  setLens(lens: ColorLens): void;
+  /**
+   * Which palette the discrete species lenses (immigration/quadlife) draw
+   * from. `'cvd'` is the colourblind-safe option. Marks dirty on change.
+   */
+  setPalette(mode: PaletteMode): void;
   /** Draw one frame. Cheap enough to call every rAF at 60fps for 512x512 worlds. */
   draw(engine: LifeEngine, overlays?: RenderOverlays): void;
   /** Re-read the canvas' CSS size and devicePixelRatio. Call on resize. */
@@ -191,7 +211,8 @@ class WorldRendererImpl implements WorldRenderer {
   #cssH = 1;
 
   #camera: Camera = { x: 0, y: 0, scale: 8 };
-  #lens: RenderLens = 'life';
+  #lens: ColorLens = 'life';
+  #paletteMode: PaletteMode = 'default';
   #showGrid = true;
 
   #selection: Rect | null = null;
@@ -218,6 +239,16 @@ class WorldRendererImpl implements WorldRenderer {
   #tokLineStrong!: TokenColor;
   #tokIvory!: TokenColor;
 
+  // The "lineage" family's precomputed ramps/palettes — built once at
+  // `attach()`/`setPalette()`, indexed per-pixel thereafter. Never rebuilt
+  // inside a draw call (see `buildHueRamp`'s doc for why).
+  #hueRamp!: RGB[];
+  #neighborRamp!: RGB[];
+  #ageRamp!: RGB[];
+  #activityRamp!: RGB[];
+  #quadPalette!: RGB[];
+  #immigrationPalette!: [RGB, RGB];
+
   get viewport(): Readonly<Viewport> {
     return { width: this.#cssW, height: this.#cssH };
   }
@@ -238,6 +269,36 @@ class WorldRendererImpl implements WorldRenderer {
     this.#tokLine = resolveToken('--color-line', 'oklch(0.32 0.018 198)');
     this.#tokLineStrong = resolveToken('--color-line-strong', 'oklch(0.44 0.020 199)');
     this.#tokIvory = resolveToken('--color-ivory-100', 'oklch(0.96 0.014 92)');
+
+    this.#hueRamp = buildHueRamp();
+    this.#neighborRamp = buildNeighborRamp();
+    // Spectral, multi-hue age/activity ramps that still terminate exactly on
+    // the real design token at full intensity (see `buildRgbRamp`'s doc for
+    // why lerping already-resolved RGB bytes here doesn't reintroduce any
+    // regex/string parsing of the token's CSS value).
+    this.#ageRamp = buildRgbRamp([
+      resolveCssColor('oklch(0.55 0.20 260)'),
+      resolveCssColor('oklch(0.70 0.20 155)'),
+      this.#tokAge.rgb,
+    ]);
+    this.#activityRamp = buildRgbRamp([
+      resolveCssColor('oklch(0.55 0.20 260)'),
+      resolveCssColor('oklch(0.75 0.20 100)'),
+      this.#tokActivity.rgb,
+    ]);
+    this.#resolvePalettes();
+  }
+
+  #resolvePalettes(): void {
+    this.#quadPalette = resolveQuadPalette(this.#paletteMode);
+    this.#immigrationPalette = resolveImmigrationPalette(this.#paletteMode);
+  }
+
+  setPalette(mode: PaletteMode): void {
+    if (mode === this.#paletteMode) return;
+    this.#paletteMode = mode;
+    this.#resolvePalettes();
+    this.#dirty = true;
   }
 
   invalidate(): void {
@@ -257,7 +318,7 @@ class WorldRendererImpl implements WorldRenderer {
     this.#camera = { ...camera };
   }
 
-  setLens(lens: RenderLens): void {
+  setLens(lens: ColorLens): void {
     if (lens !== this.#lens) this.#dirty = true;
     this.#lens = lens;
   }
@@ -386,40 +447,106 @@ class WorldRendererImpl implements WorldRenderer {
     return this.#cellCtx!;
   }
 
-  #lensToken(): TokenColor {
-    switch (this.#lens) {
-      case 'age': return this.#tokAge;
-      case 'activity': return this.#tokActivity;
-      default: return this.#tokLife;
+  /**
+   * A cell's local "directional bias": the vector sum of the 8 neighbour
+   * offsets weighted by whether that neighbour is alive — points toward
+   * where the rest of a moving structure currently is, which for an
+   * asymmetric, translating pattern (a glider, a spaceship) correlates with
+   * its heading. Purely derived from the current bits (`engine.get()`,
+   * already wrapping toroidally) — nothing stored, nothing snapshotted, no
+   * history needed. This is a proxy, not literal instantaneous velocity
+   * (Life cells don't move — only birth/death patterns do), and the
+   * `velocity` lens's legend says so explicitly. `{dx:0,dy:0}` means "no
+   * detectable bias" (e.g. a symmetric still life) — rendered as a neutral,
+   * hue-free grey rather than an arbitrary colour, per "never rely on hue
+   * alone to convey a critical state."
+   */
+  #directionalBias(engine: LifeEngine, x: number, y: number): { dx: number; dy: number } {
+    let sx = 0;
+    let sy = 0;
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        if (ox === 0 && oy === 0) continue;
+        if (engine.get(x + ox, y + oy)) { sx += ox; sy += oy; }
+      }
     }
+    return { dx: sx, dy: sy };
   }
 
   #writeCellPixel(engine: LifeEngine, x: number, y: number, data: Uint8ClampedArray, idx: number): void {
-    if (this.#lens === 'activity') {
-      const heat = engine.activityAt(x, y);
-      if (heat > 0.01) {
-        const alpha = Math.round(Math.pow(Math.min(1, heat), 0.6) * 255);
-        data[idx] = this.#tokActivity.rgb.r;
-        data[idx + 1] = this.#tokActivity.rgb.g;
-        data[idx + 2] = this.#tokActivity.rgb.b;
-        data[idx + 3] = alpha;
+    switch (this.#lens) {
+      case 'activity': {
+        const heat = engine.activityAt(x, y);
+        if (heat > 0.01) {
+          const rgb = sampleRgbRamp(this.#activityRamp, Math.pow(Math.min(1, heat), 0.6));
+          data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+          data[idx + 3] = Math.round(Math.pow(Math.min(1, heat), 0.6) * 255);
+        }
+        return;
       }
-      return;
+      case 'neighbors': {
+        // Unlike every other lens, this one draws DEAD cells too (at reduced
+        // alpha) — "the rule itself visible" means showing about-to-be-born
+        // cells (dead, count === 3), not just live ones.
+        const n = engine.liveNeighborCount(x, y);
+        if (n === 0) return;
+        const rgb = this.#neighborRamp[n]!;
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+        data[idx + 3] = engine.get(x, y) ? 255 : 110;
+        return;
+      }
+      default:
+        break;
     }
+
     if (!engine.get(x, y)) return;
-    if (this.#lens === 'age') {
-      const age = engine.ageAt(x, y);
-      const t = Math.min(1, age / AGE_RAMP_GENERATIONS);
-      data[idx] = this.#tokAge.rgb.r;
-      data[idx + 1] = this.#tokAge.rgb.g;
-      data[idx + 2] = this.#tokAge.rgb.b;
-      data[idx + 3] = Math.round((0.35 + 0.65 * t) * 255);
-      return;
+
+    switch (this.#lens) {
+      case 'age': {
+        const age = engine.ageAt(x, y);
+        const t = Math.min(1, age / AGE_RAMP_GENERATIONS);
+        const rgb = sampleRgbRamp(this.#ageRamp, t);
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+        data[idx + 3] = Math.round((0.35 + 0.65 * t) * 255);
+        return;
+      }
+      case 'lineage': {
+        const rgb = sampleHueRamp(this.#hueRamp, engine.hueAt(x, y));
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = 255;
+        return;
+      }
+      case 'immigration': {
+        const rgb = immigrationColorForSpecies(this.#immigrationPalette, engine.speciesAt(x, y));
+        if (!rgb) return;
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = 255;
+        return;
+      }
+      case 'quadlife': {
+        const rgb = quadColorForSpecies(this.#quadPalette, engine.speciesAt(x, y));
+        if (!rgb) return;
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = 255;
+        return;
+      }
+      case 'velocity': {
+        const { dx, dy } = this.#directionalBias(engine, x, y);
+        if (dx === 0 && dy === 0) {
+          // Undefined direction (symmetric neighbourhood) — neutral, hue-free.
+          data[idx] = this.#tokIvory.rgb.r; data[idx + 1] = this.#tokIvory.rgb.g; data[idx + 2] = this.#tokIvory.rgb.b;
+          data[idx + 3] = 90;
+          return;
+        }
+        const hueDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+        const rgb = sampleHueRamp(this.#hueRamp, hueDeg);
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = 255;
+        return;
+      }
+      default: {
+        data[idx] = this.#tokLife.rgb.r;
+        data[idx + 1] = this.#tokLife.rgb.g;
+        data[idx + 2] = this.#tokLife.rgb.b;
+        data[idx + 3] = 255;
+      }
     }
-    data[idx] = this.#tokLife.rgb.r;
-    data[idx + 1] = this.#tokLife.rgb.g;
-    data[idx + 2] = this.#tokLife.rgb.b;
-    data[idx + 3] = 255;
   }
 
   #drawZoomedIn(engine: LifeEngine, rect: Rect): void {
@@ -451,6 +578,7 @@ class WorldRendererImpl implements WorldRenderer {
   #drawZoomedOut(engine: LifeEngine, rect: Rect): void {
     const spec = engine.spec;
     const scale = this.#camera.scale;
+    const lens = this.#lens;
     // Size the coverage buffer in DEVICE pixels (scale * dpr), not CSS
     // pixels — on a high-DPR display the previous CSS-pixel sizing meant
     // this buffer covered a quarter as many output pixels as the canvas
@@ -466,8 +594,26 @@ class WorldRendererImpl implements WorldRenderer {
     const n = bufW * bufH;
     const area = new Float32Array(n);
     const liveCount = new Float32Array(n);
-    const ageSum = this.#lens === 'age' ? new Float32Array(n) : null;
-    const heatMax = this.#lens === 'activity' ? new Float32Array(n) : null;
+    const ageSum = lens === 'age' ? new Float32Array(n) : null;
+    const heatMax = lens === 'activity' ? new Float32Array(n) : null;
+    // 'lineage'/'velocity': accumulate hue as a circular-mean vector (cos/sin
+    // sums), not a naive average — a genuine BLEND of the covered cells'
+    // directions/hues, not a point sample. Both share one accumulator shape.
+    const hueSin = (lens === 'lineage' || lens === 'velocity') ? new Float32Array(n) : null;
+    const hueCos = (lens === 'lineage' || lens === 'velocity') ? new Float32Array(n) : null;
+    // 'immigration'/'quadlife': per-species live counts, blended by weight at
+    // the end rather than snapping to whichever species a single sampled
+    // cell happened to be — this is what makes a colony border read as an
+    // actual blended colour instead of dithering between two flat swatches.
+    const speciesCount = (lens === 'immigration' || lens === 'quadlife') ? [
+      new Float32Array(n), new Float32Array(n), new Float32Array(n), new Float32Array(n),
+    ] : null;
+    // 'neighbors': unlike every other lens this one covers DEAD cells too
+    // (birth-eligible cells read as meaningfully as live ones — see
+    // `#writeCellPixel`), so it tracks its own coverage fraction rather than
+    // reusing `liveCount`.
+    const neighborSum = lens === 'neighbors' ? new Float32Array(n) : null;
+    const neighborNonZero = lens === 'neighbors' ? new Float32Array(n) : null;
 
     for (let j = 0; j < rect.h; j++) {
       const wy = wrap(rect.y + j, spec.height);
@@ -478,13 +624,42 @@ class WorldRendererImpl implements WorldRenderer {
         const bidx = by * bufW + bx;
         area[bidx]! += 1;
 
-        if (this.#lens === 'activity') {
+        if (lens === 'activity') {
           const heat = engine.activityAt(wx, wy);
           if (heat > heatMax![bidx]!) heatMax![bidx] = heat;
           if (heat > 0.01) liveCount[bidx]! += 1;
-        } else if (engine.get(wx, wy)) {
-          liveCount[bidx]! += 1;
-          if (this.#lens === 'age') ageSum![bidx]! += engine.ageAt(wx, wy);
+          continue;
+        }
+        if (lens === 'neighbors') {
+          const cnt = engine.liveNeighborCount(wx, wy);
+          if (cnt > 0) {
+            neighborSum![bidx]! += cnt;
+            neighborNonZero![bidx]! += 1;
+          }
+          if (engine.get(wx, wy)) liveCount[bidx]! += 1;
+          continue;
+        }
+
+        const alive = engine.get(wx, wy);
+        if (!alive) continue;
+        liveCount[bidx]! += 1;
+        if (lens === 'age') ageSum![bidx]! += engine.ageAt(wx, wy);
+        if (lens === 'lineage') {
+          const r = (engine.hueAt(wx, wy) * Math.PI) / 180;
+          hueCos![bidx]! += Math.cos(r);
+          hueSin![bidx]! += Math.sin(r);
+        }
+        if (lens === 'velocity') {
+          const { dx, dy } = this.#directionalBias(engine, wx, wy);
+          if (dx !== 0 || dy !== 0) {
+            const r = Math.atan2(dy, dx);
+            hueCos![bidx]! += Math.cos(r);
+            hueSin![bidx]! += Math.sin(r);
+          }
+        }
+        if (speciesCount) {
+          const sp = engine.speciesAt(wx, wy);
+          if (sp >= 1 && sp <= 4) speciesCount[sp - 1]![bidx]! += 1;
         }
       }
     }
@@ -492,25 +667,67 @@ class WorldRendererImpl implements WorldRenderer {
     const cellCtx = this.#ensureCellCanvas(bufW, bufH);
     const img = cellCtx.createImageData(bufW, bufH);
     const data = img.data;
-    const token = this.#lensToken();
+    const singleToken = lens === 'age' ? this.#tokAge : lens === 'activity' ? this.#tokActivity : this.#tokLife;
 
     for (let p = 0; p < n; p++) {
       const a = area[p] || 1;
-      const frac = liveCount[p]! / a;
       const heat = heatMax ? heatMax[p]! : 0;
-      if (frac <= 0 && heat <= 0) continue;
+      const idx = p * 4;
 
-      let alpha = this.#lens === 'activity' ? Math.pow(Math.min(1, heat), 0.6) : coverageAlpha(frac);
-      if (this.#lens === 'age' && liveCount[p]! > 0) {
-        const avgAge = ageSum![p]! / liveCount[p]!;
-        const t = Math.min(1, avgAge / AGE_RAMP_GENERATIONS);
-        alpha = Math.min(1, alpha * (0.5 + 0.5 * t));
+      if (lens === 'neighbors') {
+        const nz = neighborNonZero![p]!;
+        if (nz <= 0) continue;
+        const avgCount = Math.round(neighborSum![p]! / nz);
+        const rgb = this.#neighborRamp[Math.min(8, Math.max(0, avgCount))]!;
+        const alpha = coverageAlpha(nz / a) * (liveCount[p]! > 0 ? 1 : 0.55);
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+        data[idx + 3] = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+        continue;
       }
 
-      const idx = p * 4;
-      data[idx] = token.rgb.r;
-      data[idx + 1] = token.rgb.g;
-      data[idx + 2] = token.rgb.b;
+      const frac = liveCount[p]! / a;
+      if (frac <= 0 && heat <= 0) continue;
+
+      if (lens === 'lineage' || lens === 'velocity') {
+        if (lens === 'velocity' && hueCos![p] === 0 && hueSin![p] === 0) {
+          // No cell in this bucket had a defined direction — neutral grey,
+          // never an arbitrary hue.
+          data[idx] = this.#tokIvory.rgb.r; data[idx + 1] = this.#tokIvory.rgb.g; data[idx + 2] = this.#tokIvory.rgb.b;
+          data[idx + 3] = Math.round(coverageAlpha(frac) * 0.4 * 255);
+          continue;
+        }
+        const meanHue = (Math.atan2(hueSin![p]!, hueCos![p]!) * 180) / Math.PI;
+        const rgb = sampleHueRamp(this.#hueRamp, meanHue);
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+        data[idx + 3] = Math.round(coverageAlpha(frac) * 255);
+        continue;
+      }
+
+      if (speciesCount) {
+        const weights = [speciesCount[0]![p]!, speciesCount[1]![p]!, speciesCount[2]![p]!, speciesCount[3]![p]!];
+        const palette = lens === 'quadlife'
+          ? this.#quadPalette
+          : [this.#immigrationPalette[0], this.#immigrationPalette[0], this.#immigrationPalette[1], this.#immigrationPalette[1]];
+        const rgb = blendRgbWeighted(palette, weights);
+        data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b;
+        data[idx + 3] = Math.round(coverageAlpha(frac) * 255);
+        continue;
+      }
+
+      let alpha = lens === 'activity' ? Math.pow(Math.min(1, heat), 0.6) : coverageAlpha(frac);
+      let rgb: RGB = singleToken.rgb;
+      if (lens === 'age' && liveCount[p]! > 0) {
+        const avgAge = ageSum![p]! / liveCount[p]!;
+        const t = Math.min(1, avgAge / AGE_RAMP_GENERATIONS);
+        rgb = sampleRgbRamp(this.#ageRamp, t);
+        alpha = Math.min(1, alpha * (0.5 + 0.5 * t));
+      } else if (lens === 'activity') {
+        rgb = sampleRgbRamp(this.#activityRamp, Math.pow(Math.min(1, heat), 0.6));
+      }
+
+      data[idx] = rgb.r;
+      data[idx + 1] = rgb.g;
+      data[idx + 2] = rgb.b;
       data[idx + 3] = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
     }
     cellCtx.putImageData(img, 0, 0);

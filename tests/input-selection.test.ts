@@ -13,6 +13,7 @@ function makeFakeRenderer(): WorldRenderer {
     attach() {},
     setCamera() {},
     setLens() {},
+    setPalette() {},
     draw() {},
     resize() {},
     screenToWorld(px: number, py: number) { return { x: px, y: py }; },
