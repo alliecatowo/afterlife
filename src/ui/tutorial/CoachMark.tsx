@@ -38,9 +38,11 @@
  * gets yanked away) — "announced, not trapped", per the tour's own brief.
  *
  * The title is a styled `<p>`, never a heading element: like `TitlePlate`'s
- * own transient wordmark, a card that mounts and unmounts every few seconds
- * would otherwise inject/remove `<h*>` levels from the page's outline on a
- * timer, which is worse for a screen reader than not being a heading at all.
+ * own transient wordmark, a step's title text swaps every few seconds while
+ * the same card stays mounted for the whole tour (see the FIXED bug note
+ * below) — a real `<h*>` would inject/remove outline levels on a timer even
+ * though the node itself never remounts, which is worse for a screen reader
+ * than not being a heading at all.
  *
  * CRITICAL invariant, regressed once before: nothing in this file may ever
  * become a click target except the card's own buttons. The dimming layer in
@@ -49,8 +51,33 @@
  * area, and steps like `draw`/`stamp`/`fork` need clicks to land on it
  * anywhere, not only inside the current cutout. See `e2e/tour.spec.ts` and
  * `e2e/tour-spotlight.spec.ts`.
+ *
+ * FIXED bug, worth not reintroducing: the card, connector dot, line and
+ * spotlight are ALL persistent DOM nodes for the whole tour — none of them
+ * is ever conditionally mounted, or `key`-ed to the step, even though the
+ * card used to be (`key={stepKey}`) to replay its entrance animation each
+ * step. A freshly MOUNTED element's first paint shows whatever its plain
+ * JSX style/className resolves to — for this card, that was literally
+ * `left: 0, top: 0` with no `transform` yet, i.e. the viewport's top-left
+ * corner — and `recompute()`'s own position write only lands a frame or two
+ * later (it's driven by a bounded `requestAnimationFrame` poll, not
+ * something that can run before the browser's very next paint). The result
+ * was a real, visible one-or-two-frame flash to the corner on EVERY step
+ * advance, immediately followed by the correct glide — "loses what it's
+ * attached to, snaps to the corner, then snaps back," reported by eye. The
+ * fix has two parts, both required: (1) never conditionally mount/remount
+ * any of these nodes on step change, so there is always a previously
+ * PAINTED position to ease from — a step change is now just a prop update
+ * on the same nodes, and (2) `recompute()` HOLDS that previous painted
+ * position — touches nothing at all — whenever the new step's target
+ * hasn't resolved yet but is still within its bounded settle window,
+ * instead of falling through to the "no target" fallback and back. See
+ * `hasPaintedRef` and the `shouldHold` guard inside `recompute()`.
+ * `tests/tutorial-coachmark.test.tsx` samples the rendered rect on every
+ * tick through a slow (panel-open) transition and asserts it's never a
+ * near-zero/origin rect and never outside the old→new travel path.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Button, IconButton } from '@/ui/primitives';
 import { CloseIcon } from '@/ui/icons';
 import { useReducedMotion } from '@/ui/hooks/useReducedMotion';
@@ -100,10 +127,14 @@ export function CoachMark({
   const dotRef = useRef<HTMLSpanElement>(null);
   const spotlightRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
-  // Only used to decide whether a target exists at all (for the connector's
-  // visibility) — `recompute()` below re-resolves the live rect itself and
-  // writes it straight to refs.
-  const [hasTarget, setHasTarget] = useState(false);
+  // Whether `recompute()` has ever successfully painted a layout (a real
+  // target OR the deliberate no-target/center fallback) for the CURRENT
+  // step. Persists across the whole component's life (not reset per
+  // effect run), so a mid-tour step change can tell "the new target just
+  // hasn't measured yet, hold last frame's picture" apart from "this is the
+  // very first paint, there is nothing to hold, render the honest fallback
+  // now." See the module doc's "never render at a zero rect" fix.
+  const hasPaintedRef = useRef(false);
 
   // Move focus into the new card only if focus was already inside the tour's
   // own chrome (the previous card or its buttons) — never steal it from a
@@ -122,7 +153,30 @@ export function CoachMark({
     function recompute() {
       if (disposed) return;
       const targetRect = resolveTourTarget(target);
-      setHasTarget((prev) => (prev !== (targetRect !== null) ? targetRect !== null : prev));
+
+      // THE FIX: a target that's expected to exist (anything but a
+      // deliberate `center` step) but doesn't resolve YET is almost always
+      // a transient timing gap — the very case this module's doc already
+      // calls out (a panel mid-open, a `world` step's session not quite
+      // ready). Rendering that as "no target" would snap the card to the
+      // centered fallback and the spotlight to nothing, only to snap AGAIN
+      // once the real rect shows up a frame or two later — exactly the
+      // "flashes to the corner (or center), then jumps to the right place"
+      // bug this fixes. Instead: if we've already painted SOMETHING for
+      // this component before and we're still within this step's own
+      // bounded settle window, change NOTHING — hold the previous frame's
+      // picture exactly as it was — and let a later tick (the settle poll,
+      // a bus event, an observer) resolve it once the real rect exists.
+      // Only once that window genuinely elapses do we fall through to the
+      // honest no-target fallback below. A step's very first paint (no
+      // previous frame to hold) always falls through immediately instead —
+      // holding nothing would just mean displaying the raw, un-positioned
+      // JSX defaults, which IS the corner bug.
+      const isIntentionallyTargetless = target.kind === 'center';
+      const shouldHold =
+        targetRect === null && !isIntentionallyTargetless && hasPaintedRef.current && performance.now() < settleUntil;
+      if (shouldHold) return;
+
       const card = cardRef.current;
       const viewport = { width: window.innerWidth, height: window.innerHeight };
       const cardSize = card
@@ -166,6 +220,7 @@ export function CoachMark({
           el.style.opacity = '0';
         }
       }
+      hasPaintedRef.current = true;
     }
 
     /** A short, BOUNDED animation-frame poll — see module doc. Restarting an
@@ -194,7 +249,26 @@ export function CoachMark({
     // so a step never gets stuck on a stale "no target" read taken a frame
     // too early. If the target genuinely never appears, this settles on the
     // honest no-cutout fallback once the window elapses, same as always.
+    //
+    // `settleFor` MUST run before the synchronous `recompute()` below, not
+    // after: it's what sets `settleUntil` to a real future deadline, which
+    // is exactly what `recompute()`'s hold logic checks to decide "still
+    // within the grace window" vs. "genuinely timed out". Calling
+    // `recompute()` first would see `settleUntil` still at its initial `0`
+    // and treat an unresolved target as already-expired on the very first
+    // try, defeating the hold before it can do anything.
     settleFor(SETTLE_MS);
+    // Also measure synchronously, right here in the layout effect — BEFORE
+    // the browser paints this commit. Without this, the very first position
+    // a freshly-changed step could paint is whatever `recompute()` last
+    // wrote for the PREVIOUS step (fine — that's the desired "hold", see
+    // above) — but only by accident, and only until the next `rAF` fires.
+    // Calling it synchronously here (a) lets same-frame targets (the common
+    // case — most steps' targets already exist) start easing immediately
+    // instead of waiting a needless extra frame, and (b) guarantees the
+    // component's very first ever paint (no previous frame to hold) is
+    // never the raw, un-positioned JSX default — see `hasPaintedRef`.
+    recompute();
 
     window.addEventListener('resize', recompute);
     // `capture: true` so this also fires for a scroll on some inner
@@ -304,16 +378,21 @@ export function CoachMark({
       <svg className="absolute inset-0 h-full w-full" aria-hidden="true">
         <line ref={lineRef} stroke="var(--color-line-strong)" strokeWidth={1.5} style={{ display: 'none' }} />
       </svg>
-      {hasTarget && (
-        <span
-          ref={dotRef}
-          aria-hidden="true"
-          className="absolute left-0 top-0 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{ background: 'var(--color-line-strong)' }}
-        />
-      )}
+      {/* Always mounted, like the spotlight and connector line above —
+          visibility toggles via `recompute()`'s own `style.display` write,
+          never by mounting/unmounting the node. Conditionally mounting this
+          on a `hasTarget` boolean used to mean the FRESH node's first paint
+          landed at its plain CSS position (`left-0 top-0`, i.e. the
+          viewport's top-left corner) for one frame before `recompute()`
+          could set its real `transform` — the dot-sized instance of the
+          exact bug this file now guards against everywhere else. */}
+      <span
+        ref={dotRef}
+        aria-hidden="true"
+        className="absolute left-0 top-0 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{ display: 'none', background: 'var(--color-line-strong)' }}
+      />
       <div
-        key={stepKey}
         ref={cardRef}
         data-tour-card
         role="group"
