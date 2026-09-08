@@ -406,3 +406,15 @@ export function MoreIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** A painter's palette — the theming/appearance entry point (`ThemePanel`). */
+export function PaletteIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5c-3.6 0-6 2.6-6 5.7 0 2.2 1.5 3.3 3 3.3.6 0 1-.2 1-.9 0-.5-.4-.7-.4-1.3 0-.7.6-1.2 1.4-1.2h1.6c1.8 0 3.4-1.2 3.4-3.2 0-1.6-1.6-2.4-4-2.4Z" />
+      <circle cx="5.6" cy="6.7" r=".7" fill="currentColor" stroke="none" />
+      <circle cx="8.1" cy="5.3" r=".7" fill="currentColor" stroke="none" />
+      <circle cx="10.3" cy="6.9" r=".7" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}

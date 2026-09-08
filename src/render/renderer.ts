@@ -24,7 +24,7 @@ import {
   type ColorLens, type PaletteMode, type RGB, type RgbStop,
   buildHueRamp, sampleHueRamp, buildNeighborRamp, buildRgbRamp, sampleRgbRamp,
   resolveQuadPalette, resolveImmigrationPalette, quadColorForSpecies, immigrationColorForSpecies,
-  blendRgbWeighted, rotateHueRgb, sampleStopsRgb,
+  blendRgbWeighted, rotateHueRgb, sampleStopsRgb, relativeLuminance,
 } from './color';
 import type { ArtConfig, PaletteStop, LfoTarget } from './artConfig';
 import { isArtConfigAnimated } from './artConfig';
@@ -365,8 +365,20 @@ class WorldRendererImpl implements WorldRenderer {
     this.#tokIvory = resolveToken('--color-ivory-100', 'oklch(0.96 0.014 92)');
     this.#tokInk900 = resolveToken('--color-ink-900', 'oklch(0.16 0.012 200)');
 
-    this.#hueRamp = buildHueRamp();
-    this.#neighborRamp = buildNeighborRamp();
+    // Theme-aware hue-ramp lightness: `lineage`/`velocity`/`neighbors` are
+    // continuous hue-wheel lenses (see `buildHueRamp`'s doc) rather than a
+    // single fixed accent token, so — unlike the other 5 lenses, which
+    // resolve real `--color-accent-*` custom properties a theme can tune
+    // per-ground — they need an explicit ground-aware lightness choice to
+    // stay legible. `l=0.80` (this file's original default, still used for
+    // the dark "Observatory" ground) measures ~1.6-1.9:1 contrast against a
+    // LIGHT ground across the whole hue wheel — a real legibility failure a
+    // concurrent theming pass measured directly. Reused for both ramps
+    // rather than duplicated: same ground, same contrast requirement.
+    const groundIsLight = relativeLuminance(this.#tokInk900.rgb) > 0.5;
+    const hueRampL = groundIsLight ? 0.40 : 0.80;
+    this.#hueRamp = buildHueRamp(180, hueRampL, 0.15);
+    this.#neighborRamp = buildNeighborRamp(hueRampL, groundIsLight ? 0.18 : 0.16);
     // Spectral, multi-hue age/activity ramps that still terminate exactly on
     // the real design token at full intensity (see `buildRgbRamp`'s doc for
     // why lerping already-resolved RGB bytes here doesn't reintroduce any

@@ -18,7 +18,7 @@ import { Sheet, Toggle, Legend, IconButton } from '@/ui/primitives';
 import {
   EyeIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon,
   ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon, FilmIcon,
-  LogbookIcon,
+  LogbookIcon, PaletteIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
 // Same render-owned legend data `Hud.tsx` uses — keeps the mobile sheet and
@@ -36,6 +36,7 @@ const PANEL_ROWS: { id: Exclude<RightPanelId, null>; label: string; icon: ReactN
   { id: 'save', label: 'Save & export', icon: <SaveIcon /> },
   { id: 'audio', label: 'Instrument', icon: <WaveformIcon /> },
   { id: 'settings', label: 'Settings', icon: <SlidersIcon /> },
+  { id: 'theme', label: 'Appearance', icon: <PaletteIcon /> },
 ];
 
 function SheetSection({ label, children }: { label: string; children: ReactNode }) {

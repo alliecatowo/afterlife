@@ -63,7 +63,17 @@ export const useAppStore = create<AppState>((set) => ({
   playing: false,
   speed: 12,
   scrubbing: false,
-  lens: 'life',
+  // Default lens is `lineage`, not `life`: `life` is a single fixed hue by
+  // design (green = alive, honestly conveying nothing else), so a first
+  // boot with zero configuration read as a flat monochrome world — reported
+  // twice as "not seeing color". `lineage` is genuinely colourful AND still
+  // honest: hue is inherited ancestry (a newborn's hue is the circular mean
+  // of its 3 parents'), so distinct colours mean distinct family lines, and
+  // colliding populations visibly interbreed rather than being decorative.
+  // `life` remains fully available as a lens for the clean monochrome read
+  // (HUD lens menu / number key `1`) — this only changes the FIRST thing a
+  // new visitor sees, per INTEGRATION-NOTES.md's "default lens" entry.
+  lens: 'lineage',
   tool: 'draw',
   showGrid: true,
   selection: null,

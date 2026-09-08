@@ -8,11 +8,16 @@ import { useUIState } from '@/ui/uiState';
 import { bus } from '@/ui/bus';
 import { getSession } from '@/ui/session';
 import { useReducedMotion } from '@/ui/hooks/useReducedMotion';
-import { Field, Slider, Divider, Readout, Toggle } from '@/ui/primitives';
+import { Field, Slider, Divider, Readout, Toggle, Button } from '@/ui/primitives';
 import { HISTORY_WINDOW, KEYFRAME_INTERVAL } from '@/core/history';
 import type { PaletteMode } from '@/render/color';
+import { useThemeStore } from '@/ui/theme/store';
+import { BUILTIN_THEMES } from '@/ui/theme/themes';
 
 export function SettingsPanel() {
+  const themeId = useThemeStore((s) => s.themeId);
+  const setTheme = useThemeStore((s) => s.setTheme);
+  const setRightPanel = useUIState((s) => s.setRightPanel);
   const muted = useAppStore((s) => s.muted);
   const setMuted = useAppStore((s) => s.setMuted);
   const volume = useAppStore((s) => s.volume);
@@ -25,6 +30,36 @@ export function SettingsPanel() {
 
   return (
     <div className="flex flex-col gap-4">
+      <Field label="Appearance" description="A full editor (custom themes, import/export) lives in the Appearance panel.">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {BUILTIN_THEMES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              title={t.name}
+              aria-label={`Theme: ${t.name}`}
+              aria-pressed={themeId === t.id}
+              onClick={() => setTheme(t.id)}
+              className={
+                'h-6 w-6 shrink-0 rounded-full border transition-colors duration-[var(--duration-instant)] ' +
+                'focus-visible:focus-ring outline-none ' +
+                (themeId === t.id ? 'border-line-strong' : 'border-line hover:border-line-strong')
+              }
+              style={{ background: t.tokens['--color-ink-900'] }}
+            >
+              <span
+                aria-hidden="true"
+                className="mx-auto block h-2 w-2 rounded-full"
+                style={{ background: t.tokens['--color-accent-life'] }}
+              />
+            </button>
+          ))}
+          <Button variant="ghost" size="sm" onClick={() => setRightPanel('theme')}>More appearance options</Button>
+        </div>
+      </Field>
+
+      <Divider />
+
       <Field label="Sound">
         <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
           <input

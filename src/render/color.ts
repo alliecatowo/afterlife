@@ -40,6 +40,26 @@ export interface RGB {
   b: number;
 }
 
+/**
+ * WCAG relative luminance of an already-resolved sRGB colour, in `[0, 1]`.
+ * Used to pick a hue-ramp lightness that stays legible against whatever
+ * ground colour a theme actually resolves to (see `buildHueRamp`'s
+ * `groundIsLight`-aware callers in `renderer.ts`) — `buildHueRamp`/
+ * `buildNeighborRamp`'s own default `l=0.80` was tuned against this app's
+ * original dark ("Observatory") ground only; a light theme's ground (e.g.
+ * `theming`'s "Ivory Plate") needs a darker ramp instead; a fixed midpoint
+ * would already have failed the exact contrast measurement a light theme
+ * needs to pass, since a ramp built for one relies on the other's opposite
+ * end of the lightness scale.
+ */
+export function relativeLuminance(rgb: RGB): number {
+  const channel = (v: number): number => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+}
+
 function srgbGamma(c: number): number {
   const cl = Math.min(1, Math.max(0, c));
   return cl <= 0.0031308 ? 12.92 * cl : 1.055 * Math.pow(cl, 1 / 2.4) - 0.055;

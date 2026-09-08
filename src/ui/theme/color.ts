@@ -114,3 +114,66 @@ export function contrastRatio(a: string | Oklch, b: string | Oklch): number {
 export const WCAG_AA_BODY = 4.5;
 /** WCAG AA large-text / UI-component threshold (3:1). */
 export const WCAG_AA_LARGE = 3;
+
+// ---- oklch <-> hex, for the custom-theme colour-picker editor -------------
+//
+// Theme tokens are always STORED/authored as `oklch()` (see this module's
+// doc), but a native `<input type="color">` only speaks hex sRGB. These two
+// conversions exist solely to bridge that one UI control — never used by
+// validation or contrast maths above, which stay in OKLCH/OKLab throughout.
+
+function srgbGammaToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgbGamma(c: number): number {
+  const cl = clamp01(c);
+  return cl <= 0.0031308 ? cl * 12.92 : 1.055 * cl ** (1 / 2.4) - 0.055;
+}
+
+function linearSrgbToOklab(r: number, g: number, b: number): { l: number; a: number; b: number } {
+  const l_ = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m_ = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s_ = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return {
+    l: 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+    a: 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+    b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+  };
+}
+
+function oklabToOklch(l: number, a: number, b: number): Oklch {
+  const c = Math.sqrt(a * a + b * b);
+  let h = (Math.atan2(b, a) * 180) / Math.PI;
+  if (h < 0) h += 360;
+  return { l, c, h };
+}
+
+/** `oklch(L C H)` -> `#rrggbb`, gamut-clamped (matches how a browser
+ *  actually paints an out-of-gamut oklch() value). */
+export function oklchToHex(o: Oklch): string {
+  const { l, a, b } = oklchToOklab(o);
+  const [r, g, bl] = oklabToLinearSrgbPublic(l, a, b);
+  const toByte = (c: number) => Math.round(linearToSrgbGamma(c) * 255);
+  const hex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${hex(toByte(r))}${hex(toByte(g))}${hex(toByte(bl))}`;
+}
+
+/** `#rrggbb`/`#rgb` -> `oklch(L C H)`, formatted the same way `formatOklch` does. */
+export function hexToOklchString(hex: string): string {
+  const norm = hex.trim().replace(/^#/, '');
+  const full = norm.length === 3 ? norm.split('').map((c) => c + c).join('') : norm;
+  if (!/^[0-9a-f]{6}$/i.test(full)) throw new Error(`hexToOklchString: not a hex colour: "${hex}"`);
+  const r = srgbGammaToLinear(parseInt(full.slice(0, 2), 16) / 255);
+  const g = srgbGammaToLinear(parseInt(full.slice(2, 4), 16) / 255);
+  const b = srgbGammaToLinear(parseInt(full.slice(4, 6), 16) / 255);
+  const lab = linearSrgbToOklab(r, g, b);
+  return formatOklch(oklabToOklch(lab.l, lab.a, lab.b));
+}
+
+// `oklabToLinearSrgb` above is intentionally module-private (contrast maths
+// only needs [0,1]-clamped linear values); this thin wrapper just gives the
+// hex conversion the same clamping without duplicating the matrices.
+function oklabToLinearSrgbPublic(l: number, a: number, b: number): [number, number, number] {
+  return oklabToLinearSrgb(l, a, b);
+}

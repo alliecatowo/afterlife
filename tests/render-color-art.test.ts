@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { rotateHueRgb, sampleStopsRgb, type RGB, type RgbStop } from '@/render/color';
+import { relativeLuminance, rotateHueRgb, sampleStopsRgb, type RGB, type RgbStop } from '@/render/color';
+
+describe('relativeLuminance', () => {
+  it('white is 1, black is 0', () => {
+    expect(relativeLuminance({ r: 255, g: 255, b: 255 })).toBeCloseTo(1, 5);
+    expect(relativeLuminance({ r: 0, g: 0, b: 0 })).toBeCloseTo(0, 5);
+  });
+
+  it('a dark ground (e.g. this app\'s ink-900) is well below 0.5', () => {
+    // oklch(0.16 0.012 200) resolves to a very dark teal-black.
+    expect(relativeLuminance({ r: 20, g: 24, b: 26 })).toBeLessThan(0.1);
+  });
+
+  it('a light ground (e.g. a paper/ivory theme) is well above 0.5', () => {
+    expect(relativeLuminance({ r: 245, g: 243, b: 238 })).toBeGreaterThan(0.5);
+  });
+
+  it('green is weighted more heavily than red or blue (WCAG formula)', () => {
+    const red = relativeLuminance({ r: 255, g: 0, b: 0 });
+    const green = relativeLuminance({ r: 0, g: 255, b: 0 });
+    const blue = relativeLuminance({ r: 0, g: 0, b: 255 });
+    expect(green).toBeGreaterThan(red);
+    expect(red).toBeGreaterThan(blue);
+  });
+});
 
 // New pure helpers added for Art mode's colour controls (hue rotation /
 // palette cycling, and the custom-palette-stop sampler). Kept in a separate

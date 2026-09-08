@@ -1024,3 +1024,227 @@ whenever `rule.isConway`.
 
 **Blocking?** no.
 **Resolution:**
+
+
+## 2026-09-08 — color (theming) — src/ui/theme/** (new), src/styles/** ownership, right-panel wiring
+
+**Need/context:** Built the theming system: 5 shipped themes (Observatory default, Ivory
+Plate light, High Contrast, Phosphor, Cyanotype) covering every chrome + semantic-accent
+token, a runtime `applyTheme()` (sets CSS custom properties on `documentElement`, no
+rebuild), a WCAG-contrast + OKLab-distance validator (`src/ui/theme/validate.ts` —
+`MIN_ACCENT_DISTANCE` calibrated to Observatory's own worst real pair, 0.0491, so the bar
+is "at least as distinguishable as the shipped default"), custom theme editing/export/
+import, and `src/ui/panels/ThemePanel.tsx`. `src/styles/tokens.css`/`base.css` are
+UNTOUCHED — themes are pure runtime overrides layered on top, so Observatory stays
+byte-identical with zero theming code loaded.
+
+**Real bug found, not mine to fix — flagged to `acidart` directly + here:**
+`buildHueRamp()`/`buildNeighborRamp()` (`src/render/color.ts`) hardcode `l=0.80` for the
+lineage/velocity/neighbors lenses' full-hue-wheel ramp, independent of any theme token.
+Measured: against Ivory Plate's paper ground (`--color-ink-900` L≈0.97) that ramp's
+contrast is only **~1.6-1.9:1 across the entire hue wheel** (vs ~9-11:1 against
+Observatory's dark ground) — those 3 lenses would be nearly invisible on any light theme.
+The other 5 lenses (life/age/activity/quadlife/immigration) are fine; they resolve real
+`--color-accent-*` custom properties at runtime, which I tuned per-theme. Proposed a ~4-line
+fix (pick the ramp's `l` from the already-resolved ink-900 ground's luminance instead of a
+constant) directly to `acidart` since `src/render/**` is their file, not mine to edit.
+**Not blocking my own work** — Ivory Plate ships regardless; this is a known, measured gap
+in 3 of 8 lenses on light themes only, until `acidart` (or a future pass) lands the fix.
+
+**Right-panel wiring:** Added `'theme'` to `RightPanelId` (`src/ui/uiState.ts`), a case in
+`PanelRight.tsx`, a row in `HudMoreSheet.tsx` (mobile reachability, as directed), and an
+"Appearance" section inside `SettingsPanel.tsx` (quick swatch row + "More appearance
+options" button opening the full panel) — this gives full desktop reachability today
+without touching `Hud.tsx`. Per this task's own instruction ("route any Hud.tsx need
+through INTEGRATION-NOTES.md with an exact diff"): `Hud.tsx`'s `lg`-and-up icon row is
+already measured at ~1493px of content against a 1440px viewport with **zero slack** (see
+that file's own comments), so adding a 9th top-level icon there is a real layout decision,
+not a mechanical one. Proposed diff, for whoever owns `Hud.tsx` next:
+
+```tsx
+// after the "Settings" IconButton/Tooltip pair, before its closing Divider:
+<Tooltip content="Appearance">
+  <IconButton
+    label="Appearance"
+    icon={<PaletteIcon />}   // new icon, same file/pattern as icons.tsx's others
+    pressed={rightPanel === 'theme'}
+    onClick={() => toggleRightPanel('theme')}
+  />
+</Tooltip>
+```
+Also add `{ id: 'theme', label: 'Appearance', icon: <PaletteIcon /> }` to `HudMoreSheet.tsx`'s
+`PANEL_ROWS` if not already present when this lands (I already added it, so skip if so).
+Whoever applies this should re-measure the row width per that file's own comment discipline
+before merging — I did not touch `Hud.tsx` itself.
+
+**Persistence:** `afterlife:v1:theme` (same `STORAGE_PREFIX` constant imported read-only
+from `src/persist/localStorage.ts` — did not edit that file). Respects
+`prefers-color-scheme` for the FIRST run only (dark → Observatory, light → Ivory Plate); an
+explicit user pick always wins and persists thereafter.
+
+**Site theming — CUT, not built.** The brief asked for the same themes on `site/**`; under a
+wrap-up time-box I deliberately did not start it, rather than land a half-wired switcher.
+Nothing under `site/**` was touched. If picked up later: don't import `src/ui/theme/**`
+directly (the guide agent's own rule is the site "does not depend on React or any of
+`src/**`") — duplicate the 5 themes' token maps into a small `site/shared/theme.ts` instead,
+reading/writing the same `afterlife:v1:theme` key, with a parity test asserting the two
+copies match so they can't silently drift.
+
+**Blocking?** no.
+**Resolution:**
+
+---
+
+## 2026-09-08 — ACID ART: glyph/ASCII rendering, the modulation field, LFO automation, and the default-lens fix
+
+**Need:** "add the ability to change what your cells *are* — different ASCII characters,
+an acid image behind it changing what cell is what, additional rules/modulation where
+things shift as it goes, same for colours" — a deep, configurable Art mode layered on top
+of the honest simulation, with ASCII treated as the headline feature per a follow-up
+correction (prominent toggle, real typographic care, JetBrains Mono, correct grid
+alignment). Separately, mid-task, a direct user report: "it's all green, no difference
+between different cells" — the shipped default lens (`life`) is a single fixed hue by
+design, so a first-ever visit read as monochrome.
+
+**Built**, entirely inside `src/render/**` plus one new file `src/ui/panels/ArtPanel.tsx`:
+
+- `glyphs.ts` — glyph vocabulary (ascii/blocks/box/dots/geometric + user-editable custom)
+  and the pure driver→character selection maths (age/activity/neighbours/lineage/
+  density/field, all normalised through one `glyphIndexForValue`). Unit-tested directly.
+- `glyphAtlas.ts` — the performance-critical piece: every glyph is rasterised ONCE to an
+  offscreen canvas in flat white (a coverage mask), cached per (character-set, device-px
+  bucket). The draw path never calls `fillText` per cell per frame — it blits the cached
+  raster (`drawImage`, `source-over`) then recolours just that cell's rect with a
+  `source-in` composited `fillRect`. Uses the self-hosted JetBrains Mono Variable (already
+  `--font-mono`), centred with the exact same shared-corner device-pixel rounding every
+  other overlay in `renderer.ts` uses (grid/selection/ghost/diff), so the glyph grid is
+  tight and even with no drift at any zoom above `GLYPH_MIN_SCALE` (11 css px/cell,
+  exported so `ArtPanel` and the renderer agree on the threshold; below it, and always when
+  fully zoomed out, rendering is 100% the untouched honest lens — no code path diverges).
+- `field.ts` / `mediaField.ts` — the "acid image behind it": procedural sources (value-
+  noise stand-ins for perlin/simplex, radial, linear, an animated plasma) plus real image/
+  video-file/webcam sources. `field.ts` is pure (a `SampledGrid` in, a `[0,1]` value out —
+  unit-tested with hand-built grids, no DOM); `mediaField.ts` is the impure capture/teardown
+  half (`MediaFieldSource`), used only via explicit user gesture, with a `pagehide`
+  listener and unconditional `track.stop()` on stop/dispose so a forgotten live camera
+  can't happen. A one-shot "seed the world from this image" thresholds real luminance into
+  a real `EditOp` via the existing `session.applyEdit()` — honest, not a second world.
+- `lfo.ts` — sine/triangle/saw/random-walk, each a **pure function of absolute time**
+  (`lfoValue(shape, tSeconds, rate, phase, seed)`), deterministic and replay-safe by
+  construction (no accumulator to drift). Targets: hue rotation, palette cycling, glyph-set
+  index, field scale/offset/rotation, trail length, brightness.
+- `artConfig.ts` / `artStore.ts` — the whole config as one typed, sanitised (defensive
+  against corrupt/hand-edited JSON, never throws) document; a zustand store persisted to
+  `localStorage` under `STORAGE_PREFIX + 'art-config'` (read-only import of the constant
+  from `@/persist/store`, same pattern `audio`/`tourStore` already established — no edits
+  to `@/persist/**`). `defaultArtConfig().enabled === false`: the shipped look is completely
+  unchanged until a user opts in. 4 presets + Classic ASCII + Randomise + Reset + JSON
+  export/import.
+- `renderer.ts` — `setArtConfig`/`setModulationGrid` added to `WorldRenderer`. Trails are an
+  explicit, Art-mode-only "fade toward the ground colour instead of clearing" — never
+  applied to an honest lens. The renderer self-perpetuates its own dirty flag only when
+  Art mode is BOTH visible AND actually configured to animate (`isArtConfigAnimated`),
+  so a static Art config costs one draw, same as any lens, and Art mode off costs nothing
+  beyond one extra optional-chain per frame.
+- `color.ts` gained `rotateHueRgb`, `sampleStopsRgb` (pure palette maths for hue rotation
+  and the custom-stop editor) and `relativeLuminance` (see the theme-contrast fix below).
+
+**Reachability — a real, load-bearing bug found and fixed:** per this task's ownership
+brief, `Hud.tsx`/`PanelRight.tsx`/`uiState.ts` are outside this pass's assigned files, so
+Art mode self-mounts (`artMount.ts`, called from `WorldRendererImpl.attach()` — the one
+lifecycle hook this agent owns that's guaranteed to run on boot): a small quiet trigger
+tab + gear button (bottom-left, `ArtTrigger.tsx`) opening the full panel in a `Dialog`, plus
+the `a` keyboard shortcut (unused by any existing shortcut; guarded by the same
+`shouldIgnoreGlobalShortcut` every other global shortcut uses). Same precedent the
+achievements logbook originally used for the identical ownership situation.
+
+Found via this: **`@/ui/session.ts` creates a SECOND `WorldRenderer` for the compare view
+and calls `attach()` on it too, unconditionally, moments after the main one.** Both
+`attach()` calls raced the same dynamic `import('./artMount')`; the compare renderer's
+call sometimes won the module's one-time `mounted` guard, permanently binding the
+store→renderer sync to the almost-never-drawn compare canvas. Symptom: Art mode toggled
+correctly in the UI (the store change was real, the trigger's pressed-state updated) with
+**zero visible effect on the actual world canvas, and no error anywhere** — confirmed by
+instrumenting `consumeDirty()`/`draw()` directly, not guessed. Fixed by gating the
+self-mount on `canvas.id === 'world-canvas'` (the one stable DOM anchor ARCHITECTURE.md
+already documents), which is unambiguous regardless of promise-resolution timing. This
+would have made the entire feature silently non-functional in the shipped app; caught only
+because the user's own instruction to screenshot and actually look at it forced a real
+end-to-end check instead of trusting a passing pixel-diff test (which the bug still passed,
+since "cells vanish" and "cells become glyphs" both count as "the canvas changed").
+
+**Proposed diff for whoever next owns `Hud.tsx`/`PanelRight.tsx`/`uiState.ts`** (the
+self-mounted trigger works today; this is the permanent, better-integrated home, matching
+exactly how the achievements logbook was later relocated):
+```ts
+// uiState.ts: add 'art' to RightPanelId
+export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | 'art' | null;
+
+// PanelRight.tsx: import { ArtPanel } from './ArtPanel'; add TITLES.art = { label: 'Acid Art', icon: <AsciiIcon/> };
+// and `{rightPanel === 'art' && <ArtPanel />}` alongside the other cases.
+
+// Hud.tsx: after the "Instrument" IconButton/Tooltip pair:
+<Tooltip content="Acid Art — ASCII, the modulation field, and colour automation">
+  <IconButton label="Acid Art" icon={<AsciiIcon/>} pressed={rightPanel === 'art'} onClick={() => toggleRightPanel('art')} />
+</Tooltip>
+// + the matching row in HudMoreSheet.tsx's PANEL_ROWS.
+// Once this lands, `artMount.ts`'s self-mounted trigger tab can be deleted
+// entirely (`ArtTrigger.tsx` too) — everything else (artStore, the renderer
+// wiring, the keyboard shortcut) stays as-is.
+```
+Re-measure the `lg` HUD row width per that file's own discipline before merging (same
+caveat the theming agent's Appearance-button proposal above already notes).
+
+**The default-lens fix (mid-task priority change):** `life` is, by design, a single fixed
+hue (DESIGN.md: "each colour has ONE fixed meaning") — correct for that lens, but it meant
+`useAppStore`'s default (`src/ui/store.ts`) shipped a monochrome first impression. Changed
+the default to `lineage`: hue is inherited ancestry (a newborn's hue is the circular mean
+of its 3 parents'), so it's colourful **and** still honest — colour means family lines, and
+colliding populations visibly interbreed. `life` stays fully available (HUD lens menu, `1`).
+Verified, not assumed: `e2e/default-lens.spec.ts` boots the real app with zero interaction
+and asserts (a) the HUD names the active lens "Lineage", (b) the opening scene at generation
+0 shows ≥3 significantly-represented hue buckets (same bucketing method
+`prod-build.spec.ts` already uses for the other 7 lenses) — passes at 12 buckets in
+practice. The existing 250-cell `OPENING_SCENE` already had enough spatial spread for
+`spontaneousHue`'s per-cell hash to produce real variety; no scene-content change was
+needed. Checked for lens-default assumptions elsewhere: `tests/persist-experiment.test.ts`'s
+`doc.lens === 'life'` is an old-save-migration default (`codec.ts`), unrelated to the live
+store; `e2e/render-zoom.spec.ts`'s pixel counter checks alpha only, not colour — both
+untouched, both still green after this change.
+
+**Theme-contrast fix (relayed from the `theming` agent):** `buildHueRamp`/
+`buildNeighborRamp` used a hardcoded `l=0.80`, tuned only against the dark Observatory
+ground — measured at ~1.6-1.9:1 contrast against `theming`'s new light "Ivory Plate" theme,
+a real legibility failure for the `lineage`/`velocity`/`neighbors` lenses (the only 3 that
+don't resolve a themeable `--color-accent-*` token). Added `relativeLuminance()` (`color.ts`,
+pure, unit-tested) and pick the ramp lightness from the ALREADY-resolved `--color-ink-900`
+token's real luminance rather than a hardcoded constant — `l=0.40` when the ground is light,
+`0.80` when dark. Verified by eye at 1440px on Ivory Plate (screenshot): rich, clearly
+distinct hues, well-contrasted against the paper ground.
+
+**Tests:** `tests/render-{lfo,field,glyphs,glyphAtlas,mediaField,artConfig,color-art}.test.ts`
+(pure logic — LFO determinism/out-of-order-evaluation, field sampling incl. grid wrapping,
+glyph index/driver normalisation, atlas layout maths, media threshold/luminance, config
+sanitising, hue rotation + custom-stop sampling + relative luminance) — 88 new unit tests,
+732/732 total passing. `e2e/art.spec.ts` (3 specs: glyph rendering with an exact
+byte-for-byte restore on toggle-off, trigger/dialog reachability, webcam start/stop/close
+teardown against a mocked `getUserMedia`) + `e2e/default-lens.spec.ts` (2 specs) — all pass
+in isolation and in a combined run alongside `render-zoom.spec.ts`.
+
+**Imperfect / known gaps:** (1) Art mode's colour modulation (hue rotate/trails/custom
+palette) only applies above `GLYPH_MIN_SCALE` — below that, Art mode has no visible effect
+at all rather than partially modulating the flat-fill crisp path, a deliberate scope cut
+stated in `ArtPanel`'s own zoom-hint copy. (2) `perlin`/`simplex` are value-noise stand-ins
+(documented honestly in `field.ts`'s doc comment), not literal Perlin/simplex noise —
+visually equivalent for this purpose, no external dependency. (3) The modulation field's
+`hue`/`brightness`/`jitter` targets are implemented and tested via the renderer's own logic
+but don't have dedicated e2e coverage beyond the glyph-rendering-changes-the-canvas check —
+lower risk, since they reuse the same pure `sampleField`/`rotateHueRgb` already unit-tested.
+(4) `ArtPanel`'s custom-palette colour input is a native `<input type="color">` (hex only);
+an existing oklch/lab stop shows as a grey fallback swatch until re-picked — cosmetic, the
+underlying stop value is untouched until the user actually changes it.
+
+**Blocking?** no.
+**Resolution:** self-mounted reachability + keyboard shortcut ship today; the Hud.tsx/
+PanelRight.tsx/uiState.ts diff above is ready for whoever next has write access to those
+files, per this task's own ownership rule.

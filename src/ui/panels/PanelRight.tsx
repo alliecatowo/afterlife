@@ -10,7 +10,7 @@ import { useAppStore } from '@/ui/store';
 import { getSession } from '@/ui/session';
 import { toFieldGuideEntry } from '@/content/discoveries';
 import { IconButton } from '@/ui/primitives';
-import { CloseIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon } from '@/ui/icons';
+import { CloseIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon, PaletteIcon } from '@/ui/icons';
 import { BranchesPanel } from './BranchesPanel';
 import { ComparePanel } from './ComparePanel';
 import { SettingsPanel } from './SettingsPanel';
@@ -18,6 +18,7 @@ import { FieldGuidePanel } from './FieldGuidePanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { PersistPanel } from './PersistPanel';
 import { AudioPanel } from './AudioPanel';
+import { ThemePanel } from './ThemePanel';
 
 const TITLES = {
   branches: { label: 'Branches', icon: <BranchIcon /> },
@@ -27,6 +28,7 @@ const TITLES = {
   experiments: { label: 'Experiments', icon: <FlaskIcon /> },
   save: { label: 'Save & export', icon: <SaveIcon /> },
   audio: { label: 'Instrument', icon: <WaveformIcon /> },
+  theme: { label: 'Appearance', icon: <PaletteIcon /> },
 } as const;
 
 export function PanelRight() {
@@ -72,6 +74,7 @@ export function PanelRight() {
         {rightPanel === 'experiments' && <ExperimentsPanel />}
         {rightPanel === 'save' && <PersistPanel />}
         {rightPanel === 'audio' && <AudioPanel />}
+        {rightPanel === 'theme' && <ThemePanel />}
         {rightPanel === 'guide' && (
           <FieldGuidePanel
             entries={items.map((d) => ({ ...toFieldGuideEntry(d), following: d.following, lost: d.lost }))}

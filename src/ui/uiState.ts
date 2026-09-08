@@ -12,7 +12,7 @@ import { create } from 'zustand';
 import { IDENTITY_TRANSFORM, type StampTransform } from '@/core/types';
 import type { PaletteMode } from '@/render/color';
 
-export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | null;
+export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | 'theme' | null;
 
 interface UILocalState {
   rightPanel: RightPanelId;
