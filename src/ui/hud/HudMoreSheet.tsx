@@ -17,7 +17,7 @@ import { useTourStore } from '@/ui/tutorial/tourStore';
 import { Sheet, Toggle, Legend, IconButton } from '@/ui/primitives';
 import {
   EyeIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon,
-  ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon,
+  ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon, FilmIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
 
@@ -163,6 +163,12 @@ export function HudMoreSheet() {
               bus.emit('presentation:toggle', { on: true });
               setMoreOpen(false);
             }}
+          />
+          <IconButton
+            label="Cinematic mode"
+            icon={<FilmIcon />}
+            variant="ghost"
+            onClick={() => { getSession()?.cinematic.enter(); setMoreOpen(false); }}
           />
           <IconButton
             label="About AFTERLIFE"

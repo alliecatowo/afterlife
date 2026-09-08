@@ -460,3 +460,106 @@ already exists for exactly this (see `SceneAnnotation.tsx`'s doc comment for the
 pattern). Purely decorative, never gates on anything audio does.
 **Blocking?** no — the soundscape's own honesty guarantees don't depend on this landing.
 **Resolution:** n/a.
+
+## 2026-09-07 — mobile — the mobile robustness pass (`src/ui/App.tsx`, `src/ui/hud/**`,
+`src/ui/drawer/**`, `src/ui/panels/**`, `src/ui/primitives/Sheet.tsx`, `src/styles/**`,
+one line each in `src/render/renderer.ts` and `src/interact/input.ts`)
+
+**Need:** n/a — informational record, plus a couple of items for other owners below.
+
+**The two real bugs, not just layout.** The user's verdict was "v jank in mobile." The
+biggest cause turned out to be a functional bug, not a layout one:
+
+1. **`#endPinch()` in `src/interact/input.ts` silently discarded every one-finger
+   draw/erase/select gesture on touch.** It unconditionally nulled `#dragMode` whenever
+   fewer than 2 touches remained — true for the end of every ordinary one-finger
+   gesture, not just a real pinch — and `#onPointerUp` calls it BEFORE `#stopDrag()`
+   reads `#dragMode` to decide whether to commit. The live stroke preview painted
+   correctly (so it visually looked like it worked), but nothing ever reached the
+   engine: lift your finger and the mark vanished. This affected 100% of one-finger
+   touch drawing/erasing/selecting before the fix — arguably THE core interaction of
+   the app. Fixed by making `#endPinch()` a documented no-op (a genuine 2-finger pinch
+   never sets `#dragMode` in the first place — see the method's new doc comment — so it
+   had nothing of its own to clean up; `#stopDrag()` already owns all of that).
+   Uncovered a second, smaller instance of the same family: starting a real two-finger
+   pinch registers the first finger's own pointerdown as an independent one-finger
+   gesture for one event tick before the second finger's pointerdown arrives (Pointer
+   Events are always one pointer per event, even for "simultaneous" hardware touches),
+   painting one stray cell at the pinch's start point every time. Fixed by tracking
+   `#dragMoved` (has the active gesture actually moved since pointerdown?) and
+   discarding — never committing — an unmoved draw/erase touchdown when a second finger
+   joins, while a gesture that already moved before the second finger landed still
+   commits exactly as before (this is the scenario the mobile brief calls out
+   explicitly: "a stroke started with one finger isn't corrupted when a second finger
+   lands"). Both covered by `e2e/mobile.spec.ts`'s "touch gesture model" suite.
+2. **A closed drawer/panel kept intercepting taps for its ~220ms close transition.**
+   `data-open={false}` doesn't mean invisible — `translate-x-full`/`-translate-x-full`
+   takes `--duration-base` to finish, and for that whole window the element still
+   physically overlaps whatever's behind it. A quick close-then-tap-in-that-strip
+   sequence (exactly what a thumb does) could hit the animating-out overlay instead of
+   the canvas. Fixed with `data-[open=false]:pointer-events-none` (restored via
+   `md:pointer-events-auto` for the desktop rail, which is never "closed" the same way)
+   on both `#drawer-left` and `#panel-right` in `App.tsx`.
+
+**HUD reachability audit result.** At 390px the HUD row's real content was ~993px wide
+behind an `overflow-x-auto` + `flex-1` spacer — Playwright's auto-scroll-into-view made
+existing e2e clicks on Compare/Field Guide/Experiments/etc. pass despite this, which is
+exactly how it shipped unnoticed; a real thumb has no such affordance. The lens toggle
+(`hidden lg:flex`) and speed toggle (`hidden md:flex`) were flatly `display:none` below
+their breakpoints with no substitute anywhere. Fix: below `lg`, the full desktop icon
+row/lens/speed disappear and a single always-visible "More controls" button
+(`src/ui/hud/HudMoreSheet.tsx`, new) opens a bottom sheet (`src/ui/primitives/Sheet.tsx`,
+new — Radix Dialog styled as a slide-up sheet with a drag-down-to-dismiss handle,
+backdrop tap, and close button) containing lens, speed, the Time Sculpture entry, every
+right-panel tab, mute, presentation, cinematic, about, and shortcuts. Desktop (`lg`+) is
+byte-for-byte the same markup as before. `e2e/screenshots.spec.ts`'s 4 mobile-project
+tests that clicked those controls directly were updated to go through the new
+`openControl()` helper in `e2e/utils.ts` (opens the sheet first when it's the only
+visible path) rather than weakened.
+
+**Also wired up, per a request while resuming this task:** the cinematic agent's HUD
+entry point (`FilmIcon` + "Cinematic mode" button, both in the desktop row next to
+Presentation mode and in the More sheet) — see their entry above for why they couldn't
+add it themselves.
+
+**Touched outside my stated file list, both logged then:**
+- `src/render/renderer.ts` — capped `#dpr` at 2 (`Math.min(window.devicePixelRatio || 1,
+  2)`, same pattern already used by `Timeline.tsx`'s ribbon canvas) per the brief's "DPR
+  path doesn't render at absurd resolution on a 3x phone" ask. Purely a backing-buffer
+  resolution cap; doesn't touch camera math or simulation state. Not otherwise modified.
+- `src/interact/input.ts` — the two fixes above. Both are one-finger/two-finger touch
+  bugs the brief explicitly authorized touching this file for.
+
+**Observed but NOT fixed (outside my ownership, `session.ts`):** chaining "scrub
+backward → edit → open Compare → pick 'Original' → close panel → select a new region"
+as fast as an automated test can, without any pause, occasionally (roughly 1 in 6 runs)
+left `engine.gen` back at the ROOT branch's original max generation instead of staying
+on the freshly-forked branch at the scrubbed-to generation — i.e., playback or a branch
+resync silently raced ahead across the branch switch. `history:switchBranch`'s
+`.then(...)` and the `compareWith`-triggered `refreshCompare()` are the two async
+somethings involved. A human pausing naturally between these actions never hits it, and
+`e2e/mobile.spec.ts`'s heartbeat test works around it with a settle wait + a defensive
+re-`ensurePaused()`, but this is worth the `core`/`session` owner's attention.
+
+**Testing:** `e2e/mobile.spec.ts` (new) — 14 tests in the `mobile` project covering HUD
+reachability (no horizontal overflow, every control reachable through the sheet, the
+sheet's three dismiss paths), the touch gesture model (single-finger commit, plain-tap
+commit, 2-finger pinch never draws, second-finger-mid-stroke, 4-corner edge drawing),
+the full scrub → edit → compare → sculpt heartbeat journey by touch, portrait↔landscape
+rotation, and a 820×1180 small-tablet width. `playwright.config.ts`'s `mobile` project
+now matches `mobile.spec.ts` too (previously `screenshots.spec.ts` only).
+
+**Still imperfect / didn't chase further:** the achievements agent's "Logbook" toast can
+overlap the cinematic overlay's bottom bar by a few px on a 390px screen — cosmetic,
+both remain independently readable, not mine to fix (neither file is in my ownership).
+The colourful-lenses proposal two entries above is real and its exact HUD diff is
+correct, but `RenderLens` (`src/core/types.ts`, frozen) hasn't actually been widened
+yet — wiring 5 more `Toggle` options into `Hud.tsx`/`HudMoreSheet.tsx` against a type
+that doesn't have them would fail `tsc`, so I left it for whoever applies that frozen-file
+change to do alongside it (the diff for both HUD files is already written up above,
+ready to apply verbatim). Also saw the audio agent's edit-ripple-overlay request just
+above this entry — deliberately not building it; it's decorative and outside this pass's
+mobile-robustness scope.
+
+**Blocking?** no.
+**Resolution:** n/a.

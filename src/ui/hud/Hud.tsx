@@ -14,7 +14,7 @@ import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/prim
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
-  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon,
+  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon, FilmIcon,
 } from '@/ui/icons';
 import { HudMoreSheet } from './HudMoreSheet';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
@@ -318,6 +318,19 @@ export function Hud() {
             label="Presentation mode"
             icon={<ExpandIcon />}
             onClick={() => { setPresentation(true); bus.emit('presentation:toggle', { on: true }); }}
+          />
+        </Tooltip>
+        {/* Per INTEGRATION-NOTES.md's `cinematic` entry: the feature was
+            fully built (auto-pan, interest scoring, its own DOM-root
+            overlay) but only reachable via the 'C' keyboard shortcut —
+            undiscoverable without this button. `Session.cinematic` is the
+            cinematic agent's own public API; no other file of theirs is
+            touched here. */}
+        <Tooltip content="Cinematic mode — full-screen, auto-pan, hands-off">
+          <IconButton
+            label="Cinematic mode"
+            icon={<FilmIcon />}
+            onClick={() => getSession()?.cinematic.enter()}
           />
         </Tooltip>
         <Tooltip content="What is this?">

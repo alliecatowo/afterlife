@@ -372,6 +372,17 @@ export function GlobeIcon(props: IconProps) {
   );
 }
 
+/** Cinematic mode: full-screen, auto-pan, hands-off (film-strip sprocket holes). */
+export function FilmIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="3" width="12" height="10" rx="1" />
+      <path d="M2 5.5h1.4M2 8h1.4M2 10.5h1.4M12.6 5.5H14M12.6 8H14M12.6 10.5H14" />
+      <path d="M5.5 6l4 2-4 2z" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 /** Overflow/"more" affordance — the mobile HUD's entry point to controls that
  *  don't fit a 390px row (lens, speed, branches, compare, ...). Three dots,
  *  not a hamburger: nothing here is a navigation menu, it's a control drawer. */
