@@ -173,23 +173,14 @@ bus.on('discovery:made', ({ kind, gen, rect, label }) => {
 // collisions explicitly.
 useDiscoveries.subscribe((state, prev) => {
   for (const d of state.items) {
-    if (!d.lost) continue;
-    const before = prev.items.find((p) => p.id === d.id);
-    if (before && !before.lost) {
-      const last = d.trail[d.trail.length - 1]!;
-      useAchievements.getState().unlock('collision-witnessed', last.gen, last.rect);
+    const last = d.trail[d.trail.length - 1]!;
+    if (d.lost) {
+      const before = prev.items.find((p) => p.id === d.id);
+      if (before && !before.lost) {
+        useAchievements.getState().unlock('collision-witnessed', last.gen, last.rect);
+      }
     }
     if (d.observationCount >= TRAVELLER_OBSERVATIONS) {
-      const last = d.trail[d.trail.length - 1]!;
-      useAchievements.getState().unlock('your-traveller', last.gen, last.rect);
-    }
-  }
-  // `your-traveller` doesn't require `lost` — re-check every changed item,
-  // not only the ones that just became lost, above.
-  for (const d of state.items) {
-    if (d.lost) continue;
-    if (d.observationCount >= TRAVELLER_OBSERVATIONS) {
-      const last = d.trail[d.trail.length - 1]!;
       useAchievements.getState().unlock('your-traveller', last.gen, last.rect);
     }
   }
