@@ -6,6 +6,15 @@
  * is currently covering would be worse than no coach mark at all, and two
  * floating "help" surfaces stacked at once is exactly the clutter DESIGN.md
  * warns against.
+ *
+ * Also the achievements logbook's ONE boot hook: `App.tsx`/`Hud.tsx`/
+ * `panels/**` are other agents' territory for this task, so
+ * `@/ui/achievements` mounts itself into its own DOM root rather than
+ * needing a wire-up there (see that module's doc). `TourOverlay` is already
+ * unconditionally rendered by `App.tsx` today, so calling `initAchievements()`
+ * from here — instead of proposing yet another `App.tsx` edit for a single
+ * `useEffect` — turns the feature on with zero touches outside this task's
+ * own ownership. Idempotent; safe alongside StrictMode's double-invoke.
  */
 import { useEffect } from 'react';
 import { useTourStore } from './tourStore';
@@ -13,8 +22,13 @@ import { useUIState } from '@/ui/uiState';
 import { TOUR_BEHAVIORS, tourCtx } from './behaviors';
 import { CoachMark } from './CoachMark';
 import { TOUR_STEPS } from '@/content/tour';
+import { initAchievements } from '@/ui/achievements';
 
 export function TourOverlay() {
+  useEffect(() => {
+    initAchievements();
+  }, []);
+
   const status = useTourStore((s) => s.status);
   const stepIndex = useTourStore((s) => s.stepIndex);
   const next = useTourStore((s) => s.next);
