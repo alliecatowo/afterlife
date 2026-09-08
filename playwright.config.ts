@@ -43,7 +43,7 @@ export default defineConfig({
     },
     {
       name: 'mobile',
-      testMatch: /screenshots\.spec\.ts/,
+      testMatch: /(screenshots|mobile)\.spec\.ts/,
       use: { browserName: 'chromium', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
     },
     {

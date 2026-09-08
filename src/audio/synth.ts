@@ -46,6 +46,11 @@ export class SynthGraph {
   private readonly reverbFeedbackA: GainNode;
   private readonly reverbFeedbackB: GainNode;
   private readonly reverbDamp: BiquadFilterNode;
+  /** One shared white-noise buffer, reused (never re-allocated) by both the
+   * ambient drone and any per-note timbre that needs noise (`breath`/`perc`)
+   * — many `AudioBufferSourceNode`s may reference the same `AudioBuffer`
+   * simultaneously; only the lightweight source node is per-note. */
+  private readonly noiseBuffer: AudioBuffer;
   private disposed = false;
 
   constructor(ctx: AudioContext) {
@@ -55,11 +60,13 @@ export class SynthGraph {
     this.master.gain.value = 0.0001;
     this.master.connect(ctx.destination);
 
+    this.noiseBuffer = buildNoiseBuffer(ctx);
+
     // Filtered-noise drone: always running once the context exists, gated to
     // near-silence by `droneGain` until `setDrone` is told there's a world
     // worth hearing.
     this.droneSource = ctx.createBufferSource();
-    this.droneSource.buffer = buildNoiseBuffer(ctx);
+    this.droneSource.buffer = this.noiseBuffer;
     this.droneSource.loop = true;
     this.droneFilter = ctx.createBiquadFilter();
     this.droneFilter.type = 'lowpass';
@@ -139,7 +146,10 @@ export class SynthGraph {
   }
 
   /** Render one scheduled note as a short-lived voice. Self-disposing via
-   * `onended` — callers never need to track or free these nodes. */
+   * `onended` — callers never need to track or free these nodes. The actual
+   * oscillator/noise graph varies per timbre (see `buildVoice`); this method
+   * only owns the shared envelope/pan/reverb-send plumbing every timbre goes
+   * through identically. */
   playNote(note: ScheduledNote): void {
     const { ctx } = this;
     const hz = midiToHz(note.pitch);
@@ -149,10 +159,6 @@ export class SynthGraph {
     const panner = ctx.createStereoPanner();
     panner.pan.value = Math.max(-1, Math.min(1, note.pan));
 
-    const osc = ctx.createOscillator();
-    osc.frequency.value = hz;
-    osc.type = timbreWaveform(note.timbre);
-
     const attack = timbreAttack(note.timbre);
     const release = note.duration;
     const peak = Math.max(0.001, Math.min(0.6, note.velocity));
@@ -161,7 +167,6 @@ export class SynthGraph {
     env.gain.linearRampToValueAtTime(peak, start + attack);
     env.gain.setTargetAtTime(0, start + attack, release / 3);
 
-    osc.connect(env);
     env.connect(panner);
     panner.connect(this.master);
     // A parallel send to the reverb bus — silent (see `setReverbAmount`)
@@ -169,10 +174,12 @@ export class SynthGraph {
     panner.connect(this.reverbSend);
 
     const stopAt = start + attack + release + release; // let the tail ring out
-    osc.start(start);
-    osc.stop(stopAt);
-    osc.onended = () => {
-      osc.disconnect();
+    const { primary, cleanup } = buildVoice(ctx, note.timbre, hz, start, stopAt, env, this.noiseBuffer);
+    primary.start(start);
+    primary.stop(stopAt);
+    primary.onended = () => {
+      primary.disconnect();
+      cleanup?.();
       env.disconnect();
       panner.disconnect();
     };
@@ -213,7 +220,157 @@ function timbreAttack(timbre: Timbre): number {
     case 'pad': return 0.4;
     case 'glass': return 0.01;
     case 'accent': return 0.005;
+    case 'pluck': return 0.002;
+    case 'bell': return 0.008;
+    case 'bow': return 0.35;
+    case 'breath': return 0.15;
+    case 'perc': return 0.001;
     case 'mallet':
     default: return 0.005;
+  }
+}
+
+interface Voice {
+  /** The node `playNote` calls `.start()`/`.stop()` on and sets `.onended`
+   * on — that single callback drives the whole voice's teardown. */
+  primary: AudioScheduledSourceNode;
+  /** Extra disconnect work for auxiliary nodes chained directly off
+   * `primary` (a filter, for instance) that aren't independently
+   * started/stopped nodes of their own. Called from `primary.onended`. */
+  cleanup?: () => void;
+}
+
+/**
+ * Build the oscillator/noise graph for one timbre, connected into `env`
+ * (the shared envelope `playNote` already built). Any secondary nodes a
+ * timbre needs of their OWN lifetime (a vibrato LFO, extra bell partials, a
+ * blended noise layer) are started/stopped here and given their own
+ * `onended` for self-disconnection — only the returned `primary` is the
+ * caller's responsibility. `stopAt` is an absolute time so every node in a
+ * multi-node timbre shares exactly the same stop point — nothing here ever
+ * uses `setTimeout`; all timing is `AudioContext` scheduling.
+ */
+function buildVoice(
+  ctx: AudioContext,
+  timbre: Timbre,
+  hz: number,
+  start: number,
+  stopAt: number,
+  env: GainNode,
+  noiseBuffer: AudioBuffer,
+): Voice {
+  switch (timbre) {
+    case 'bell': {
+      // A few slightly-inharmonic sine partials, upper ones fainter and
+      // shorter — the classic cheap-but-convincing bell trick. The
+      // fundamental is the primary voice (started/stopped by the caller);
+      // the upper partials are secondary, self-cleaning voices of their own.
+      const primary = ctx.createOscillator();
+      primary.type = 'sine';
+      primary.frequency.value = hz;
+      primary.connect(env);
+      const upperPartials: Array<[number, number, number]> = [[2.01, 0.35, 0.6], [3.99, 0.18, 0.35]];
+      for (const [ratio, gain, lengthScale] of upperPartials) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = hz * ratio;
+        const g = ctx.createGain();
+        g.gain.value = gain;
+        osc.connect(g);
+        g.connect(env);
+        osc.start(start);
+        osc.stop(start + (stopAt - start) * lengthScale);
+        osc.onended = () => { osc.disconnect(); g.disconnect(); };
+      }
+      return { primary };
+    }
+    case 'bow': {
+      // Slow-attack sawtooth through a gentle lowpass, with a slight
+      // vibrato — a bowed-pad quality, deliberately distinct from the
+      // plucked/mallet family.
+      const primary = ctx.createOscillator();
+      primary.type = 'sawtooth';
+      primary.frequency.value = hz;
+      const lpf = ctx.createBiquadFilter();
+      lpf.type = 'lowpass';
+      lpf.Q.value = 0.5;
+      lpf.frequency.value = Math.min(12000, hz * 3);
+      const vibrato = ctx.createOscillator();
+      vibrato.type = 'sine';
+      vibrato.frequency.value = 5;
+      const vibratoGain = ctx.createGain();
+      vibratoGain.gain.value = hz * 0.006;
+      vibrato.connect(vibratoGain);
+      vibratoGain.connect(primary.frequency);
+      primary.connect(lpf);
+      lpf.connect(env);
+      vibrato.start(start);
+      vibrato.stop(stopAt);
+      vibrato.onended = () => { vibrato.disconnect(); vibratoGain.disconnect(); };
+      return { primary, cleanup: () => lpf.disconnect() };
+    }
+    case 'pluck': {
+      // Sawtooth through a lowpass whose cutoff sweeps sharply downward —
+      // the filter envelope IS the "pluck", not the amplitude envelope.
+      const primary = ctx.createOscillator();
+      primary.type = 'sawtooth';
+      primary.frequency.value = hz;
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.Q.value = 0.4;
+      filt.frequency.setValueAtTime(Math.min(16000, hz * 8), start);
+      filt.frequency.exponentialRampToValueAtTime(Math.max(120, hz * 1.2), Math.max(start + 0.02, stopAt - (stopAt - start) * 0.3));
+      primary.connect(filt);
+      filt.connect(env);
+      return { primary, cleanup: () => filt.disconnect() };
+    }
+    case 'breath': {
+      // A soft sine blended with a bandpassed noise layer — "breathy sine".
+      const primary = ctx.createOscillator();
+      primary.type = 'sine';
+      primary.frequency.value = hz;
+      primary.connect(env);
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuffer;
+      noise.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = Math.min(9000, hz * 1.5);
+      bp.Q.value = 1.2;
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.value = 0.3;
+      noise.connect(bp);
+      bp.connect(noiseGain);
+      noiseGain.connect(env);
+      noise.start(start);
+      noise.stop(stopAt);
+      noise.onended = () => { noise.disconnect(); bp.disconnect(); noiseGain.disconnect(); };
+      return { primary };
+    }
+    case 'perc': {
+      // A short, highpassed noise burst — generative percussion/texture.
+      // The noise source itself is the primary voice here.
+      const primary = ctx.createBufferSource();
+      primary.buffer = noiseBuffer;
+      primary.loop = true;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.Q.value = 0.7;
+      hp.frequency.value = Math.max(200, Math.min(9000, hz * 2));
+      primary.connect(hp);
+      hp.connect(env);
+      return { primary, cleanup: () => hp.disconnect() };
+    }
+    case 'mallet':
+    case 'glass':
+    case 'pad':
+    case 'accent':
+    default: {
+      const primary = ctx.createOscillator();
+      primary.frequency.value = hz;
+      primary.type = timbreWaveform(timbre);
+      primary.connect(env);
+      return { primary };
+    }
   }
 }

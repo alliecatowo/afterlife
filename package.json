@@ -6,7 +6,9 @@
   "description": "AFTERLIFE — a playable observatory for tiny universes. Every future leaves a trace.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && node site/scripts/build-pages.mjs && vite build",
+    "postbuild": "node site/scripts/postbuild-flatten.mjs",
+    "build:site-pages": "node site/scripts/build-pages.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

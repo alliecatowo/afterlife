@@ -21,6 +21,12 @@ interface UILocalState {
   shortcutsOpen: boolean;
   setShortcutsOpen: (open: boolean) => void;
 
+  /** The mobile HUD's "More" sheet — everything that doesn't fit a 390px
+   *  toolbar row (lens, speed, branches, compare, ...). Desktop (`lg` and
+   *  up) never opens this; those controls render inline there instead. */
+  moreOpen: boolean;
+  setMoreOpen: (open: boolean) => void;
+
   titleDismissed: boolean;
   dismissTitle: () => void;
 
@@ -42,6 +48,9 @@ export const useUIState = create<UILocalState>((set, get) => ({
 
   shortcutsOpen: false,
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+
+  moreOpen: false,
+  setMoreOpen: (moreOpen) => set({ moreOpen }),
 
   titleDismissed: false,
   dismissTitle: () => set({ titleDismissed: true }),

@@ -1,5 +1,5 @@
 import { test } from '@playwright/test';
-import { dismissTitle, ensurePaused, openApp, waitForGen, worldToScreen } from './utils';
+import { dismissTitle, ensurePaused, openApp, openControl, waitForGen, worldToScreen } from './utils';
 import { OPENING_VERIFIED } from '../src/content/scenes';
 
 /**
@@ -58,7 +58,7 @@ test.describe('screenshots', () => {
     // behaviour) — so from here the available comparison target is
     // "Original" (root), not "branch-1" (which is now the active branch and
     // therefore excluded from its own compare-target list).
-    await page.getByRole('button', { name: 'Compare' }).click();
+    await openControl(page, 'Compare');
     await page.getByRole('button', { name: 'Original' }).click();
     await page.waitForTimeout(400);
     await shot(page, '03-compare');
@@ -77,7 +77,7 @@ test.describe('screenshots', () => {
     await page.mouse.move(box.x + box.width / 2 + 150, box.y + box.height / 2 + 150, { steps: 5 });
     await page.mouse.up();
     await page.waitForTimeout(150);
-    await page.getByRole('button', { name: 'Open time sculpture' }).click();
+    await openControl(page, 'Open time sculpture');
     await page.waitForTimeout(1200); // let the flat -> three-quarter camera intro settle
     await shot(page, '04-sculpture');
   });
@@ -86,7 +86,7 @@ test.describe('screenshots', () => {
     await openApp(page);
     await dismissTitle(page);
     await page.waitForTimeout(6000); // give ambient scanning a couple of passes
-    await page.getByRole('button', { name: 'Field guide' }).click();
+    await openControl(page, 'Field guide');
     await page.waitForTimeout(200);
     await shot(page, '05-field-guide');
   });
@@ -94,7 +94,7 @@ test.describe('screenshots', () => {
   test('an experiment', async ({ page }) => {
     await openApp(page);
     await dismissTitle(page);
-    await page.getByRole('button', { name: 'Experiments' }).click();
+    await openControl(page, 'Experiments');
     await page.getByRole('button', { name: 'Start' }).first().click();
     await page.waitForTimeout(600);
     await shot(page, '06-experiment');

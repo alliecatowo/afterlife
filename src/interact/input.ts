@@ -121,6 +121,12 @@ class InputControllerImpl implements InputController {
 
   #dragMode: DragMode = null;
   #activePointerId: number | null = null;
+  /** Has the ACTIVE single-pointer gesture moved at all since its pointerdown?
+   *  Used only to tell a genuine one-finger tap-that-became-a-pinch (a second
+   *  finger landing before the first ever moved — see `#onPointerDown`'s
+   *  `activeTouches.size === 2` branch) apart from a real, deliberate stroke
+   *  a second finger later joins mid-drag. */
+  #dragMoved = false;
   #lastCell: CellCoord | null = null;
   #lastPanScreen: { x: number; y: number } | null = null;
   #selectStart: CellCoord | null = null;
@@ -354,7 +360,24 @@ class InputControllerImpl implements InputController {
     if (e.pointerType === 'touch') {
       this.#activeTouches.set(e.pointerId, { x: sx, y: sy });
       if (this.#activeTouches.size === 2) {
-        this.#stopDrag();
+        // A second finger just landed. If the first finger's gesture is an
+        // as-yet-unmoved draw/erase touchdown, this reads as the START of a
+        // two-finger pinch that merely arrived one pointerdown event later
+        // than the first finger (real touch hardware — and this app's own
+        // CDP-driven tests — never report two fingers as a single atomic
+        // event; PointerEvents are always one pointer per event, even for
+        // fingers that physically landed in the same frame) — NOT a
+        // one-finger tap the user meant as a draw. Discard that single
+        // accidental paint instead of committing it, so starting a pinch
+        // never leaves a stray cell behind. A stroke that had ALREADY moved
+        // before the second finger joined is a different, deliberate
+        // gesture — that one still commits via the normal `#stopDrag()`
+        // path, unchanged.
+        if ((this.#dragMode === 'draw' || this.#dragMode === 'erase') && !this.#dragMoved) {
+          this.#cancelUnmovedSingleFingerGesture();
+        } else {
+          this.#stopDrag();
+        }
         this.#beginPinch();
         return;
       }
@@ -369,6 +392,7 @@ class InputControllerImpl implements InputController {
     const touchPan = e.pointerType === 'touch' && tool === 'pan';
 
     this.#activePointerId = e.pointerId;
+    this.#dragMoved = false;
 
     if (middlePan || spacePan || (tool === 'pan' && e.button === 0) || touchPan) {
       this.#dragMode = 'pan';
@@ -438,6 +462,7 @@ class InputControllerImpl implements InputController {
     }
 
     if (e.pointerId !== this.#activePointerId) return;
+    this.#dragMoved = true;
 
     if (this.#dragMode === 'pan') {
       const last = this.#lastPanScreen!;
@@ -505,6 +530,22 @@ class InputControllerImpl implements InputController {
     this.#moveCurrentAt = null;
   }
 
+  /**
+   * The pinch-starting counterpart to `#stopDrag()`: discards a draw/erase
+   * gesture's single not-yet-moved touchdown cell instead of committing it
+   * (see the `activeTouches.size === 2` branch in `#onPointerDown`). Never
+   * touches the undo stack or fires `onGestureEnd` — nothing here should be
+   * observable as a completed edit, because nothing was actually drawn.
+   */
+  #cancelUnmovedSingleFingerGesture(): void {
+    this.#pendingMap = null;
+    this.#gesturePrior = null;
+    this.#renderer.setStrokePreview(null);
+    this.#dragMode = null;
+    this.#activePointerId = null;
+    this.#lastCell = null;
+  }
+
   /** Commits (or cancels, if nothing moved and it wasn't a duplicate) the in-progress move/duplicate drag. */
   #commitMoveSelection(): void {
     const origin = this.#moveOrigin;
@@ -566,12 +607,28 @@ class InputControllerImpl implements InputController {
     this.#pinchLastMid = mid;
   }
 
-  #endPinch(): void {
-    if (this.#activeTouches.size < 2) {
-      this.#dragMode = null;
-      this.#lastPanScreen = null;
-    }
-  }
+  /**
+   * BUG (mobile): this used to unconditionally null out `#dragMode`/
+   * `#lastPanScreen` whenever fewer than 2 touches remained — which is
+   * every ordinary one-finger gesture's own pointerup, not just a real
+   * two-finger pinch ending. `#onPointerUp` calls this BEFORE `#stopDrag()`
+   * reads `#dragMode` to decide whether to commit, so it silently erased
+   * `#dragMode` out from under every single-finger draw/erase/select/
+   * moveSelection gesture right before `#stopDrag()` could act on it —
+   * `#finishGesture()`/`#commitMoveSelection()` never ran, so nothing a
+   * finger drew ever committed to the engine (the stroke preview looked
+   * right while dragging, then evaporated on lift). Mouse and the
+   * "second finger lands mid-stroke" path were unaffected: neither goes
+   * through this method with `#dragMode` still holding a real value —
+   * a genuine two-finger pinch never sets `#dragMode` in the first place
+   * (see `#onPointerDown`'s `activeTouches.size === 2` branch, which calls
+   * `#stopDrag()` — clearing `#dragMode` correctly, THROUGH the normal
+   * path — before `#beginPinch()`), so this method has nothing of its own
+   * left to clean up. Kept as a named no-op rather than deleted: it
+   * documents that pinch-end intentionally defers all state teardown to
+   * `#stopDrag()`, the single place that owns it.
+   */
+  #endPinch(): void {}
 
   // ---- wheel ---------------------------------------------------------
 

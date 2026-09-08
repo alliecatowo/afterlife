@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveTourTarget } from '@/ui/tutorial/targeting';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveTourTarget, resolveTourTargetElement } from '@/ui/tutorial/targeting';
+import * as sessionModule from '@/ui/session';
 
 /** jsdom never actually lays anything out, so every element's real
  *  `getBoundingClientRect()` is always a zero rect regardless of CSS —
@@ -82,5 +83,63 @@ describe('tutorial: resolveTourTarget', () => {
     // no `initSession()`) — `getSession()` returns null, so this must
     // degrade to "no target" rather than throw.
     expect(resolveTourTarget({ kind: 'world', at: { x: 123, y: 94 } })).toBeNull();
+  });
+
+  describe('kind "world" — follows the live camera transform', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function stubSession(scale: number, screenPoint: { x: number; y: number }) {
+      vi.spyOn(sessionModule, 'getSession').mockReturnValue({
+        camera: { camera: { x: 0, y: 0, scale } },
+        renderer: { worldToScreen: () => screenPoint },
+        // Only the two properties above are read by `resolveTourTarget`.
+      } as unknown as sessionModule.Session);
+    }
+
+    it('centers the cutout on the live screen projection of the world point', () => {
+      stubSession(10, { x: 500, y: 300 });
+      const rect = resolveTourTarget({ kind: 'world', at: { x: 40, y: 12 } })!;
+      expect(rect.x + rect.width / 2).toBeCloseTo(500, 5);
+      expect(rect.y + rect.height / 2).toBeCloseTo(300, 5);
+    });
+
+    it('grows with camera scale (zooming in enlarges the highlighted patch)', () => {
+      stubSession(4, { x: 0, y: 0 });
+      const zoomedOut = resolveTourTarget({ kind: 'world', at: { x: 0, y: 0 } })!;
+      stubSession(40, { x: 0, y: 0 });
+      const zoomedIn = resolveTourTarget({ kind: 'world', at: { x: 0, y: 0 } })!;
+      expect(zoomedIn.width).toBeGreaterThan(zoomedOut.width);
+    });
+
+    it('has a screen-space floor so it is never imperceptibly small when fully zoomed out', () => {
+      stubSession(0.1, { x: 0, y: 0 });
+      const rect = resolveTourTarget({ kind: 'world', at: { x: 0, y: 0 } })!;
+      expect(rect.width).toBeGreaterThanOrEqual(24);
+    });
+  });
+
+  describe('resolveTourTargetElement', () => {
+    it('is null for "center" and "world" targets', () => {
+      expect(resolveTourTargetElement({ kind: 'center' })).toBeNull();
+      expect(resolveTourTargetElement({ kind: 'world', at: { x: 1, y: 1 } })).toBeNull();
+    });
+
+    it('returns the same element resolveTourTarget used, for "selector"', () => {
+      const el = document.createElement('div');
+      el.id = 'hud-top';
+      document.body.appendChild(el);
+      stubRect(el, { x: 0, y: 0, width: 1440, height: 48 });
+      expect(resolveTourTargetElement({ kind: 'selector', selectors: ['#hud-top'] })).toBe(el);
+    });
+
+    it('returns the accessible-name match for "role"', () => {
+      const btn = document.createElement('button');
+      btn.setAttribute('role', 'radio');
+      btn.textContent = 'Draw';
+      document.body.appendChild(btn);
+      expect(resolveTourTargetElement({ kind: 'role', role: 'radio', name: 'Draw' })).toBe(btn);
+    });
   });
 });

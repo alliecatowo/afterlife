@@ -306,7 +306,13 @@ class WorldRendererImpl implements WorldRenderer {
   resize(): void {
     if (!this.#canvas) return;
     const rect = this.#canvas.getBoundingClientRect();
-    this.#dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    // Capped at 2x, same as `@/ui/timeline/Timeline`'s ribbon canvas: a 3x
+    // phone screen (iPhone Pro class) would otherwise size the backing
+    // buffer at 3x CSS pixels, tripling fill-rate cost for a sharpness gain
+    // invisible on a cellular-automaton grid of flat-colour rects. Purely a
+    // display-resolution cap — never touches simulation state, camera math,
+    // or world-space coordinates, all of which stay in CSS/world units.
+    this.#dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     this.#cssW = Math.max(1, rect.width || this.#canvas.clientWidth || 1);
     this.#cssH = Math.max(1, rect.height || this.#canvas.clientHeight || 1);
     const dw = Math.max(1, Math.round(this.#cssW * this.#dpr));

@@ -214,3 +214,69 @@ is now exported (was a private helper) for reuse by the cinematic director.
 
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-07 — guide — marketing landing page + wiki/docs (`site/**`, new)
+
+**Need:** n/a — informational record, plus one exact diff for whoever owns `src/ui` to
+apply (I was told not to touch `src/**` myself).
+
+**What shipped:** a new marketing/explainer landing page and an 8-page wiki, built as a
+plain HTML+TS (no React) multi-page Vite site under `site/**`, served at `/afterlife/guide/`
+alongside the app at `/afterlife/` (unchanged). Reuses `src/styles/tokens.css` read-only
+(imported into `site/shared/site.css`, never edited) for full visual consistency — same
+palette, type scale, Fraunces/Inter/JetBrains Mono, radius, motion. Content (fundamentals,
+the 24-specimen catalogue, keyboard shortcuts, verification numbers) is transcribed from
+`src/content/specimens.ts`, `src/ui/dialogs/ShortcutsDialog.tsx` and
+`docs/VERIFICATION-SUMMARY.md` — nothing invented. `site/scripts/build-pages.mjs` generates
+the actual HTML files from templates (run automatically as part of `npm run build`, before
+`vite build`); `site/scripts/postbuild-flatten.mjs` runs as npm's `postbuild` lifecycle
+script afterward to relocate Vite's mirrored `dist/site/guide/**` output up to `dist/guide/**`
+(chosen as an npm lifecycle hook specifically so it does NOT swallow a forwarded
+`--base=/afterlife/` flag the way appending it directly to the `build` script would).
+New Playwright spec: `e2e/guide.spec.ts` (guide/wiki pages load, nav links resolve, app root
+still loads). Verified: `npm run build -- --base=/afterlife/`'s `vite build` step (independent
+of the pre-existing, unrelated `tsc --noEmit` failure in `src/audio/midi.ts` — not mine, not
+touched) + postbuild flatten together correctly emit `dist/guide/**`, and a real
+`vite preview --base=/afterlife/` serves both `/afterlife/` (app, untouched bundle/URLs) and
+`/afterlife/guide/**` correctly; `e2e/prod-build.spec.ts` still passes unmodified.
+
+**Frozen files I touched, per this task's explicit instructions (overriding the general
+frozen-file rule above for these two files only):**
+- `vite.config.ts` — added `rollupOptions.input` entries for the 9 guide/wiki HTML pages
+  (the app's own `index.html` entry is unchanged, same output), and a dev-only Vite plugin
+  (`guideDevAliasPlugin`) that rewrites `/afterlife/*` → `/*` and `/guide/*` →
+  `/site/guide/*` in `vite dev` only (`apply: 'serve'`) so the guide's absolute hrefs resolve
+  identically in dev and in the deployed build. No change to `build.target`,
+  `build.sourcemap`, `resolve.alias`, or `server.port`.
+- `index.html` — added one `<link rel="icon">` pointing at the guide's new favicon. No other
+  line touched.
+- `package.json` (not in the frozen list, but flagging anyway) — added `postbuild` and
+  `build:site-pages` scripts; `build`'s command string itself is unchanged.
+- `.github/workflows/deploy.yml` — unchanged; `npm run build -- --base=/afterlife/` already
+  triggers the new `postbuild` step automatically via npm's lifecycle, no edit needed there.
+
+**Exact one-line diff for the `ui`/`tutorial` owner to apply** in
+`src/ui/tutorial/AboutDialog.tsx` (I did not make this edit myself — it's under `src/`):
+
+```diff
+         <Divider />
+         <div className="flex flex-wrap justify-end gap-2">
++          <a
++            href="/afterlife/guide/"
++            className="inline-flex h-7 items-center justify-center rounded-sm border border-line px-3 text-xs text-ivory-200 hover:bg-ink-700 hover:text-ivory-100 focus-ring"
++          >
++            Read the guide
++          </a>
+           <Button
+             variant="solid"
+             size="sm"
+             onClick={() => { setOpen(false); startTour(true); }}
+```
+
+(Styled to match `Button`'s `ghost` variant classes exactly since `Button` itself renders a
+`<button>`, not an anchor, and this needs to be a real link for a right-click/open-in-new-tab
+to work.)
+
+**Blocking?** no.
+**Resolution:** n/a.
+

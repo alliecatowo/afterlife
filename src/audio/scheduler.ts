@@ -36,8 +36,15 @@ export const LOOKAHEAD_SECONDS = 0.2;
 /** Hard cap on simultaneously-sounding voices, across all note sources. */
 export const MAX_VOICES = 8;
 
-export type Timbre = 'mallet' | 'glass' | 'pad' | 'accent';
-export type NoteSource = 'churn' | 'discovery' | 'audition';
+/**
+ * `mallet`/`glass`/`pad`/`accent` are the original four; `pluck`/`bell`/`bow`/
+ * `breath`/`perc` were added so different event classes can have genuinely
+ * different timbral identities (see `settings.ts`'s `TIMBRE_SETS` and
+ * `synth.ts`'s per-timbre voice builders) — "the world becomes legible by
+ * ear." All are synthesised (oscillators/filters/noise), never samples.
+ */
+export type Timbre = 'mallet' | 'glass' | 'pad' | 'accent' | 'pluck' | 'bell' | 'bow' | 'breath' | 'perc';
+export type NoteSource = 'churn' | 'discovery' | 'audition' | 'paint' | 'stamp' | 'branch' | 'percussion';
 
 export interface NoteRequest {
   /** MIDI note number. Callers are expected to have already quantised this

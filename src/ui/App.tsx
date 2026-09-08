@@ -184,17 +184,26 @@ export function App() {
       <div
         ref={rootRef}
         className={
+          // Rows grow by the notch/home-indicator inset (via `env()`) rather
+          // than the fixed `--size-hud`/`--size-timeline` tokens shrinking to
+          // fit inside it — a real iPhone's safe area would otherwise eat
+          // straight into the 48px HUD row's already-tight icon row. `_+_`
+          // is Tailwind's escape for the literal space CSS `calc()` requires
+          // around `+`/`-` (a bare `+` with no surrounding space is invalid
+          // calc syntax and silently no-ops). `env(safe-area-inset-*)`
+          // resolves to `0px` on any device without a safe area (desktop,
+          // older phones), so this is a no-op there.
           'grid h-full w-full bg-ink-900 text-ivory-200 ' +
           (presentation
             ? 'grid-rows-[0_1fr_0]'
-            : 'grid-rows-[var(--size-hud)_1fr_var(--size-timeline)]')
+            : 'grid-rows-[calc(var(--size-hud)_+_env(safe-area-inset-top))_1fr_calc(var(--size-timeline)_+_env(safe-area-inset-bottom))]')
         }
       >
         <header
           id="hud-top"
           className={
             'relative z-[var(--z-chrome)] overflow-hidden border-line bg-ink-800 transition-[height] duration-[var(--duration-base)] ' +
-            (presentation ? 'h-0 border-b-0' : 'h-[var(--size-hud)] border-b')
+            (presentation ? 'h-0 border-b-0' : 'h-[calc(var(--size-hud)_+_env(safe-area-inset-top))] border-b')
           }
         >
           <Hud />
@@ -247,7 +256,24 @@ export function App() {
               // `#panel-right` into column 2 (the world's own 1fr track),
               // leaving the canvas at 0 width. Pinning every child to its
               // column makes that immune to which siblings are hidden.
-              'data-[open=true]:translate-x-0 md:static md:z-auto md:col-start-1 md:w-auto md:max-w-none md:translate-x-0 ' +
+              // `data-[open=false]:pointer-events-none` (mobile sheet mode
+              // only — `md:pointer-events-auto` restores it for the desktop
+              // rail, which is never actually "closed" the same way):
+              // closing this still takes `--duration-base` (220ms) to slide
+              // fully off-screen. Without this, a tap landing in the strip
+              // it's still animating across during that window hits the
+              // now-logically-closed drawer instead of the canvas
+              // underneath it — real, findable jank on a quick two-tap
+              // sequence (close, then immediately draw/select in that
+              // region), not just a test timing artifact.
+              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:pointer-events-auto md:static md:z-auto md:col-start-1 md:w-auto md:max-w-none md:translate-x-0 ' +
+              // Only matters in the mobile `fixed inset-y-0` sheet mode above
+              // (`md:static` opts back into the ordinary grid row, which is
+              // already safe-area-aware via the header/footer track heights):
+              // this sheet spans the full viewport height directly, including
+              // any notch/home-indicator band the header/footer rows don't
+              // cover for it.
+              'pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] md:p-0 ' +
               (presentation ? 'md:hidden' : 'min-h-0 overflow-y-auto md:block')
             }
           >
@@ -304,9 +330,12 @@ export function App() {
               // See `#drawer-left`'s comment: explicit column placement so
               // this aside can never slide into the world's own track just
               // because `#drawer-left` happens to be `display:none`.
-              'data-[open=true]:translate-x-0 md:static md:z-auto md:col-start-3 md:max-w-none md:translate-x-0 ' +
+              // See `#drawer-left`'s matching comment above.
+              'data-[open=true]:translate-x-0 data-[open=false]:pointer-events-none md:pointer-events-auto md:static md:z-auto md:col-start-3 md:max-w-none md:translate-x-0 ' +
               (rightPanel ? 'md:w-auto' : 'md:w-0 md:translate-x-0') +
               ' min-h-0 overflow-y-auto ' +
+              // See `#drawer-left`'s matching comment.
+              'pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pr-[env(safe-area-inset-right)] md:p-0 ' +
               (presentation ? 'md:hidden' : '')
             }
           >
@@ -327,7 +356,7 @@ export function App() {
           id="timeline"
           className={
             'relative z-[var(--z-chrome)] overflow-hidden border-line bg-ink-800 px-4 transition-[height] duration-[var(--duration-base)] ' +
-            (presentation ? 'h-0 border-t-0' : 'h-[var(--size-timeline)] border-t')
+            (presentation ? 'h-0 border-t-0' : 'h-[calc(var(--size-timeline)_+_env(safe-area-inset-bottom))] border-t')
           }
         >
           <Timeline />
@@ -335,7 +364,7 @@ export function App() {
 
         <div
           id="toast-layer"
-          className="pointer-events-none fixed bottom-[calc(var(--size-timeline)+var(--spacing)*4)] left-1/2 z-[var(--z-toast)] -translate-x-1/2"
+          className="pointer-events-none fixed bottom-[calc(var(--size-timeline)_+_env(safe-area-inset-bottom)_+_var(--spacing)*4)] left-1/2 z-[var(--z-toast)] -translate-x-1/2"
           role="status"
           aria-live="polite"
         />

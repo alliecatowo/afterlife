@@ -207,7 +207,7 @@ export function Timeline() {
   }, [commitScrub, dragGen]);
 
   return (
-    <div className="flex h-full flex-col justify-center gap-1 py-1.5">
+    <div className="flex h-full flex-col justify-center gap-1 py-1.5 pb-[env(safe-area-inset-bottom)]">
       <div className="flex items-baseline justify-between text-micro uppercase tracking-[0.18em] text-ivory-300">
         <span>
           {branchName}

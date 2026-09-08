@@ -21,15 +21,32 @@
  *    state flip (whether from `step()` or a direct `set()`/`stamp()`), otherwise
  *    multiplied by `activityDecay` (default 0.88) every step. `activityAt`
  *    normalises this to [0, 1].
+ *  - `hue` / `species`: cosmetic colour state for the "lineage" family of
+ *    render lenses (see `@/core/lineage.ts` for the full rulebook). Neither
+ *    is ever read by `step()`'s B3/S23 decision — colour rides along AFTER
+ *    the alive/dead outcome is final, never influences it. `hue` is a
+ *    continuous degree value blended (circular mean) from a newborn's three
+ *    parents; `species` is a discrete 1..4 value chosen by the classic
+ *    Immigration/QuadLife majority-of-three rule. Survivors keep both
+ *    unchanged; death zeroes both.
  *
  * `snapshot()` / `restore()` only round-trip `{ gen, bits }` (see `Snapshot` in
  * `types.ts`) — `bits` is a fresh row-major `Uint8Array` copy, one byte per
- * cell, `1 = alive`, this is the entire encoding. `age`/`activity` are
- * cosmetic per-lens data, not part of the deterministic world state, and are
- * reset on `restore()`.
+ * cell, `1 = alive`, this is the entire encoding. `age`/`activity`/`hue`/
+ * `species` are cosmetic per-lens data, not part of the deterministic world
+ * state, and are reset on `restore()` to a deterministic position-derived
+ * default (see `regionHue`/`regionSpecies` in `@/core/lineage.ts`). Unlike
+ * `age` (which self-corrects as replay steps forward, since true age is
+ * exactly "steps since restore + whatever `restore()` set"), a colour value
+ * belonging to a long-lived SURVIVOR never gets recomputed again until that
+ * cell dies and is reborn — so a flat post-restore default would NOT be
+ * corrected by replay alone. `snapshotColors()`/`restoreColors()` exist so
+ * `history.ts` can carry the true colour state through keyframes/branches
+ * and get it bit-exact too; see that module's doc.
  */
 
 import { makeRng } from './rng';
+import { circularMean3, quadSpeciesFromParents, regionHue, regionSpecies, spontaneousHue, spontaneousSpecies } from './lineage';
 import type {
   CellCoord,
   Generation,
@@ -87,6 +104,45 @@ export interface LifeEngine {
   activityAt(x: number, y: number): number;
 
   /**
+   * Continuous lineage hue in degrees [0, 360). Meaningless (but always 0,
+   * never stale garbage) when the cell is dead. See `@/core/lineage.ts`.
+   * Used by the 'lineage' lens.
+   */
+  hueAt(x: number, y: number): number;
+
+  /**
+   * Discrete Immigration/QuadLife species: 0 = dead/none, else 1..4. See
+   * `@/core/lineage.ts`. Used by the 'immigration' (coarsened to 2 buckets)
+   * and 'quadlife' (full 4-colour) lenses.
+   */
+  speciesAt(x: number, y: number): number;
+
+  /**
+   * Count of live neighbours (0..8), wrapping toroidally. Purely derived
+   * from the current bits — nothing to snapshot. Used by the 'neighbors' and
+   * 'velocity' lenses. Not on the `step()` hot path (that loop tracks the sum
+   * inline for performance); this is a convenience for render/tests that
+   * doesn't need to be as fast since it's only ever called for cells inside
+   * the visible viewport.
+   */
+  liveNeighborCount(x: number, y: number): number;
+
+  /**
+   * Fresh copies of the cosmetic colour buffers, for `history.ts` to fold
+   * into a keyframe alongside the bits `Snapshot`. See the module doc for
+   * why colour needs its own keyframe rather than being re-derivable from
+   * `restore()` + replay alone.
+   */
+  snapshotColors(): ColorSnapshot;
+
+  /**
+   * Replace the colour buffers in place. `hue.length`/`species.length` must
+   * equal `spec.width * spec.height` or this throws, matching `restore()`'s
+   * validation style. Never mutates `bits`/`gen`/`age`/`activity`.
+   */
+  restoreColors(c: ColorSnapshot): void;
+
+  /**
    * Visit every live cell whose coordinates fall inside `rect`. `rect` may
    * extend past world bounds; coordinates passed to `cb` are already wrapped
    * into world space. Iteration order is row-major. Return `false` from `cb`
@@ -98,11 +154,11 @@ export interface LifeEngine {
    * Deterministically fill the world with random noise.
    * @param rngSeed number or string seed, fed to `makeRng`.
    * @param density probability a given cell starts alive, in [0, 1].
-   * Resets `gen` to 0 and clears age/activity.
+   * Resets `gen` to 0 and clears age/activity/hue/species.
    */
   seed(rngSeed: number | string, density: number): void;
 
-  /** Kill everything. Resets `gen` to 0 and clears age/activity. */
+  /** Kill everything. Resets `gen` to 0 and clears age/activity/hue/species. */
   clear(): void;
 
   /**
@@ -117,6 +173,18 @@ export interface LifeEngine {
    * 1 = alive. Reads wrap toroidally.
    */
   region(rect: Rect): Uint8Array;
+}
+
+/**
+ * The cosmetic colour buffers, snapshotted/restored as a pair (never split)
+ * so a keyframe's hue and species always agree with each other. See the
+ * module doc and `@/core/lineage.ts`.
+ */
+export interface ColorSnapshot {
+  /** Degrees [0, 360), one per cell, row-major. 0 for dead cells. */
+  hue: Float32Array;
+  /** 0 (dead/none) or 1..4, one per cell, row-major. */
+  species: Uint8Array;
 }
 
 /** Options for constructing an engine. */
@@ -198,6 +266,11 @@ class DenseTorusEngine implements LifeEngine {
   private next: Uint8Array;
   private age: Uint16Array;
   private activity: Uint8Array;
+  private hue: Float32Array;
+  private species: Uint8Array;
+  /** Reused scratch buffer for gathering a birth's 3 parent indices — avoids
+   *  an array allocation per birth on the `step()` hot path. */
+  private readonly parentScratch = new Int32Array(3);
 
   private _gen: Generation = 0;
   private _population = 0;
@@ -214,6 +287,8 @@ class DenseTorusEngine implements LifeEngine {
     this.next = new Uint8Array(n);
     this.age = new Uint16Array(n);
     this.activity = new Uint8Array(n);
+    this.hue = new Float32Array(n);
+    this.species = new Uint8Array(n);
   }
 
   get gen(): Generation {
@@ -242,6 +317,55 @@ class DenseTorusEngine implements LifeEngine {
     this._population += nv === 1 ? 1 : -1;
     this.age[idx] = nv === 1 ? 1 : 0;
     this.activity[idx] = 255;
+    if (nv === 1) {
+      // Spontaneous creation (a direct edit or `stamp()`) has no simulated
+      // parents to inherit from — assign a deterministic starter colour from
+      // position + the current generation (see `@/core/lineage.ts`), so
+      // replaying the same `EditOp` at the same generation always reproduces
+      // the same colour.
+      this.hue[idx] = spontaneousHue(x, y, this._gen);
+      this.species[idx] = spontaneousSpecies(x, y, this._gen);
+    } else {
+      this.hue[idx] = 0;
+      this.species[idx] = 0;
+    }
+  }
+
+  /**
+   * Birth-only colour bookkeeping. `i0..i7` are the 8 neighbour buffer
+   * indices already read by the caller for the B3/S23 sum, `v0..v7` their
+   * `cur[]` values (0/1) at those same indices — a birth always has exactly
+   * 3 alive among them (`n === 3` is `step()`'s own birth precondition, and
+   * the only place this is called from). Takes 16 scalar args rather than
+   * two arrays deliberately: this runs once per BIRTH, which in a dense
+   * random soup's early generations can be a large fraction of a 512x512
+   * world's cells, and array-literal allocation there was measurably
+   * wasteful GC pressure on the `step()` hot path. Reads `hue`/`species` at
+   * the 3 alive neighbours found and writes the newborn's blended hue /
+   * majority-vote species at `idx`. Pure bookkeeping — this NEVER
+   * influences `nv` (already decided by the caller); colour rides along
+   * strictly after the fact. See `@/core/lineage.ts`.
+   */
+  private inheritColor(
+    idx: number,
+    i0: number, i1: number, i2: number, i3: number, i4: number, i5: number, i6: number, i7: number,
+    v0: number, v1: number, v2: number, v3: number, v4: number, v5: number, v6: number, v7: number,
+  ): void {
+    const scratch = this.parentScratch;
+    let pc = 0;
+    if (v0 === 1) scratch[pc++] = i0;
+    if (pc < 3 && v1 === 1) scratch[pc++] = i1;
+    if (pc < 3 && v2 === 1) scratch[pc++] = i2;
+    if (pc < 3 && v3 === 1) scratch[pc++] = i3;
+    if (pc < 3 && v4 === 1) scratch[pc++] = i4;
+    if (pc < 3 && v5 === 1) scratch[pc++] = i5;
+    if (pc < 3 && v6 === 1) scratch[pc++] = i6;
+    if (pc < 3 && v7 === 1) scratch[pc++] = i7;
+    const p0 = scratch[0]!;
+    const p1 = scratch[1]!;
+    const p2 = scratch[2]!;
+    this.hue[idx] = circularMean3(this.hue[p0]!, this.hue[p1]!, this.hue[p2]!);
+    this.species[idx] = quadSpeciesFromParents(this.species[p0]!, this.species[p1]!, this.species[p2]!);
   }
 
   step(): Generation {
@@ -251,6 +375,8 @@ class DenseTorusEngine implements LifeEngine {
     const nxt = this.next;
     const age = this.age;
     const activity = this.activity;
+    const hue = this.hue;
+    const species = this.species;
     const decay = this.decay;
     let pop = 0;
 
@@ -264,18 +390,32 @@ class DenseTorusEngine implements LifeEngine {
       // Interior columns: plain integer offsets, no wrap arithmetic.
       for (let x = 1; x < w - 1; x++) {
         const idx = row + x;
-        const n =
-          cur[rowUp + x - 1]! + cur[rowUp + x]! + cur[rowUp + x + 1]! +
-          cur[row + x - 1]! + cur[row + x + 1]! +
-          cur[rowDown + x - 1]! + cur[rowDown + x]! + cur[rowDown + x + 1]!;
+        const iUL = rowUp + x - 1, iU = rowUp + x, iUR = rowUp + x + 1;
+        const iL = row + x - 1, iR = row + x + 1;
+        const iDL = rowDown + x - 1, iD = rowDown + x, iDR = rowDown + x + 1;
+        const vUL = cur[iUL]!, vU = cur[iU]!, vUR = cur[iUR]!;
+        const vL = cur[iL]!, vR = cur[iR]!;
+        const vDL = cur[iDL]!, vD = cur[iD]!, vDR = cur[iDR]!;
+        const n = vUL + vU + vUR + vL + vR + vDL + vD + vDR;
         const was = cur[idx]!;
         const nv = n === 3 || (n === 2 && was === 1) ? 1 : 0;
         nxt[idx] = nv;
         if (nv === 1) {
           pop++;
-          age[idx] = was === 1 ? (age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE) : 1;
+          if (was === 1) {
+            age[idx] = age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE;
+          } else {
+            age[idx] = 1;
+            this.inheritColor(
+              idx,
+              iUL, iU, iUR, iL, iR, iDL, iD, iDR,
+              vUL, vU, vUR, vL, vR, vDL, vD, vDR,
+            );
+          }
         } else {
           age[idx] = 0;
+          hue[idx] = 0;
+          species[idx] = 0;
         }
         activity[idx] = nv !== was ? 255 : Math.floor(activity[idx]! * decay);
       }
@@ -286,18 +426,32 @@ class DenseTorusEngine implements LifeEngine {
         const xL = w - 1;
         const xR = w === 1 ? 0 : 1;
         const idx = row + x;
-        const n =
-          cur[rowUp + xL]! + cur[rowUp + x]! + cur[rowUp + xR]! +
-          cur[row + xL]! + cur[row + xR]! +
-          cur[rowDown + xL]! + cur[rowDown + x]! + cur[rowDown + xR]!;
+        const iUL = rowUp + xL, iU = rowUp + x, iUR = rowUp + xR;
+        const iL = row + xL, iR = row + xR;
+        const iDL = rowDown + xL, iD = rowDown + x, iDR = rowDown + xR;
+        const vUL = cur[iUL]!, vU = cur[iU]!, vUR = cur[iUR]!;
+        const vL = cur[iL]!, vR = cur[iR]!;
+        const vDL = cur[iDL]!, vD = cur[iD]!, vDR = cur[iDR]!;
+        const n = vUL + vU + vUR + vL + vR + vDL + vD + vDR;
         const was = cur[idx]!;
         const nv = n === 3 || (n === 2 && was === 1) ? 1 : 0;
         nxt[idx] = nv;
         if (nv === 1) {
           pop++;
-          age[idx] = was === 1 ? (age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE) : 1;
+          if (was === 1) {
+            age[idx] = age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE;
+          } else {
+            age[idx] = 1;
+            this.inheritColor(
+              idx,
+              iUL, iU, iUR, iL, iR, iDL, iD, iDR,
+              vUL, vU, vUR, vL, vR, vDL, vD, vDR,
+            );
+          }
         } else {
           age[idx] = 0;
+          hue[idx] = 0;
+          species[idx] = 0;
         }
         activity[idx] = nv !== was ? 255 : Math.floor(activity[idx]! * decay);
       }
@@ -309,18 +463,32 @@ class DenseTorusEngine implements LifeEngine {
         const xL = x - 1;
         const xR = 0;
         const idx = row + x;
-        const n =
-          cur[rowUp + xL]! + cur[rowUp + x]! + cur[rowUp + xR]! +
-          cur[row + xL]! + cur[row + xR]! +
-          cur[rowDown + xL]! + cur[rowDown + x]! + cur[rowDown + xR]!;
+        const iUL = rowUp + xL, iU = rowUp + x, iUR = rowUp + xR;
+        const iL = row + xL, iR = row + xR;
+        const iDL = rowDown + xL, iD = rowDown + x, iDR = rowDown + xR;
+        const vUL = cur[iUL]!, vU = cur[iU]!, vUR = cur[iUR]!;
+        const vL = cur[iL]!, vR = cur[iR]!;
+        const vDL = cur[iDL]!, vD = cur[iD]!, vDR = cur[iDR]!;
+        const n = vUL + vU + vUR + vL + vR + vDL + vD + vDR;
         const was = cur[idx]!;
         const nv = n === 3 || (n === 2 && was === 1) ? 1 : 0;
         nxt[idx] = nv;
         if (nv === 1) {
           pop++;
-          age[idx] = was === 1 ? (age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE) : 1;
+          if (was === 1) {
+            age[idx] = age[idx]! < MAX_AGE ? age[idx]! + 1 : MAX_AGE;
+          } else {
+            age[idx] = 1;
+            this.inheritColor(
+              idx,
+              iUL, iU, iUR, iL, iR, iDL, iD, iDR,
+              vUL, vU, vUR, vL, vR, vDL, vD, vDR,
+            );
+          }
         } else {
           age[idx] = 0;
+          hue[idx] = 0;
+          species[idx] = 0;
         }
         activity[idx] = nv !== was ? 255 : Math.floor(activity[idx]! * decay);
       }
@@ -346,12 +514,23 @@ class DenseTorusEngine implements LifeEngine {
     this._gen = s.gen;
     this.age.fill(0);
     this.activity.fill(0);
+    const w = this.spec.width;
     let pop = 0;
     for (let i = 0; i < n; i++) {
       const alive = this.current[i] === 1;
       if (alive) {
         pop++;
         this.age[i] = 1;
+        // Best-effort deterministic default — true history (if any) is
+        // restored on top of this by `history.ts` via `restoreColors()`
+        // immediately after calling this method. See the module doc.
+        const x = i % w;
+        const y = (i - x) / w;
+        this.hue[i] = regionHue(x, y);
+        this.species[i] = regionSpecies(x, y);
+      } else {
+        this.hue[i] = 0;
+        this.species[i] = 0;
       }
     }
     this._population = pop;
@@ -363,6 +542,8 @@ class DenseTorusEngine implements LifeEngine {
     copy.next.set(this.next);
     copy.age.set(this.age);
     copy.activity.set(this.activity);
+    copy.hue.set(this.hue);
+    copy.species.set(this.species);
     copy._gen = this._gen;
     copy._population = this._population;
     return copy;
@@ -374,6 +555,40 @@ class DenseTorusEngine implements LifeEngine {
 
   activityAt(x: number, y: number): number {
     return this.activity[this.indexOf(x, y)]! / 255;
+  }
+
+  hueAt(x: number, y: number): number {
+    return this.hue[this.indexOf(x, y)]!;
+  }
+
+  speciesAt(x: number, y: number): number {
+    return this.species[this.indexOf(x, y)]!;
+  }
+
+  liveNeighborCount(x: number, y: number): number {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (this.current[this.indexOf(x + dx, y + dy)] === 1) n++;
+      }
+    }
+    return n;
+  }
+
+  snapshotColors(): ColorSnapshot {
+    return { hue: this.hue.slice(), species: this.species.slice() };
+  }
+
+  restoreColors(c: ColorSnapshot): void {
+    const n = this.spec.width * this.spec.height;
+    if (c.hue.length !== n || c.species.length !== n) {
+      throw new Error(
+        `restoreColors: buffer length mismatch (hue=${c.hue.length}, species=${c.species.length}) !== width*height ${n}`,
+      );
+    }
+    this.hue.set(c.hue);
+    this.species.set(c.species);
   }
 
   forEachLive(rect: Rect, cb: (x: number, y: number) => void | boolean): void {
@@ -398,13 +613,26 @@ class DenseTorusEngine implements LifeEngine {
     this._gen = 0;
     this.age.fill(0);
     this.activity.fill(0);
+    const w = this.spec.width;
     let pop = 0;
+    // IMPORTANT: exactly one `rng()` draw per cell, in row-major order, and
+    // ONLY for the alive/dead decision — this is the entire determinism
+    // contract existing golden seed tests rely on. Colour is assigned from a
+    // position hash below, deliberately NOT drawn from `rng`, so adding it
+    // can never shift which cells end up alive for a given seed.
     for (let i = 0; i < this.current.length; i++) {
       const alive = rng() < density;
       this.current[i] = alive ? 1 : 0;
       if (alive) {
         pop++;
         this.age[i] = 1;
+        const x = i % w;
+        const y = (i - x) / w;
+        this.hue[i] = regionHue(x, y);
+        this.species[i] = regionSpecies(x, y);
+      } else {
+        this.hue[i] = 0;
+        this.species[i] = 0;
       }
     }
     this._population = pop;
@@ -415,6 +643,8 @@ class DenseTorusEngine implements LifeEngine {
     this.next.fill(0);
     this.age.fill(0);
     this.activity.fill(0);
+    this.hue.fill(0);
+    this.species.fill(0);
     this._gen = 0;
     this._population = 0;
   }

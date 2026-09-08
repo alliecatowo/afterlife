@@ -15,7 +15,10 @@
  */
 import { create } from 'zustand';
 import { STORAGE_PREFIX } from '@/persist/store';
-import { clampAudioSettings, DEFAULT_AUDIO_SETTINGS, sanitizeAudioSettings, type AudioSettings } from './settings';
+import {
+  AUDIO_PRESETS, clampAudioSettings, DEFAULT_AUDIO_SETTINGS, sanitizeAudioSettings,
+  type AudioSettings, type PresetName,
+} from './settings';
 
 export const AUDIO_SETTINGS_KEY = `${STORAGE_PREFIX}audio-settings`;
 
@@ -41,6 +44,11 @@ export interface AudioSettingsState extends AudioSettings {
   /** Patch one or more fields, clamped to valid ranges, and persist. */
   update(patch: Partial<AudioSettings>): void;
   resetToDefaults(): void;
+  /** Apply a named preset bundle (`AUDIO_PRESETS`) — scale, timbre set,
+   * tempo, density and reverb change together. Root note, voice cap, and the
+   * scrubbing/percussion/harmonic-movement toggles are left as the user set
+   * them; a preset is a mood bundle, not a full reset. */
+  applyPreset(name: PresetName): void;
 }
 
 export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
@@ -53,6 +61,21 @@ export const useAudioSettingsStore = create<AudioSettingsState>((set, get) => ({
   resetToDefaults() {
     persist(DEFAULT_AUDIO_SETTINGS);
     set({ ...DEFAULT_AUDIO_SETTINGS });
+  },
+  applyPreset(name) {
+    const bundle = AUDIO_PRESETS[name];
+    const next = clampAudioSettings({
+      preset: name,
+      scaleMode: bundle.scaleMode,
+      bpm: bundle.bpm,
+      density: bundle.density,
+      droneWeight: bundle.droneWeight,
+      droneFilterMinHz: bundle.droneFilterMinHz,
+      droneFilterMaxHz: bundle.droneFilterMaxHz,
+      decay: bundle.decay,
+    }, get());
+    persist(next);
+    set(next);
   },
 }));
 

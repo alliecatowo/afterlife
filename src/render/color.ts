@@ -202,6 +202,258 @@ export function resolveToken(
   }
 }
 
+// ---------------------------------------------------------------------------
+// The "lineage" family of lenses: multi-hue palettes and their maths.
+//
+// `RenderLens` (`@/core/types`) is architect-owned/frozen and currently only
+// lists `'life' | 'age' | 'activity'`. `ColorLens` is a render-owned SUPERSET
+// used internally by `WorldRenderer` so this module doesn't have to wait on
+// that type being widened — see `INTEGRATION-NOTES.md` for the exact
+// proposed `types.ts`/HUD diff. `ColorLens` is safe to keep permanently even
+// after `RenderLens` grows: it would just become a harmless redundant union.
+// ---------------------------------------------------------------------------
+import type { RenderLens } from '@/core/types';
+
+export type ColorLens = RenderLens | 'lineage' | 'immigration' | 'quadlife' | 'velocity' | 'neighbors';
+
+/** All lens ids, in the order they should appear in any picker/legend. */
+export const COLOR_LENSES: readonly ColorLens[] = [
+  'life', 'age', 'activity', 'lineage', 'immigration', 'quadlife', 'velocity', 'neighbors',
+];
+
+/**
+ * Which palette the discrete species lenses (`immigration`/`quadlife`) draw
+ * from. `'cvd'` is the colourblind-safe option required by the design brief
+ * ("offer at least one colourblind-safe palette option") — see
+ * `resolveQuadPalette`'s doc for why it deliberately does NOT derive from
+ * `tokens.css` the way every other palette here does.
+ */
+export type PaletteMode = 'default' | 'cvd';
+
+function hueRampRgb(hueDeg: number, l: number, c: number): RGB {
+  return oklchToRgb(l, c, hueDeg);
+}
+
+/**
+ * A precomputed, evenly-spaced lookup table of `steps` colours around the
+ * full hue wheel at a fixed lightness/chroma. Built ONCE (at `attach()` or
+ * on a palette change) and indexed per-pixel thereafter — never recomputed
+ * inside a per-cell draw loop, matching the renderer's "no per-frame work"
+ * discipline. Used by the `lineage` and `velocity` lenses, whose hue is a
+ * continuous [0, 360) value rather than one of a handful of design tokens.
+ */
+export function buildHueRamp(steps = 180, l = 0.80, c = 0.15): RGB[] {
+  const ramp: RGB[] = new Array(steps);
+  for (let i = 0; i < steps; i++) ramp[i] = hueRampRgb((i / steps) * 360, l, c);
+  return ramp;
+}
+
+/** Index a hue-wheel ramp built by `buildHueRamp` for an arbitrary degree value. */
+export function sampleHueRamp(ramp: readonly RGB[], hueDeg: number): RGB {
+  const h = ((hueDeg % 360) + 360) % 360;
+  const i = Math.min(ramp.length - 1, Math.floor((h / 360) * ramp.length));
+  return ramp[i]!;
+}
+
+/**
+ * A piecewise-linear RGB ramp across evenly-spaced `stops` (already resolved
+ * to concrete sRGB bytes — this never re-parses a CSS colour string, unlike
+ * the OKLCH hue ramps above, so it's equally safe to anchor the END of the
+ * ramp exactly on a design token's resolved colour, whatever wire format the
+ * build pipeline emitted it in). Used to give `age`/`activity` a genuine
+ * multi-hue spectral gradient (per the design brief) that still terminates
+ * exactly on that lens's one fixed-meaning accent token at full intensity.
+ */
+export function buildRgbRamp(stops: readonly RGB[], steps = 64): RGB[] {
+  if (stops.length === 0) throw new Error('buildRgbRamp: at least one stop required');
+  if (stops.length === 1) return new Array(steps).fill(stops[0]);
+  const ramp: RGB[] = new Array(steps);
+  for (let i = 0; i < steps; i++) {
+    const t = steps === 1 ? 0 : i / (steps - 1);
+    const seg = t * (stops.length - 1);
+    const i0 = Math.min(stops.length - 2, Math.floor(seg));
+    const localT = seg - i0;
+    const a = stops[i0]!;
+    const b = stops[i0 + 1]!;
+    ramp[i] = {
+      r: Math.round(a.r + (b.r - a.r) * localT),
+      g: Math.round(a.g + (b.g - a.g) * localT),
+      b: Math.round(a.b + (b.b - a.b) * localT),
+    };
+  }
+  return ramp;
+}
+
+/** Index an RGB ramp built by `buildRgbRamp` at `t` in [0, 1] (clamped). */
+export function sampleRgbRamp(ramp: readonly RGB[], t: number): RGB {
+  const clamped = Math.min(1, Math.max(0, t));
+  const i = Math.min(ramp.length - 1, Math.floor(clamped * ramp.length));
+  return ramp[i]!;
+}
+
+/**
+ * A 9-entry (0..8 live neighbours) spectral ramp for the `neighbors` lens —
+ * "the rule itself visible": cool for sparse (0-1), the accent-life hue
+ * right around the B3/S23 birth/survival band (2-3), warm/hot for crowded
+ * (7-8, heading toward death by overpopulation). Deliberately a real hue
+ * sweep, not a single-hue lightness fade, per the design brief.
+ */
+export function buildNeighborRamp(l = 0.80, c = 0.16): RGB[] {
+  const ramp: RGB[] = new Array(9);
+  for (let n = 0; n <= 8; n++) {
+    // 235 (cool blue) at n=0 down to 5 (hot red) at n=8, sweeping through the
+    // accent-life green (~155) right at the birth count of 3.
+    const hue = 235 - (n / 8) * 230;
+    ramp[n] = hueRampRgb(hue, l, c);
+  }
+  return ramp;
+}
+
+/**
+ * Standard Okabe-Ito colourblind-safe swatches — a well-established,
+ * independently verified palette (distinguishable under protanopia,
+ * deuteranopia and tritanopia), used verbatim rather than derived from
+ * `tokens.css`'s hand-picked accent hues: nothing in this app's existing
+ * palette has been verified CVD-safe, and inventing a "safe" palette by eye
+ * is exactly the mistake this option exists to avoid. This is the one
+ * deliberate, documented exception to "all palettes derived from the design
+ * tokens where possible."
+ */
+const CVD_ORANGE = '#E69F00';
+const CVD_SKY_BLUE = '#56B4E9';
+const CVD_BLUISH_GREEN = '#009E73';
+const CVD_VERMILLION = '#D55E00';
+
+/**
+ * The 4 QuadLife species colours. Default palette reuses 4 existing design
+ * tokens spread widely around the hue wheel (life/age/activity/branch-a —
+ * ~155/78/25/300 degrees) rather than inventing new hues, per "all palettes
+ * derived from the design tokens where possible." The CVD palette swaps in
+ * Okabe-Ito instead (see above).
+ *
+ * Each entry also differs in OKLCH lightness, not hue alone (life/age sit
+ * around L0.79-0.87, activity/branch-a around L0.72-0.80) so species remain
+ * distinguishable by lightness even if hue is imperceptible — the "never
+ * rely on hue alone" requirement, applied at the palette-design level.
+ */
+export function resolveQuadPalette(mode: PaletteMode = 'default'): RGB[] {
+  if (mode === 'cvd') {
+    return [CVD_ORANGE, CVD_SKY_BLUE, CVD_BLUISH_GREEN, CVD_VERMILLION].map((hex) => resolveCssColor(hex));
+  }
+  return [
+    resolveToken('--color-accent-life', 'oklch(0.87 0.155 155)').rgb,
+    resolveToken('--color-accent-age', 'oklch(0.79 0.130 78)').rgb,
+    resolveToken('--color-accent-activity', 'oklch(0.72 0.185 25)').rgb,
+    resolveToken('--color-accent-branch-a', 'oklch(0.80 0.115 300)').rgb,
+  ];
+}
+
+/**
+ * The 2 Immigration colours. Presented as a coarser 2-bucket VIEW of the
+ * SAME species buffer QuadLife shows at full resolution (species {1,2} ->
+ * colour A, {3,4} -> colour B) — see `@/core/lineage.ts`'s module doc for
+ * why this is not a second simulation, just a second lens on one. Uses the
+ * `branch-a`/`branch-b` tokens — already the app's existing vocabulary for
+ * "two opposing populations" (branch comparison), which fits Immigration's
+ * two-colour framing precisely.
+ */
+export function resolveImmigrationPalette(mode: PaletteMode = 'default'): [RGB, RGB] {
+  if (mode === 'cvd') {
+    return [resolveCssColor(CVD_ORANGE), resolveCssColor(CVD_SKY_BLUE)];
+  }
+  return [
+    resolveToken('--color-accent-branch-a', 'oklch(0.80 0.115 300)').rgb,
+    resolveToken('--color-accent-branch-b', 'oklch(0.83 0.130 195)').rgb,
+  ];
+}
+
+/** Map a 1..4 species value to a palette entry (already-resolved 4-colour QuadLife palette). 0/out-of-range -> null. */
+export function quadColorForSpecies(palette: readonly RGB[], species: number): RGB | null {
+  if (species < 1 || species > 4) return null;
+  return palette[species - 1] ?? null;
+}
+
+/** Map a 1..4 species value to the coarser 2-colour Immigration palette ({1,2} -> A, {3,4} -> B). 0/out-of-range -> null. */
+export function immigrationColorForSpecies(palette: readonly [RGB, RGB], species: number): RGB | null {
+  if (species < 1 || species > 4) return null;
+  return species <= 2 ? palette[0] : palette[1];
+}
+
+/**
+ * Weighted RGB blend of several colours by their fractional share — used by
+ * the zoomed-out aggregation path so a screen pixel covering a mix of
+ * species reads as a genuine blend (a magenta-ish mix of two colonies at
+ * their border) rather than snapping to whichever species happens to be
+ * sampled at one point. `weights` need not sum to 1; this normalises.
+ */
+export function blendRgbWeighted(colors: readonly RGB[], weights: readonly number[]): RGB {
+  let total = 0;
+  for (const w of weights) total += w;
+  if (total <= 0) return { r: 0, g: 0, b: 0 };
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let i = 0; i < colors.length; i++) {
+    const w = (weights[i] ?? 0) / total;
+    r += colors[i]!.r * w;
+    g += colors[i]!.g * w;
+    b += colors[i]!.b * w;
+  }
+  return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+}
+
+/** One legend row: a CSS swatch (solid colour, gradient, or conic-gradient) and its meaning. */
+export interface LensLegendEntry {
+  swatch: string;
+  label: string;
+}
+
+/**
+ * Legend content for every lens, in the exact shape `@/ui/hud/Hud.tsx`'s
+ * existing `LENS_LEGEND` record already uses (see that file — this mirrors
+ * it deliberately so wiring the new lenses in is a copy-paste, documented in
+ * `INTEGRATION-NOTES.md`). Colour must always be honest about simulation
+ * state, never decorative — every entry names exactly what varying that
+ * colour means.
+ */
+export function buildLensLegends(mode: PaletteMode = 'default'): Record<ColorLens, LensLegendEntry[]> {
+  const quad = mode === 'cvd'
+    ? [CVD_ORANGE, CVD_SKY_BLUE, CVD_BLUISH_GREEN, CVD_VERMILLION]
+    : ['var(--color-accent-life)', 'var(--color-accent-age)', 'var(--color-accent-activity)', 'var(--color-accent-branch-a)'];
+  const [immA, immB] = mode === 'cvd'
+    ? [CVD_ORANGE, CVD_SKY_BLUE]
+    : ['var(--color-accent-branch-a)', 'var(--color-accent-branch-b)'];
+
+  return {
+    life: [{ swatch: 'var(--color-accent-life)', label: 'alive' }],
+    age: [
+      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.70 0.20 155), var(--color-accent-age))', label: 'young → long-lived (spectral)' },
+    ],
+    activity: [
+      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.75 0.20 100), var(--color-accent-activity))', label: 'quiet → recently changed (spectral)' },
+    ],
+    lineage: [
+      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'family lineage — newborns blend their 3 parents’ hue' },
+    ],
+    immigration: [
+      { swatch: immA, label: 'population A' },
+      { swatch: immB, label: 'population B (majority-of-3 wins; interbreeding blends at borders)' },
+    ],
+    quadlife: [
+      { swatch: quad[0]!, label: 'species I' },
+      { swatch: quad[1]!, label: 'species II' },
+      { swatch: quad[2]!, label: 'species III' },
+      { swatch: quad[3]!, label: 'species IV (majority-of-3 wins; a 3-way tie takes the 4th colour)' },
+    ],
+    velocity: [
+      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'local directional bias — a proxy for which way a structure is advancing; grey where undefined' },
+    ],
+    neighbors: [
+      { swatch: 'linear-gradient(90deg, oklch(0.80 0.16 235), oklch(0.80 0.16 155), oklch(0.80 0.16 5))', label: 'live neighbour count 0 → 8 (birth/survival band reads distinctly)' },
+    ],
+  };
+}
+
 /**
  * Build a translucent variant of ANY resolved token colour at a new alpha,
  * usable directly as a canvas `fillStyle`/`strokeStyle`. Uses `color-mix()`

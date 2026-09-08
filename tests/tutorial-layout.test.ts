@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { placeCoachMark } from '@/ui/tutorial/layout';
+import { placeCoachMark, SPOTLIGHT_PADDING } from '@/ui/tutorial/layout';
 
 const VIEWPORT = { width: 1440, height: 900 };
 const CARD = { width: 300, height: 150 };
@@ -71,5 +71,37 @@ describe('tutorial: placeCoachMark', () => {
       layout.card.y < target.y + target.height &&
       layout.card.y + layout.card.height > target.y;
     expect(overlaps).toBe(false);
+  });
+
+  describe('spotlight cutout', () => {
+    it('is null with no target', () => {
+      const layout = placeCoachMark(null, 'bottom', VIEWPORT, CARD);
+      expect(layout.spotlight).toBeNull();
+    });
+
+    it('pads the target bounding box symmetrically by SPOTLIGHT_PADDING', () => {
+      const target = { x: 600, y: 100, width: 40, height: 20 };
+      const layout = placeCoachMark(target, 'bottom', VIEWPORT, CARD);
+      expect(layout.spotlight).toEqual({
+        x: target.x - SPOTLIGHT_PADDING,
+        y: target.y - SPOTLIGHT_PADDING,
+        width: target.width + SPOTLIGHT_PADDING * 2,
+        height: target.height + SPOTLIGHT_PADDING * 2,
+      });
+    });
+
+    it('never overlaps the card, for every placement — the spotlight padding is smaller than the target gap', () => {
+      const target = { x: 700, y: 400, width: 40, height: 20 };
+      for (const placement of ['top', 'bottom', 'left', 'right'] as const) {
+        const layout = placeCoachMark(target, placement, VIEWPORT, CARD);
+        const s = layout.spotlight!;
+        const overlaps =
+          layout.card.x < s.x + s.width &&
+          layout.card.x + layout.card.width > s.x &&
+          layout.card.y < s.y + s.height &&
+          layout.card.y + layout.card.height > s.y;
+        expect(overlaps).toBe(false);
+      }
+    });
   });
 });

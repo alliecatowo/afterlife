@@ -37,6 +37,30 @@
  * least-recently-used branch is evicted to make room, but a branch that has
  * been renamed or is currently active is never evicted.
  *
+ * Colour keyframes
+ * ----------------
+ * `engine.ts`'s `hue`/`species` buffers (the "lineage" lens family — see
+ * `@/core/lineage.ts`) are cosmetic, exactly like `age`/`activity`, and
+ * likewise excluded from `Snapshot`/`EditOp` (both are `types.ts` shared
+ * vocabulary and stay bits-only). But unlike `age`, a colour value on a
+ * long-lived SURVIVOR is never recomputed again once assigned — it isn't
+ * "steps since the keyframe," it's inherited once at birth and then frozen
+ * until that cell next dies and is reborn. That means `restore()`'s
+ * position-derived default for colour (see `engine.ts`) would NOT be
+ * self-correcting the way a flat post-restore `age` is: replaying forward
+ * from a keyframe recomputes every SURVIVOR's age exactly (age increments
+ * once per step, so N replayed steps make it exact again), but it does
+ * nothing for a survivor's colour, which `restore()` already set to a
+ * plausible-but-wrong default and `step()` never revisits.
+ *
+ * So every keyframe here is a PAIR: a `Snapshot` (bits) in `keyframes` and a
+ * `ColorSnapshot` (hue/species) in the parallel `colorKeyframes` map, always
+ * written and read together at the same generation key. Restoring a
+ * keyframe always calls both `engine.restore(snapshot)` AND
+ * `engine.restoreColors(colorSnapshot)` before replaying steps forward —
+ * this is what makes `goto()`/`branchFrom()`/`cloneBranchAt()`/`diff()` bit-
+ * exact for colour too, not just for the alive/dead pattern.
+ *
  * Integration note (see INTEGRATION-NOTES.md)
  * --------------------------------------------
  * `record()`/`goto()`/`branchFrom()` are sufficient for correctness on their
@@ -59,7 +83,7 @@ import type {
   Rect,
   Snapshot,
 } from './types';
-import type { LifeEngine } from './engine';
+import type { ColorSnapshot, LifeEngine } from './engine';
 import { normalizeRect } from './engine';
 
 /** Snapshot cadence, in generations. */
@@ -206,6 +230,9 @@ interface BranchRecord {
   entries: Map<Generation, EditOp[]>;
   /** gen -> keyframe snapshot, flattened. Always has an entry <= any reachable gen. */
   keyframes: Map<Generation, Snapshot>;
+  /** gen -> colour keyframe, flattened. Always has an entry at exactly the
+   *  same keys as `keyframes` — see the module doc's "Colour keyframes". */
+  colorKeyframes: Map<Generation, ColorSnapshot>;
   maxGen: Generation;
   windowStart: Generation;
   renamed: boolean;
@@ -236,6 +263,7 @@ class TimelineStoreImpl implements TimelineStore {
       meta: { id: rootId, name: 'root', parent: null, fromGen: 0, createdAt: Date.now() },
       entries: new Map(),
       keyframes: new Map([[startGen, this.engine.snapshot()]]),
+      colorKeyframes: new Map([[startGen, this.engine.snapshotColors()]]),
       maxGen: startGen,
       windowStart: startGen,
       renamed: true,
@@ -276,7 +304,7 @@ class TimelineStoreImpl implements TimelineStore {
     b.lastAccessed = ++this.clock;
   }
 
-  private findBaseline(b: BranchRecord, gen: Generation): { kfGen: number; snapshot: Snapshot } {
+  private findBaseline(b: BranchRecord, gen: Generation): { kfGen: number; snapshot: Snapshot; colorSnapshot: ColorSnapshot } {
     let kfGen = -1;
     for (const g of b.keyframes.keys()) {
       if (g <= gen && g > kfGen) kfGen = g;
@@ -284,13 +312,18 @@ class TimelineStoreImpl implements TimelineStore {
     if (kfGen === -1) {
       throw new Error(`history: no keyframe at or before generation ${gen} (internal invariant violated)`);
     }
-    return { kfGen, snapshot: b.keyframes.get(kfGen)! };
+    const colorSnapshot = b.colorKeyframes.get(kfGen);
+    if (!colorSnapshot) {
+      throw new Error(`history: no colour keyframe at generation ${kfGen} (internal invariant violated — keyframes/colorKeyframes drifted)`);
+    }
+    return { kfGen, snapshot: b.keyframes.get(kfGen)!, colorSnapshot };
   }
 
   /** Synchronous replay for internal maintenance (window shifts, branch forks). No yielding. */
   private replaySync(target: LifeEngine, b: BranchRecord, targetGen: Generation): void {
-    const { kfGen, snapshot } = this.findBaseline(b, targetGen);
+    const { kfGen, snapshot, colorSnapshot } = this.findBaseline(b, targetGen);
     target.restore(snapshot);
+    target.restoreColors(colorSnapshot);
     for (let g = kfGen + 1; g <= targetGen; g++) {
       target.step();
       const ops = b.entries.get(g);
@@ -306,8 +339,9 @@ class TimelineStoreImpl implements TimelineStore {
     opts: { chunk?: number; onProgress?: (done: number, total: number) => void; signals?: Array<AbortSignal | undefined> },
   ): Promise<void> {
     const chunk = opts.chunk ?? 64;
-    const { kfGen, snapshot } = this.findBaseline(b, targetGen);
+    const { kfGen, snapshot, colorSnapshot } = this.findBaseline(b, targetGen);
     target.restore(snapshot);
+    target.restoreColors(colorSnapshot);
     const total = Math.max(1, targetGen - kfGen);
     let sinceYield = 0;
     const checkAbort = (): void => {
@@ -339,8 +373,10 @@ class TimelineStoreImpl implements TimelineStore {
       const scratch = this.engine.clone();
       this.replaySync(scratch, b, floorStart);
       b.keyframes.set(floorStart, scratch.snapshot());
+      b.colorKeyframes.set(floorStart, scratch.snapshotColors());
     }
     for (const g of [...b.keyframes.keys()]) if (g < floorStart) b.keyframes.delete(g);
+    for (const g of [...b.colorKeyframes.keys()]) if (g < floorStart) b.colorKeyframes.delete(g);
     for (const g of [...b.entries.keys()]) if (g < floorStart) b.entries.delete(g);
     b.windowStart = floorStart;
   }
@@ -375,6 +411,7 @@ class TimelineStoreImpl implements TimelineStore {
     if (gen < b.maxGen) {
       for (const g of [...b.entries.keys()]) if (g > gen) b.entries.delete(g);
       for (const g of [...b.keyframes.keys()]) if (g > gen) b.keyframes.delete(g);
+      for (const g of [...b.colorKeyframes.keys()]) if (g > gen) b.colorKeyframes.delete(g);
       b.maxGen = gen;
     } else if (gen > b.maxGen) {
       b.maxGen = gen;
@@ -382,7 +419,10 @@ class TimelineStoreImpl implements TimelineStore {
 
     if (gen === this.engine.gen) {
       for (const op of edits) applyEditOp(this.engine, op);
-      if (b.keyframes.has(gen)) b.keyframes.set(gen, this.engine.snapshot());
+      if (b.keyframes.has(gen)) {
+        b.keyframes.set(gen, this.engine.snapshot());
+        b.colorKeyframes.set(gen, this.engine.snapshotColors());
+      }
     }
 
     this.pruneWindow(b);
@@ -394,6 +434,7 @@ class TimelineStoreImpl implements TimelineStore {
     if (gen > b.maxGen) b.maxGen = gen;
     if (gen % this.keyframeInterval === 0 && !b.keyframes.has(gen)) {
       b.keyframes.set(gen, this.engine.snapshot());
+      b.colorKeyframes.set(gen, this.engine.snapshotColors());
     }
     this.pruneWindow(b);
   }
@@ -435,8 +476,10 @@ class TimelineStoreImpl implements TimelineStore {
     const id: BranchId = `branch-${++this.branchCounter}`;
     const entries = new Map(parent.entries);
     const keyframes = new Map(parent.keyframes);
+    const colorKeyframes = new Map(parent.colorKeyframes);
     for (const g of [...entries.keys()]) if (g > gen) entries.delete(g);
     for (const g of [...keyframes.keys()]) if (g > gen) keyframes.delete(g);
+    for (const g of [...colorKeyframes.keys()]) if (g > gen) colorKeyframes.delete(g);
 
     if (edits.length > 0) {
       const existing = entries.get(gen) ?? [];
@@ -447,6 +490,7 @@ class TimelineStoreImpl implements TimelineStore {
       meta: { id, name: id, parent: parent.meta.id, fromGen: gen, createdAt: Date.now() },
       entries,
       keyframes,
+      colorKeyframes,
       maxGen: gen,
       windowStart: parent.windowStart,
       renamed: false,
@@ -459,6 +503,7 @@ class TimelineStoreImpl implements TimelineStore {
     const scratch = this.engine.clone();
     this.replaySync(scratch, child, gen);
     keyframes.set(gen, scratch.snapshot());
+    colorKeyframes.set(gen, scratch.snapshotColors());
 
     this.branchMap.set(id, child);
     this.branchOrder.push(id);
@@ -583,6 +628,7 @@ class TimelineStoreImpl implements TimelineStore {
       meta: { id: rootId, name: 'root', parent: null, fromGen: 0, createdAt: Date.now() },
       entries: new Map(),
       keyframes: new Map([[0, this.engine.snapshot()]]),
+      colorKeyframes: new Map([[0, this.engine.snapshotColors()]]),
       maxGen: 0,
       windowStart: 0,
       renamed: true,

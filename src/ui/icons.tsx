@@ -371,3 +371,16 @@ export function GlobeIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** Overflow/"more" affordance — the mobile HUD's entry point to controls that
+ *  don't fit a 390px row (lens, speed, branches, compare, ...). Three dots,
+ *  not a hamburger: nothing here is a navigation menu, it's a control drawer. */
+export function MoreIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="3.25" cy="8" r="1.15" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="1.15" fill="currentColor" stroke="none" />
+      <circle cx="12.75" cy="8" r="1.15" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}

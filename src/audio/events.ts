@@ -28,4 +28,24 @@ export type AudioEvent =
   | { kind: 'death'; count: number }
   | { kind: 'discovery'; discovery: DiscoveryEvent }
   | { kind: 'branch'; fromGen: Generation }
-  | { kind: 'scrub'; gen: Generation };
+  | { kind: 'scrub'; gen: Generation }
+  | {
+      /** One real cell placed/cleared by the user, mid-gesture — "drawing
+       * feels like playing an instrument." `nx`/`ny` are world position
+       * normalised 0..1 (never fabricated: computed from the actual `EditOp`
+       * cell and the real `LifeEngine.spec`); `localDensity` (0..1), when
+       * supplied, is the real fraction of live neighbours around that cell. */
+      kind: 'paint';
+      nx: number;
+      ny: number;
+      alive: boolean;
+      localDensity?: number;
+    }
+  | {
+      /** A stamp gesture just committed. `cellCount` is the exact real cell
+       * count of the committed `EditOp` (its bounding box), from
+       * `edit:committed`'s payload — reflects the pattern's real
+       * size/complexity, never estimated. */
+      kind: 'stamp';
+      cellCount: number;
+    };

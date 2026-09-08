@@ -7,14 +7,22 @@
  */
 import type { AudioEvent } from './events';
 import {
-  DEFAULT_DRONE_SHAPE, DEFAULT_SCALE_CONTEXT, emptyAggregate, mapAuditionToNote,
-  mapCentroidDriftToPan, mapChurnToNotes, mapDiscoveryToNotes, mapDrone,
-  type BucketAggregate, type DroneParams, type DroneShape, type ScaleContext,
+  DEFAULT_CHURN_TIMBRE_WEIGHTS, DEFAULT_DISCOVERY_TIMBRES, DEFAULT_DRONE_SHAPE, DEFAULT_SCALE_CONTEXT,
+  emptyAggregate, mapAuditionToNote, mapBranchToNotes, mapCentroidDriftToPan, mapChurnToNotes,
+  mapDiscoveryToNotes, mapDrone, mapPaintToNote, mapPercussion, mapStampToNotes,
+  type BucketAggregate, type DiscoveryTimbreMap, type DroneParams, type DroneShape, type ScaleContext,
+  type WeightedTimbre,
 } from './mapper';
 import {
   BUCKET_SECONDS, LOOKAHEAD_SECONDS, VoicePool, bucketFloor,
   type NoteRequest, type ScheduledNote,
 } from './scheduler';
+import { INITIAL_HARMONIC_STATE, updateHarmonicState, type HarmonicState } from './harmony';
+
+/** Minimum spacing between paint (drawing/erasing) preview notes — one per
+ * musical bucket at most, regardless of how fast the user drags, so a stroke
+ * never turns into a machine-gun of clicks. */
+const PAINT_MIN_INTERVAL_SECONDS = BUCKET_SECONDS;
 
 /** Minimum spacing between audition-mode preview notes while scrubbing, so a
  * fast drag can't machine-gun notes even in the "preview" path. */
@@ -41,6 +49,9 @@ export class SoundscapeBrain {
   #lastAuditionTime = -Infinity;
   #lastDrone: DroneParams = { cutoffHz: 180, weight: 0, pan: 0 };
   #lastDronePan = 0;
+  #pendingPaint: NoteRequest | null = null;
+  #lastPaintAt = -Infinity;
+  #harmony: HarmonicState = INITIAL_HARMONIC_STATE;
 
   // ---- panel-tunable parameters (all default to the original fixed
   // behaviour; see `@/audio/settingsStore` for the persisted UI state that
@@ -50,6 +61,11 @@ export class SoundscapeBrain {
   #density = 1;
   #droneShape: DroneShape = DEFAULT_DRONE_SHAPE;
   #decay = 1;
+  #churnTimbreWeights: readonly WeightedTimbre[] = DEFAULT_CHURN_TIMBRE_WEIGHTS;
+  #discoveryTimbres: DiscoveryTimbreMap = DEFAULT_DISCOVERY_TIMBRES;
+  #harmonicMovement = true;
+  #percussion = false;
+  #proximityBoost = 0;
 
   constructor(maxVoices?: number) {
     this.#pool = new VoicePool(maxVoices);
@@ -90,6 +106,47 @@ export class SoundscapeBrain {
     return this.#pool.maxVoices;
   }
 
+  /** Which synthesised voices churn notes are drawn from — see
+   * `mapper.ts`'s `WeightedTimbre`/`DEFAULT_CHURN_TIMBRE_WEIGHTS`. */
+  setChurnTimbreWeights(weights: readonly WeightedTimbre[]): void {
+    this.#churnTimbreWeights = weights;
+  }
+
+  /** Which synthesised voice each discovery kind speaks in. */
+  setDiscoveryTimbres(timbres: DiscoveryTimbreMap): void {
+    this.#discoveryTimbres = timbres;
+  }
+
+  /** Enable/disable the slow, real-population-trend-driven register drift
+   * (`harmony.ts`). On by default; turning it off pins the register exactly
+   * where the original fixed instrument left it. */
+  setHarmonicMovement(on: boolean): void {
+    this.#harmonicMovement = on;
+    if (!on) this.#harmony = INITIAL_HARMONIC_STATE;
+  }
+
+  /** The current harmonic drift, in scale steps — exposed for the panel's
+   * informational readout and for tests. 0 when disabled or unset. */
+  get harmonicShiftSteps(): number {
+    return this.#harmonicMovement ? this.#harmony.shiftSteps : 0;
+  }
+
+  /** Enable/disable the generative percussion/texture layer (`mapper.ts`'s
+   * `mapPercussion`). Off by default — opt-in texture, not a soundscape
+   * regression. */
+  setPercussion(on: boolean): void {
+    this.#percussion = on;
+  }
+
+  /** 0..1, real proximity of recent local activity to the user's cursor/last
+   * edit (see `audio.ts`'s sampling of `LifeEngine.activityAt` near the last
+   * painted cell). Fed every scheduler tick; decays to 0 on its own as the
+   * caller's own age/distance weighting fades — this class never manufactures
+   * decay itself so it stays a pure function of what it's told. */
+  setProximityBoost(boost: number): void {
+    this.#proximityBoost = Math.max(0, Math.min(1, boost));
+  }
+
   setMuted(muted: boolean): void {
     this.#muted = muted;
     if (muted) {
@@ -97,6 +154,7 @@ export class SoundscapeBrain {
       // while muted, and nothing left over to burst out on unmute.
       this.#pool.reset();
       this.#pendingDiscoveries = [];
+      this.#pendingPaint = null;
       this.#agg = emptyAggregate(this.#agg.gen, this.#agg.population);
     }
   }
@@ -121,7 +179,10 @@ export class SoundscapeBrain {
     this.#lastCentroid = null;
     this.#lastFlushedBoundary = null;
     this.#pendingDiscoveries = [];
+    this.#pendingPaint = null;
+    this.#lastPaintAt = -Infinity;
     this.#lastAuditionTime = -Infinity;
+    this.#harmony = INITIAL_HARMONIC_STATE;
   }
 
   /** Feed one input event. `now` is the current audio clock time, used only
@@ -156,7 +217,7 @@ export class SoundscapeBrain {
         break;
       case 'discovery':
         if (!this.#scrubbing) {
-          this.#pendingDiscoveries.push(...mapDiscoveryToNotes(event.discovery, this.#scale, this.#decay));
+          this.#pendingDiscoveries.push(...mapDiscoveryToNotes(event.discovery, this.#scale, this.#decay, this.#discoveryTimbres));
         }
         break;
       case 'scrub':
@@ -166,6 +227,24 @@ export class SoundscapeBrain {
         }
         break;
       case 'branch':
+        // "One future becomes two" — a rare, deliberate user action, so it
+        // always gets its own distinct signature (see `mapBranchToNotes`).
+        if (!this.#scrubbing) {
+          this.#pendingDiscoveries.push(...mapBranchToNotes(event.fromGen, this.#scale, this.#decay));
+        }
+        break;
+      case 'stamp':
+        if (!this.#scrubbing) {
+          this.#pendingDiscoveries.push(...mapStampToNotes(event.cellCount, this.#scale, this.#decay));
+        }
+        break;
+      case 'paint':
+        // At most one paint note per musical bucket, however fast the
+        // stroke — the LATEST cell wins, so a fast drag never queues a burst.
+        if (!this.#scrubbing && now - this.#lastPaintAt >= PAINT_MIN_INTERVAL_SECONDS) {
+          this.#pendingPaint = mapPaintToNote(event.nx, event.ny, event.alive, event.localDensity, this.#scale);
+          this.#lastPaintAt = now;
+        }
         break;
     }
   }
@@ -209,6 +288,13 @@ export class SoundscapeBrain {
     const GUARD_MAX = Math.ceil(maxCatchupSeconds / bucketSeconds) + 4;
     while (boundary <= horizon && guard < GUARD_MAX) {
       guard++;
+      // Slow harmonic drift, one real-population sample per bucket — see
+      // `harmony.ts`. Runs even while scrubbing/percussion are off so the
+      // trend keeps tracking real state; it just isn't audible unless churn
+      // notes are actually playing.
+      if (this.#harmonicMovement) {
+        this.#harmony = updateHarmonicState(this.#harmony, this.#agg.population, boundary, bucketSeconds);
+      }
       // Churn notes for the bucket that just closed (suppressed while
       // scrubbing unless audition mode — audition uses its own sparse path).
       if (!this.#scrubbing) {
@@ -216,10 +302,20 @@ export class SoundscapeBrain {
           density: this.#density,
           decay: this.#decay,
           scale: this.#scale,
+          timbreWeights: this.#churnTimbreWeights,
+          harmonicShift: this.#harmonicMovement ? this.#harmony.shiftSteps : 0,
+          proximityBoost: this.#proximityBoost,
         });
         for (const req of churnNotes) {
           const n = this.#pool.tryAllocate(req, boundary, now);
           if (n) notes.push(n);
+        }
+        if (this.#percussion) {
+          const percNotes = mapPercussion(this.#agg, bucketSeconds, { scale: this.#scale, decay: this.#decay });
+          for (const req of percNotes) {
+            const n = this.#pool.tryAllocate(req, boundary, now);
+            if (n) notes.push(n);
+          }
         }
       }
       // Discoveries piggyback on the same grid so everything stays coherent,
@@ -230,6 +326,13 @@ export class SoundscapeBrain {
           if (n) notes.push(n);
         }
         this.#pendingDiscoveries = [];
+      }
+      // At most one "drawing is an instrument" note per bucket — the latest
+      // painted/erased cell, if any, since the last boundary.
+      if (this.#pendingPaint) {
+        const n = this.#pool.tryAllocate(this.#pendingPaint, boundary, now);
+        if (n) notes.push(n);
+        this.#pendingPaint = null;
       }
 
       if (this.#agg.centroidDelta) {

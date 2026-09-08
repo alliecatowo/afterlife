@@ -14,8 +14,9 @@ import { IconButton, Readout, Toggle, Divider, Tooltip, Legend } from '@/ui/prim
 import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
-  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon,
+  DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon,
 } from '@/ui/icons';
+import { HudMoreSheet } from './HudMoreSheet';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
 // this HUD only needs its "About" affordance, which doubles as the tour's
 // replay entry point (see `AboutDialog`'s own "Take the guided tour" button).
@@ -63,6 +64,7 @@ export function Hud() {
   const rightPanel = useUIState((s) => s.rightPanel);
   const toggleRightPanel = useUIState((s) => s.toggleRightPanel);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
+  const setMoreOpen = useUIState((s) => s.setMoreOpen);
   const setAboutOpen = useTourStore((s) => s.setAboutOpen);
 
   useEffect(() => subscribeReadout((r) => {
@@ -138,9 +140,16 @@ export function Hud() {
   }
 
   return (
-    <div className="flex h-full items-center gap-3 overflow-x-auto px-3">
+    <div className="flex h-full items-center gap-1.5 overflow-x-auto px-2 pt-[env(safe-area-inset-top)] sm:gap-3 sm:px-3">
       {liveRegion}
-      <h1 className="display-face-tight shrink-0 text-sm text-ivory-100">AFTERLIFE</h1>
+      {/* Visually hidden (but still in the a11y tree — the app's one
+          persistent h1, see the module doc) below 400px: on the narrowest
+          phones this wordmark alone was ~110px, the single biggest line
+          item standing between a 390px viewport and the "More controls"
+          button fitting on screen at all. Screen-reader users are unaffected
+          either way; sighted phone users still get it back at 400px+, and
+          desktop is untouched. */}
+      <h1 className="display-face-tight sr-only shrink-0 text-sm text-ivory-100 min-[400px]:not-sr-only">AFTERLIFE</h1>
       <Tooltip content={drawerOpen ? 'Close drawer' : 'Open drawer'}>
         <IconButton
           label={drawerOpen ? 'Close drawer' : 'Open drawer'}
@@ -161,12 +170,20 @@ export function Hud() {
             onClick={togglePlay}
           />
         </Tooltip>
-        <Tooltip content="Step back one generation">
-          <IconButton label="Step back" icon={<StepBackIcon />} disabled={playing} onClick={() => step(-1)} />
-        </Tooltip>
-        <Tooltip content="Step forward one generation">
-          <IconButton label="Step forward" icon={<StepForwardIcon />} disabled={playing} onClick={() => step(1)} />
-        </Tooltip>
+        {/* Step back/forward hidden below `sm`: precise single-generation
+            stepping is a power-user affordance already covered on a phone by
+            the timeline ribbon's own drag/keyboard scrubbing (see
+            `Timeline.tsx`), and at 390px these two buttons were the
+            difference between the "More controls" button fitting on screen
+            and not. Nothing is lost above `sm` (640px), where there's room. */}
+        <div className="hidden shrink-0 items-center gap-1 sm:flex">
+          <Tooltip content="Step back one generation">
+            <IconButton label="Step back" icon={<StepBackIcon />} disabled={playing} onClick={() => step(-1)} />
+          </Tooltip>
+          <Tooltip content="Step forward one generation">
+            <IconButton label="Step forward" icon={<StepForwardIcon />} disabled={playing} onClick={() => step(1)} />
+          </Tooltip>
+        </div>
         {/* Hidden below `sm`: on a 390px phone this badge was the single
             widest item ahead of the gen/pop readouts, and pushed itself
             (and everything after it) past the viewport edge with no visible
@@ -200,8 +217,15 @@ export function Hud() {
         <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
       </div>
 
-      <Divider orientation="vertical" className="hidden h-6 md:block" />
-      <div className="hidden shrink-0 items-center gap-2 md:flex">
+      {/* Speed AND lens both move to the mobile HUD's "More" sheet
+          (`HudMoreSheet`) below `lg` — see that file's doc comment for why:
+          this row simply has no room for either below roughly 1024px, and
+          the old `md:flex`/`lg:flex` split still overflowed at in-between
+          widths (a small tablet got speed but not lens, and BOTH still
+          overflowed the row before either kicked in — see
+          INTEGRATION-NOTES.md). One breakpoint, one home for each control. */}
+      <Divider orientation="vertical" className="hidden h-6 lg:block" />
+      <div className="hidden shrink-0 items-center gap-2 lg:flex">
         <span className="text-micro uppercase tracking-[0.18em] text-ivory-300">speed</span>
         <Toggle
           aria-label="Playback speed"
@@ -229,7 +253,22 @@ export function Hud() {
 
       <div className="flex-1" />
 
-      <div className="flex shrink-0 items-center gap-1">
+      {/* Mobile/tablet (<lg): a single "More" button opens `HudMoreSheet`
+          with lens, speed, the Time Sculpture entry, every right-panel tab,
+          mute, presentation mode, and about/shortcuts — the full desktop
+          icon row below never renders at these widths (it measured ~993px
+          of unhidden content against a 390px viewport before this fix,
+          which meant everything from Time Sculpture onward was reachable
+          only by discovering an unlabelled horizontal scroll on the HUD
+          strip; lens and speed were flatly unreachable, hidden by
+          `lg:flex`/`md:flex` with no substitute anywhere). */}
+      <div className="lg:hidden">
+        <Tooltip content="More controls">
+          <IconButton label="More controls" icon={<MoreIcon />} pressed={false} onClick={() => setMoreOpen(true)} />
+        </Tooltip>
+      </div>
+
+      <div className="hidden shrink-0 items-center gap-1 lg:flex">
         <Tooltip content={sculptureOpen ? 'Return to the living plane' : selection ? 'Open the Time Sculpture for this selection' : 'Select a region on the world to sculpt its history'}>
           <IconButton
             label={sculptureOpen ? 'Close time sculpture' : 'Open time sculpture'}
@@ -288,6 +327,7 @@ export function Hud() {
           <IconButton label="Keyboard shortcuts" icon={<QuestionIcon />} onClick={() => setShortcutsOpen(true)} />
         </Tooltip>
       </div>
+      <HudMoreSheet />
     </div>
   );
 }

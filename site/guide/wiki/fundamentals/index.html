@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Life fundamentals — AFTERLIFE</title>
+    <meta name="description" content="The three rules of Conway's Game of Life, and a glossary of every term a newcomer will hit: still life, oscillator, period, spaceship, glider, gun, puffer, soup, stabilisation." />
+    <link rel="canonical" href="https://alliecatowo.github.io/afterlife/guide/wiki/fundamentals/" />
+    <link rel="icon" type="image/svg+xml" href="/afterlife/guide/assets/favicon.svg" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="AFTERLIFE" />
+    <meta property="og:title" content="Life fundamentals — AFTERLIFE" />
+    <meta property="og:description" content="The three rules of Conway's Game of Life, and a glossary of every term a newcomer will hit: still life, oscillator, period, spaceship, glider, gun, puffer, soup, stabilisation." />
+    <meta property="og:url" content="https://alliecatowo.github.io/afterlife/guide/wiki/fundamentals/" />
+    <meta property="og:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Life fundamentals — AFTERLIFE" />
+    <meta name="twitter:description" content="The three rules of Conway's Game of Life, and a glossary of every term a newcomer will hit: still life, oscillator, period, spaceship, glider, gun, puffer, soup, stabilisation." />
+    <meta name="twitter:image" content="https://alliecatowo.github.io/afterlife/guide/assets/og.png" />
+
+    <link rel="stylesheet" href="/site/shared/site.css" />
+    
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="wordmark" href="/afterlife/guide/">
+          <span class="wordmark__mark" aria-hidden="true"></span>
+          <span class="display-face-tight wordmark__text">AFTERLIFE</span>
+        </a>
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-nav-toggle>
+          <span class="sr-only">Menu</span>
+          <span class="nav-toggle__bars" aria-hidden="true"></span>
+        </button>
+        <nav class="site-nav" id="site-nav" aria-label="Site">
+          <a class="nav-link" href="/afterlife/guide/">Guide</a>
+        <a class="nav-link nav-link--active" href="/afterlife/guide/wiki/" aria-current="page">Wiki</a>
+          <a class="btn btn--solid" href="/afterlife/">Open the app</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <div class="wiki-layout">
+        <nav class="wiki-sidebar" aria-label="Wiki sections">
+          <p class="wiki-sidebar__label">Wiki</p>
+          <ul>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/getting-started/">Getting started</a></li>
+            <li><a class="wiki-sidebar__link wiki-sidebar__link--active" href="/afterlife/guide/wiki/fundamentals/" aria-current="page">Life fundamentals</a></li>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/specimens/">Specimen catalogue</a></li>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/features/">Features</a></li>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/shortcuts/">Keyboard shortcuts</a></li>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/how-it-works/">How it works</a></li>
+            <li><a class="wiki-sidebar__link" href="/afterlife/guide/wiki/verification/">Verification</a></li>
+          </ul>
+        </nav>
+        <article class="wiki-article">
+          <nav class="breadcrumb" aria-label="Breadcrumb">
+            <a href="/afterlife/guide/">Guide</a> <span aria-hidden="true">/</span> <a href="/afterlife/guide/wiki/">Wiki</a> <span aria-hidden="true">/</span> <span aria-current="page">Life fundamentals</span>
+          </nav>
+          <h1>Life fundamentals</h1>
+          <p class="wiki-article__lede">The three rules of Conway's Game of Life, and a glossary of every term a newcomer will hit: still life, oscillator, period, spaceship, glider, gun, puffer, soup, stabilisation.</p>
+
+          <h2>The rules</h2>
+          <p>
+            Conway's Game of Life runs on a grid of cells, each alive or dead. Every
+            generation, every cell updates at once, according to how many of its 8
+            neighbours (including diagonals) are alive right now:
+          </p>
+          <ul class="rule-list">
+            <li><strong>2 or 3 live neighbours, and the cell is alive:</strong> it survives.</li>
+            <li><strong>Exactly 3 live neighbours, and the cell is dead:</strong> it's born.</li>
+            <li><strong>Anything else:</strong> the cell is dead next generation (too few neighbours to sustain it, or too many).</li>
+          </ul>
+          <p>
+            This ruleset has a name — <strong>B3/S23</strong> ("birth on 3, survival on 2
+            or 3") — and it's the one every implementation calling itself "Conway's
+            Game of Life" uses, AFTERLIFE included. There is no player once a starting
+            pattern is set; the rule is entirely deterministic, so the same start
+            always produces the same future. See it running on a real glider on the
+            <a href="../../">guide's landing page</a>.
+          </p>
+
+          <h2>Glossary</h2>
+          <p>Terms you'll hit throughout the app and this wiki, in the order a newcomer tends to meet them.</p>
+          <dl class="glossary">
+            
+            <div class="glossary-row" id="soup">
+              <dt>soup</dt>
+              <dd>A starting arrangement with no particular design — cells placed at random or by hand with no plan for what they’ll become. Most soups die out or settle into a scattering of still lifes and oscillators.</dd>
+            </div>
+            <div class="glossary-row" id="still-life">
+              <dt>still life</dt>
+              <dd>A pattern that does not change at all from one generation to the next — every live cell has exactly 2 or 3 live neighbours, and every dead neighbour has anything other than exactly 3. The block, beehive and boat are the smallest examples.</dd>
+            </div>
+            <div class="glossary-row" id="oscillator">
+              <dt>oscillator</dt>
+              <dd>A pattern that returns to its exact starting shape after a fixed number of generations, then repeats forever. See <a href="#period">period</a>.</dd>
+            </div>
+            <div class="glossary-row" id="period">
+              <dt>period</dt>
+              <dd>How many generations an oscillator (or spaceship) takes to return to its original shape (in a spaceship’s case, the same shape in a new position). A blinker has period 2; the pentadecathlon has period 15.</dd>
+            </div>
+            <div class="glossary-row" id="spaceship">
+              <dt>spaceship</dt>
+              <dd>A pattern that reproduces its own shape, translated to a new position, after a fixed period — it travels indefinitely. The glider is the smallest; LWSS/MWSS/HWSS are the classic orthogonal ships.</dd>
+            </div>
+            <div class="glossary-row" id="glider">
+              <dt>glider</dt>
+              <dd>The smallest known spaceship: 5 cells, period 4, moving one cell diagonally every period. See it animated on the <a href="../../">guide’s landing page</a>.</dd>
+            </div>
+            <div class="glossary-row" id="gun">
+              <dt>gun</dt>
+              <dd>A pattern that periodically emits a spaceship (usually a glider) without being consumed itself, growing the population forever. The Gosper glider gun — the first gun ever discovered — fires one glider every 30 generations.</dd>
+            </div>
+            <div class="glossary-row" id="puffer">
+              <dt>puffer</dt>
+              <dd>A pattern that moves like a spaceship while leaving a trail of stable or periodic debris behind it, like exhaust. AFTERLIFE deliberately ships none: see <a href="../verification/#no-puffer">why, in Verification</a>.</dd>
+            </div>
+            <div class="glossary-row" id="methuselah">
+              <dt>methuselah</dt>
+              <dd>A small, unremarkable-looking pattern that takes an unusually long time to stabilise, often after growing much larger first. The R-pentomino (5 cells, 1103 generations) and acorn (7 cells, 5206 generations) are the catalogue’s two extreme examples.</dd>
+            </div>
+            <div class="glossary-row" id="stabilisation">
+              <dt>stabilisation</dt>
+              <dd>The point after which a pattern’s population and behaviour settle into either a fixed still life, a repeating oscillation, or total extinction — it stops doing anything new.</dd>
+            </div>
+            <div class="glossary-row" id="toroidal-torus">
+              <dt>toroidal / torus</dt>
+              <dd>The shape of AFTERLIFE’s world: the grid’s edges wrap around, top to bottom and left to right, like the surface of a doughnut. A glider that exits the right edge re-enters on the left. See <a href="../how-it-works/#the-world">How it works</a>.</dd>
+            </div>
+          </dl>
+
+          <nav class="wiki-pager" aria-label="Wiki pages">
+        <a class="wiki-pager__link wiki-pager__link--prev" href="/afterlife/guide/wiki/getting-started/"><span class="wiki-pager__dir">← Previous</span><span>Getting started</span></a>
+        <a class="wiki-pager__link wiki-pager__link--next" href="/afterlife/guide/wiki/specimens/"><span class="wiki-pager__dir">Next →</span><span>Specimen catalogue</span></a>
+      </nav>
+        </article>
+      </div>
+    </main>
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <p class="site-footer__line">Every future leaves a trace.</p>
+        <nav class="site-footer__links" aria-label="Footer">
+          <a href="/afterlife/guide/">Guide</a>
+          <a href="/afterlife/guide/wiki/">Wiki</a>
+          <a href="/afterlife/">Open the app</a>
+          <a href="https://github.com/alliecatowo/afterlife">Source</a>
+        </nav>
+      </div>
+    </footer>
+    <script type="module" src="/site/shared/main.ts"></script>
+    
+  </body>
+</html>

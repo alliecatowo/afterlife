@@ -13,6 +13,10 @@ export type Placement = 'top' | 'bottom' | 'left' | 'right';
 
 const VIEWPORT_MARGIN = 12;
 const TARGET_GAP = 16;
+/** How far the spotlight cutout extends past the target's own bounding box —
+ *  deliberately smaller than `TARGET_GAP`, so the card (always placed
+ *  `TARGET_GAP` away from the target) never overlaps the lit cutout. */
+export const SPOTLIGHT_PADDING = 8;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(Math.max(v, min), Math.max(min, max));
@@ -77,6 +81,10 @@ export interface CoachLayout {
   cardAnchor: Point | null;
   /** Where the connector line touches the target (its center), or `null` with no target. */
   targetAnchor: Point | null;
+  /** The dimmed overlay's cutout — the target's bounding box padded by
+   *  `SPOTLIGHT_PADDING`, or `null` with no target (no cutout, no dimming —
+   *  a centered card over the ordinary, undimmed world). */
+  spotlight: Rect | null;
 }
 
 export function placeCoachMark(
@@ -94,7 +102,7 @@ export function placeCoachMark(
     // it's sitting in front of, per the "never a jail" rule.
     const x = clamp((viewport.width - card.width) / 2, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.width - card.width - VIEWPORT_MARGIN));
     const y = clamp(viewport.height - card.height - 96, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.height - card.height - VIEWPORT_MARGIN));
-    return { card: { x, y, width: card.width, height: card.height }, cardAnchor: null, targetAnchor: null };
+    return { card: { x, y, width: card.width, height: card.height }, cardAnchor: null, targetAnchor: null, spotlight: null };
   }
 
   let chosen: Placement = placement;
@@ -110,5 +118,11 @@ export function placeCoachMark(
 
   const cardAnchor = anchorFor(chosen, box);
   const targetAnchor: Point = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
-  return { card: clampToViewport(box, viewport), cardAnchor, targetAnchor };
+  const spotlight: Rect = {
+    x: target.x - SPOTLIGHT_PADDING,
+    y: target.y - SPOTLIGHT_PADDING,
+    width: target.width + SPOTLIGHT_PADDING * 2,
+    height: target.height + SPOTLIGHT_PADDING * 2,
+  };
+  return { card: clampToViewport(box, viewport), cardAnchor, targetAnchor, spotlight };
 }

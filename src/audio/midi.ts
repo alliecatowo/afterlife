@@ -50,10 +50,12 @@ function clampVelocity(v: number): number {
 }
 
 /** Offsets applied to the base channel when "map event classes to channels"
- * is on, documented verbatim in the panel: churn on the selected channel,
- * discoveries one channel up, audition previews two channels up (wrapping
- * within 1..16). */
-const SOURCE_CHANNEL_OFFSET: Record<NoteSource, number> = { churn: 0, discovery: 1, audition: 2 };
+ * is on: churn on the selected channel, discoveries one channel up, audition
+ * previews two channels up, then paint/stamp/branch/percussion each one
+ * further (wrapping within 1..16). */
+const SOURCE_CHANNEL_OFFSET: Record<NoteSource, number> = {
+  churn: 0, discovery: 1, audition: 2, paint: 3, stamp: 4, branch: 5, percussion: 6,
+};
 
 class MidiController {
   #access: MIDIAccess | null = null;
