@@ -76,8 +76,6 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     vi.restoreAllMocks();
   });
 
-  const LEGACY = new Set(['life', 'age', 'activity']);
-
   for (const { key, lens } of CASES) {
     it(`"${key}" always drives the RENDERER to the "${lens}" lens`, () => {
       // The renderer is what actually paints the canvas — this must work for
@@ -111,7 +109,7 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     input.dispose();
   });
 
-  it('does NOT push the 5 new lenses into useAppStore — Hud.tsx/HudMoreSheet.tsx index a Record<RenderLens,...> legend with no fallback for an unknown key, and indexing it with e.g. "lineage" crashes the whole app (verified against the real production build before this guard existed: the crash unmounted #world-canvas along with everything else). The renderer above is already correct regardless; only the store/HUD mirror waits for INTEGRATION-NOTES.md\'s proposed RenderLens widening.', () => {
+  it('ALSO mirrors the 5 new colour lenses into useAppStore — RenderLens has been widened and Hud.tsx/HudMoreSheet.tsx index their legend through a safe fallback (`LENS_LEGEND[lens] ?? LENS_LEGEND.life`), so an unrecognised id can never crash the app again (see INTEGRATION-NOTES.md\'s "colourful lenses" entry for the crash this used to cause before that fallback existed).', () => {
     const engine = createEngine({ width: 16, height: 16 });
     const renderer = makeFakeRenderer();
     const camera = makeFakeCamera();
@@ -119,17 +117,15 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     const canvas = makeCanvas();
     input.attach(canvas);
 
-    const before = useAppStore.getState().lens;
     for (const { key, lens } of CASES) {
-      if (LEGACY.has(lens)) continue;
       window.dispatchEvent(new KeyboardEvent('keydown', { key }));
-      expect(useAppStore.getState().lens, `lens should stay "${before}" after pressing "${key}" (${lens})`).toBe(before);
+      expect(useAppStore.getState().lens, `lens should become "${lens}" after pressing "${key}"`).toBe(lens);
     }
 
     input.dispose();
   });
 
-  it('bus lens:changed only fires for the 3 legacy lenses, for the same crash-avoidance reason', async () => {
+  it('bus lens:changed fires for every lens now that the HUD can legend all 8 safely', async () => {
     const { bus } = await import('@/ui/bus');
     const received: unknown[] = [];
     const sub = bus.on('lens:changed', (payload) => received.push(payload));
@@ -141,11 +137,11 @@ describe('keyboard shortcuts 1-8 reach every colour lens', () => {
     const canvas = makeCanvas();
     input.attach(canvas);
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' })); // quadlife — must NOT emit
-    expect(received).toEqual([]);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '6' })); // quadlife — must emit
+    expect(received).toEqual([{ lens: 'quadlife' }]);
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '2' })); // age — must emit
-    expect(received).toEqual([{ lens: 'age' }]);
+    expect(received).toEqual([{ lens: 'quadlife' }, { lens: 'age' }]);
 
     sub.dispose();
     input.dispose();

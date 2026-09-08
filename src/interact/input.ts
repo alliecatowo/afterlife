@@ -72,11 +72,6 @@ export interface InputOptions {
   engine?: LifeEngine;
 }
 
-/** The 3 lens ids `useAppStore`/the bus's `lens:changed` event are safe to
- *  carry today — see `#setLens`'s doc for why the other 5 (the "lineage
- *  family") stop short of those two for now. */
-const LEGACY_LENSES = new Set<ColorLens>(['life', 'age', 'activity']);
-
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
 const PAN_STEP_PX = 48;
 const ZOOM_KEY_FACTOR = 1.2;
@@ -794,32 +789,20 @@ class InputControllerImpl implements InputController {
   }
 
   #setLens(lens: ColorLens): void {
-    // The renderer itself supports every `ColorLens` value right now — this
-    // call alone is enough to make any lens actually render.
+    // The renderer itself supports every `ColorLens` value — this call alone
+    // is enough to make any lens actually render.
     this.#renderer.setLens(lens);
 
-    // `useAppStore.lens`/the bus's `lens:changed` are typed against the
-    // still-frozen core `RenderLens` ('life' | 'age' | 'activity') — see
-    // INTEGRATION-NOTES.md for the proposed widening. This is NOT just a
-    // type gap: `src/ui/hud/Hud.tsx`/`HudMoreSheet.tsx` index a
-    // `Record<RenderLens, ...>` legend keyed by exactly those 3 ids, and
-    // React has no fallback for a missing key — indexing it with e.g.
-    // `'lineage'` returns `undefined`, and the `Legend` component crashes
-    // rendering `undefined.map(...)`, taking down the ENTIRE app (verified:
-    // this is exactly what happened before this guard existed — the whole
-    // React tree unmounted, including `#world-canvas`, on the very next
-    // `lens:changed`/store update). So: only mirror the 3 lenses the HUD
-    // already knows how to legend into the store/bus; for the 5 new ones,
-    // the renderer already reflects reality and the HUD's own toggle/legend
-    // simply lags (a stale but harmless display) until it's updated to
-    // match. Once the `RenderLens` widening + HUD diff in
-    // INTEGRATION-NOTES.md lands, this guard becomes a no-op and can be
-    // deleted.
-    if (LEGACY_LENSES.has(lens)) {
-      const legacyLens = lens as RenderLens;
-      useAppStore.getState().setLens(legacyLens);
-      bus.emit('lens:changed', { lens: legacyLens });
-    }
+    // `RenderLens` (`@/core/types`) has been widened to include all 8 lens
+    // ids, and `Hud.tsx`/`HudMoreSheet.tsx` now index their `LENS_LEGEND`
+    // through a safe `legendFor()` fallback (never indexes a `Record` with an
+    // id it might not recognise without a `?? LENS_LEGEND.life` guard) — see
+    // INTEGRATION-NOTES.md's "colourful lenses" entry for the crash this used
+    // to cause. It's now safe to mirror every lens into the store/bus, not
+    // just the original 3, so the HUD's own toggle/legend never goes stale.
+    const renderLens = lens as RenderLens;
+    useAppStore.getState().setLens(renderLens);
+    bus.emit('lens:changed', { lens: renderLens });
   }
 
   #zoomAtCenter(factor: number): void {

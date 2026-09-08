@@ -18,6 +18,7 @@ import { getSession, type Session } from '@/ui/session';
 import { PATTERNS } from '@/content/patterns';
 import { OPENING_VERIFIED } from '@/content/scenes';
 import type { TourStepId } from '@/content/tour';
+import type { RenderLens } from '@/core/types';
 
 export interface TourCtx {
   session: Session | null;
@@ -132,7 +133,9 @@ export const TOUR_BEHAVIORS: Partial<Record<TourStepId, TourBehavior>> = {
   lenses: {
     completesOn: (_ctx, done) => bus.on('lens:changed', () => done()).dispose,
     showMe: () => {
-      const order = ['life', 'age', 'activity'] as const;
+      // Tutorial demo cycles the 3 original lenses only — the 5 colour lenses
+      // are discoverable via the HUD toggle/keyboard, not this walkthrough step.
+      const order: readonly RenderLens[] = ['life', 'age', 'activity'];
       const next = order[(order.indexOf(useAppStore.getState().lens) + 1) % order.length]!;
       useAppStore.getState().setLens(next);
       bus.emit('lens:changed', { lens: next });

@@ -23,18 +23,23 @@ import { HudMoreSheet } from './HudMoreSheet';
 // Logged in INTEGRATION-NOTES.md.
 import { useTourStore } from '@/ui/tutorial/tourStore';
 import type { RenderLens } from '@/core/types';
+// Legend content for every lens (including the 5 colour lenses) now lives with
+// the render agent's colour math, keyed by the same `RenderLens` ids — see
+// `src/render/color.ts`'s doc and INTEGRATION-NOTES.md "colourful lenses".
+// A palette-mode (CVD) toggle can pass a mode through here later; default for now.
+import { buildLensLegends } from '@/render/color';
 
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
 
-const LENS_LEGEND: Record<RenderLens, { swatch: string; label: string }[]> = {
-  life: [{ swatch: 'var(--color-accent-life)', label: 'alive' }],
-  age: [
-    { swatch: 'linear-gradient(90deg, color-mix(in oklch, var(--color-accent-age) 25%, transparent), var(--color-accent-age))', label: 'young → long-lived' },
-  ],
-  activity: [
-    { swatch: 'linear-gradient(90deg, transparent, var(--color-accent-activity))', label: 'quiet → recently changed' },
-  ],
-};
+const LENS_LEGEND = buildLensLegends();
+/** Defensive fallback: never let an unrecognised/stale persisted lens id
+ *  crash `Legend`'s render (`undefined.map(...)`) and take the whole React
+ *  tree — including `#world-canvas` — down with it. `buildLensLegends()`
+ *  covers every current `RenderLens` id, but this stays cheap insurance
+ *  against a future lens/legend drift or corrupted persisted state. */
+function legendFor(lens: RenderLens): { swatch: string; label: string }[] {
+  return LENS_LEGEND[lens] ?? LENS_LEGEND.life;
+}
 
 /** How often the throttled live region (below) may announce gen/population
  *  changes to a screen reader. `gen:changed` can fire up to 60x/sec — an
@@ -244,11 +249,16 @@ export function Hud() {
             { value: 'life', label: 'Life' },
             { value: 'age', label: 'Age' },
             { value: 'activity', label: 'Activity' },
+            { value: 'lineage', label: 'Lineage' },
+            { value: 'immigration', label: 'Immigration' },
+            { value: 'quadlife', label: 'QuadLife' },
+            { value: 'velocity', label: 'Velocity' },
+            { value: 'neighbors', label: 'Neighbors' },
           ]}
           value={lens}
           onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
         />
-        <Legend items={LENS_LEGEND[lens]} className="ml-1" />
+        <Legend items={legendFor(lens)} className="ml-1" />
       </div>
 
       <div className="flex-1" />

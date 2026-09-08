@@ -10,6 +10,7 @@
  */
 import { create } from 'zustand';
 import { IDENTITY_TRANSFORM, type StampTransform } from '@/core/types';
+import type { PaletteMode } from '@/render/color';
 
 export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | null;
 
@@ -39,6 +40,13 @@ interface UILocalState {
   setSelectedPattern: (id: string | null) => void;
   rotateStamp: () => void;
   flipStamp: (axis: 'flipX' | 'flipY') => void;
+
+  /** Colourblind-safe (Okabe-Ito) swatches for the discrete species lenses
+   *  (quadlife/immigration) — see `@/render/color`'s `PaletteMode`. Purely a
+   *  display preference; the renderer call lives at the setting's call site
+   *  (`SettingsPanel`) so this store stays session/render-agnostic. */
+  paletteMode: PaletteMode;
+  setPaletteMode: (mode: PaletteMode) => void;
 }
 
 export const useUIState = create<UILocalState>((set, get) => ({
@@ -64,4 +72,7 @@ export const useUIState = create<UILocalState>((set, get) => ({
   rotateStamp: () =>
     set((s) => ({ stampTransform: { ...s.stampTransform, rotate: ((s.stampTransform.rotate + 1) % 4) as 0 | 1 | 2 | 3 } })),
   flipStamp: (axis) => set((s) => ({ stampTransform: { ...s.stampTransform, [axis]: !s.stampTransform[axis] } })),
+
+  paletteMode: 'default',
+  setPaletteMode: (paletteMode) => set({ paletteMode }),
 }));

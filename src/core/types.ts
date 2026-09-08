@@ -78,11 +78,16 @@ export const IDENTITY_TRANSFORM: StampTransform = { rotate: 0, flipX: false, fli
 
 /**
  * How the renderer colours cells.
- *  - 'life'     — binary alive/dead, `--accent-life`.
- *  - 'age'      — generations since the cell was born, `--accent-age` ramp.
- *  - 'activity' — recent-change heat, decaying 0..1, `--accent-activity` ramp.
+ *  - 'life'        — binary alive/dead, `--accent-life`.
+ *  - 'age'         — generations since the cell was born, `--accent-age` ramp.
+ *  - 'activity'    — recent-change heat, decaying 0..1, `--accent-activity` ramp.
+ *  - 'lineage'     — heritage colour: a newborn blends its 3 parents' hue.
+ *  - 'immigration' — 2-colour Immigration variant (majority-of-3 birth rule).
+ *  - 'quadlife'    — 4-colour QuadLife variant (majority-of-3, ties take the 4th).
+ *  - 'velocity'    — hue from local directional bias (proxy for travel direction).
+ *  - 'neighbors'   — hue by live-neighbour count 0..8 (the B3/S23 rule made visible).
  */
-export type RenderLens = 'life' | 'age' | 'activity';
+export type RenderLens = 'life' | 'age' | 'activity' | 'lineage' | 'immigration' | 'quadlife' | 'velocity' | 'neighbors';
 
 /** Playback transport state owned by the UI module and mirrored in AppState. */
 export interface PlaybackState {

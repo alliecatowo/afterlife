@@ -20,18 +20,19 @@ import {
   ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon, FilmIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
+// Same render-owned legend data `Hud.tsx` uses — keeps the mobile sheet and
+// desktop toolbar's lens legends identical by construction instead of two
+// hand-maintained records drifting apart. See INTEGRATION-NOTES.md.
+import { buildLensLegends } from '@/render/color';
 
 const SPEED_PRESETS = [1, 4, 12, 30, 60];
 
-const LENS_LEGEND: Record<RenderLens, { swatch: string; label: string }[]> = {
-  life: [{ swatch: 'var(--color-accent-life)', label: 'alive' }],
-  age: [
-    { swatch: 'linear-gradient(90deg, color-mix(in oklch, var(--color-accent-age) 25%, transparent), var(--color-accent-age))', label: 'young → long-lived' },
-  ],
-  activity: [
-    { swatch: 'linear-gradient(90deg, transparent, var(--color-accent-activity))', label: 'quiet → recently changed' },
-  ],
-};
+const LENS_LEGEND = buildLensLegends();
+/** Same defensive fallback as `Hud.tsx` — never let an unrecognised lens id
+ *  crash `Legend`'s render and take the whole sheet (and the app) down. */
+function legendFor(lens: RenderLens): { swatch: string; label: string }[] {
+  return LENS_LEGEND[lens] ?? LENS_LEGEND.life;
+}
 
 const PANEL_ROWS: { id: Exclude<RightPanelId, null>; label: string; icon: ReactNode }[] = [
   { id: 'branches', label: 'Branches', icon: <BranchIcon /> },
@@ -85,12 +86,17 @@ export function HudMoreSheet() {
               { value: 'life', label: 'Life' },
               { value: 'age', label: 'Age' },
               { value: 'activity', label: 'Activity' },
+              { value: 'lineage', label: 'Lineage' },
+              { value: 'immigration', label: 'Immigration' },
+              { value: 'quadlife', label: 'QuadLife' },
+              { value: 'velocity', label: 'Velocity' },
+              { value: 'neighbors', label: 'Neighbors' },
             ]}
             value={lens}
             onChange={(v) => { const l = v as RenderLens; setLens(l); bus.emit('lens:changed', { lens: l }); }}
           />
         </div>
-        <Legend items={LENS_LEGEND[lens]} className="mt-2" />
+        <Legend items={legendFor(lens)} className="mt-2" />
       </SheetSection>
 
       <SheetSection label="Speed">
