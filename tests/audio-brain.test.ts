@@ -203,3 +203,106 @@ describe('audio/brain — panel-tunable parameters (@/audio/settingsStore wiring
     expect(drone.cutoffHz).toBeCloseTo(500, 0);
   });
 });
+
+describe('audio/brain — drone reflects real dynamics, and silence when nothing is happening', () => {
+  it('the drone stays fully silent when no simulation events ever arrive (paused from the start)', () => {
+    // Exactly what "paused" looks like to the brain: a paused sim loop
+    // never emits `gen:changed` at all, so no `tick`/`birth`/`death` events
+    // ever reach `onEvent` — only `tick()`'s own wall-clock advance happens.
+    const brain = new SoundscapeBrain();
+    let now = 0;
+    let maxWeight = 0;
+    for (let i = 0; i < 100; i++) {
+      now += TICK_STEP;
+      const { drone } = brain.tick(now, LOOKAHEAD);
+      maxWeight = Math.max(maxWeight, drone.weight);
+    }
+    expect(maxWeight).toBe(0);
+  });
+
+  it('a real burst that then stops (simulating play -> pause) decays the drone back to genuine silence', () => {
+    // Unlike the "never played" case above, this proves the SILENCE is a
+    // real decay from real activity, not merely "always returns zero."
+    const brain = new SoundscapeBrain();
+    let now = 0;
+    for (let i = 0; i < 5; i++) {
+      brain.onEvent({ kind: 'tick', gen: i, population: 500 + i * 20 }, now);
+      brain.onEvent({ kind: 'birth', count: 100 }, now);
+      now += TICK_STEP;
+      brain.tick(now, LOOKAHEAD);
+    }
+    const whilePlaying = brain.tick(now, LOOKAHEAD).drone.weight;
+    expect(whilePlaying).toBeGreaterThan(0);
+    // Pause: no further onEvent calls at all, only the wall clock advancing
+    // (mirrors `audio.ts`'s scheduler tick continuing to call `brain.tick()`
+    // even while the sim loop itself has stopped). Several EMA time
+    // constants' worth of real time, so this checks true convergence to
+    // silence, not merely "smaller than before."
+    let afterPause = whilePlaying;
+    for (let i = 0; i < 300; i++) {
+      now += TICK_STEP;
+      afterPause = brain.tick(now, LOOKAHEAD).drone.weight;
+    }
+    expect(afterPause).toBeLessThan(whilePlaying);
+    expect(afterPause).toBeCloseTo(0, 2);
+  });
+
+  it('a static world (repeated ticks with the SAME population, no churn) decays the drone to silence even while running', () => {
+    const brain = new SoundscapeBrain();
+    let now = 0;
+    // Seed some initial activity so the drone actually has something to
+    // decay FROM, proving this is a real decay and not just "always zero."
+    for (let i = 0; i < 5; i++) {
+      brain.onEvent({ kind: 'birth', count: 100 }, now);
+      brain.onEvent({ kind: 'tick', gen: i, population: 500 + i * 10 }, now);
+      now += TICK_STEP;
+      brain.tick(now, LOOKAHEAD);
+    }
+    const afterBurst = brain.tick(now, LOOKAHEAD).drone.weight;
+    expect(afterBurst).toBeGreaterThan(0);
+    // Now the population stops changing and nothing churns — a still-life
+    // board that keeps ticking generations but does nothing.
+    for (let i = 0; i < 200; i++) {
+      brain.onEvent({ kind: 'tick', gen: 1000 + i, population: 550 }, now);
+      now += TICK_STEP;
+      brain.tick(now, LOOKAHEAD);
+    }
+    const settled = brain.tick(now, LOOKAHEAD).drone.weight;
+    expect(settled).toBeLessThan(afterBurst);
+    expect(settled).toBeCloseTo(0, 2);
+  });
+
+  it('sustained real churn raises the drone weight above a quiet baseline', () => {
+    const quietBrain = new SoundscapeBrain();
+    const busyBrain = new SoundscapeBrain();
+    let now = 0;
+    for (let i = 0; i < 60; i++) {
+      quietBrain.onEvent({ kind: 'tick', gen: i, population: 500 }, now);
+      busyBrain.onEvent({ kind: 'birth', count: 300 }, now);
+      busyBrain.onEvent({ kind: 'death', count: 200 }, now);
+      busyBrain.onEvent({ kind: 'tick', gen: i, population: 500 }, now);
+      now += TICK_STEP;
+      quietBrain.tick(now, LOOKAHEAD);
+      busyBrain.tick(now, LOOKAHEAD);
+    }
+    const quiet = quietBrain.tick(now, LOOKAHEAD).drone.weight;
+    const busy = busyBrain.tick(now, LOOKAHEAD).drone.weight;
+    expect(busy).toBeGreaterThan(quiet);
+  });
+
+  it('real centroid motion alone (little churn) still raises the drone weight above stillness', () => {
+    const stillBrain = new SoundscapeBrain();
+    const movingBrain = new SoundscapeBrain();
+    let now = 0;
+    for (let i = 0; i < 60; i++) {
+      stillBrain.onEvent({ kind: 'tick', gen: i, population: 500, centroid: { x: 50, y: 50 } }, now);
+      movingBrain.onEvent({ kind: 'tick', gen: i, population: 500, centroid: { x: 50 + i * 2, y: 50 } }, now);
+      now += TICK_STEP;
+      stillBrain.tick(now, LOOKAHEAD);
+      movingBrain.tick(now, LOOKAHEAD);
+    }
+    const still = stillBrain.tick(now, LOOKAHEAD).drone.weight;
+    const moving = movingBrain.tick(now, LOOKAHEAD).drone.weight;
+    expect(moving).toBeGreaterThan(still);
+  });
+});

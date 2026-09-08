@@ -9,7 +9,7 @@ import type { AudioEvent } from './events';
 import {
   DEFAULT_CHURN_TIMBRE_WEIGHTS, DEFAULT_DISCOVERY_TIMBRES, DEFAULT_DRONE_SHAPE, DEFAULT_SCALE_CONTEXT,
   emptyAggregate, mapAuditionToNote, mapBranchToNotes, mapCentroidDriftToPan, mapChurnToNotes,
-  mapDiscoveryToNotes, mapDrone, mapPaintToNote, mapPercussion, mapStampToNotes,
+  mapDiscoveryToNotes, mapDrone, mapPaintToNote, mapPercussion, mapStampToNotes, resolveChurn,
   type BucketAggregate, type DiscoveryTimbreMap, type DroneParams, type DroneShape, type ScaleContext,
   type WeightedTimbre,
 } from './mapper';
@@ -18,6 +18,7 @@ import {
   type NoteRequest, type ScheduledNote,
 } from './scheduler';
 import { INITIAL_HARMONIC_STATE, updateHarmonicState, type HarmonicState } from './harmony';
+import { INITIAL_DRONE_DYNAMICS, updateDroneDynamics, type DroneDynamics } from './dynamics';
 
 /** Minimum spacing between paint (drawing/erasing) preview notes — one per
  * musical bucket at most, regardless of how fast the user drags, so a stroke
@@ -47,11 +48,12 @@ export class SoundscapeBrain {
   #scrubbing = false;
   #audition = false;
   #lastAuditionTime = -Infinity;
-  #lastDrone: DroneParams = { cutoffHz: 180, weight: 0, pan: 0 };
+  #lastDrone: DroneParams = mapDrone({ activity: 0, motion: 0, population: 0 });
   #lastDronePan = 0;
   #pendingPaint: NoteRequest | null = null;
   #lastPaintAt = -Infinity;
   #harmony: HarmonicState = INITIAL_HARMONIC_STATE;
+  #dynamics: DroneDynamics = INITIAL_DRONE_DYNAMICS;
 
   // ---- panel-tunable parameters (all default to the original fixed
   // behaviour; see `@/audio/settingsStore` for the persisted UI state that
@@ -156,6 +158,10 @@ export class SoundscapeBrain {
       this.#pendingDiscoveries = [];
       this.#pendingPaint = null;
       this.#agg = emptyAggregate(this.#agg.gen, this.#agg.population);
+      // Unmuting should fade the drone back in from real silence, not
+      // resume at whatever activity level happened to be measured before
+      // muting — a stale reading would pop straight back to "loud."
+      this.#dynamics = INITIAL_DRONE_DYNAMICS;
     }
   }
 
@@ -173,6 +179,23 @@ export class SoundscapeBrain {
     return this.#pool.activeCount(now);
   }
 
+  /** True while there is a queued discovery/paint note that hasn't been
+   * flushed into an actual `ScheduledNote` yet (i.e. the next bucket
+   * boundary still has real work to do). Used by `audio.ts` to decide
+   * whether it's safe to suspend the `AudioContext` to save CPU — never
+   * while something is about to sound. */
+  get hasPendingWork(): boolean {
+    return this.#pendingDiscoveries.length > 0 || this.#pendingPaint !== null;
+  }
+
+  /** The current smoothed activity/motion dynamics driving the drone (see
+   * `dynamics.ts`). Exposed for tests and for the panel's informational
+   * readout — never fabricated, always the same values `tick()` fed into
+   * `mapDrone`. */
+  get droneDynamics(): DroneDynamics {
+    return this.#dynamics;
+  }
+
   reset(): void {
     this.#pool.reset();
     this.#agg = emptyAggregate(0, 0);
@@ -183,6 +206,7 @@ export class SoundscapeBrain {
     this.#lastPaintAt = -Infinity;
     this.#lastAuditionTime = -Infinity;
     this.#harmony = INITIAL_HARMONIC_STATE;
+    this.#dynamics = INITIAL_DRONE_DYNAMICS;
   }
 
   /** Feed one input event. `now` is the current audio clock time, used only
@@ -305,6 +329,7 @@ export class SoundscapeBrain {
           timbreWeights: this.#churnTimbreWeights,
           harmonicShift: this.#harmonicMovement ? this.#harmony.shiftSteps : 0,
           proximityBoost: this.#proximityBoost,
+          bucketSeconds,
         });
         for (const req of churnNotes) {
           const n = this.#pool.tryAllocate(req, boundary, now);
@@ -338,12 +363,29 @@ export class SoundscapeBrain {
       if (this.#agg.centroidDelta) {
         this.#lastDronePan = mapCentroidDriftToPan(this.#agg.centroidDelta.x);
       }
+      // Drone dynamics — a REAL measured churn rate and centroid-drift
+      // magnitude for the bucket that just closed (0 for either when
+      // nothing happened: no churn this bucket, or no centroid delta at
+      // all). This is what makes the sustained layer decay to genuine
+      // silence on its own when the world is paused, static, or extinct —
+      // see `dynamics.ts`. Computed from `this.#agg` BEFORE it's reset below.
+      const churnRatePerSecond = resolveChurn(this.#agg) / bucketSeconds;
+      const centroidDriftMagnitude = this.#agg.centroidDelta
+        ? Math.hypot(this.#agg.centroidDelta.x, this.#agg.centroidDelta.y)
+        : 0;
+      this.#dynamics = updateDroneDynamics(this.#dynamics, churnRatePerSecond, centroidDriftMagnitude, bucketSeconds);
+
       this.#agg = emptyAggregate(this.#agg.gen, this.#agg.population);
       this.#lastFlushedBoundary = boundary;
       boundary = boundary + bucketSeconds;
     }
 
-    this.#lastDrone = mapDrone(this.#agg.population, this.#lastDronePan, this.#droneShape);
+    this.#lastDrone = mapDrone(
+      { activity: this.#dynamics.activity, motion: this.#dynamics.motion, population: this.#agg.population },
+      this.#lastDronePan,
+      this.#droneShape,
+      this.#scale,
+    );
     return { notes, drone: this.#lastDrone };
   }
 }

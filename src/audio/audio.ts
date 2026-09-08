@@ -8,9 +8,16 @@
  * have no Web Audio imports and are covered by `tests/audio-*.test.ts`.
  *
  * Aesthetic: a quiet, tuned observatory — soft mallet/glass tones over a
- * faint filtered-noise drone, one fixed pentatonic scale, long decays, lots
- * of silence. Silent by default (`useAppStore`'s `muted` defaults `true`);
- * `init()` only ever runs from a real user gesture.
+ * sustained pitched drone that is a direct function of REAL measured board
+ * dynamics (churn rate, population-centroid motion; see `mapper.ts`'s
+ * `mapDrone`/`dynamics.ts`), one fixed pentatonic scale (widened to a choice
+ * of consonant modes via the panel), long decays, lots of silence. Silent by
+ * default (`useAppStore`'s `muted` defaults `true`); `init()` only ever runs
+ * from a real user gesture. Silence isn't just the default: a paused,
+ * static, or extinct world decays the drone to genuine silence on its own
+ * (nothing to measure -> nothing to hear), and the `AudioContext` itself is
+ * auto-suspended after a short idle grace period so a quiet tab costs no
+ * audio-thread CPU (see `AUTO_SUSPEND_GRACE_SECONDS`/`wake()` below).
  */
 import type { Disposable } from '@/core/types';
 import type { LifeEngine } from '@/core/engine';
@@ -63,6 +70,19 @@ export interface SoundscapeDeps {
  * population-centroid samples. Centroid computation is O(population) — cheap
  * even for a full board, but there's no reason to redo it every 100ms. */
 const CENTROID_SAMPLE_TICKS = 5;
+
+/** How long (seconds) the soundscape must be genuinely silent — zero drone
+ * weight, zero active voices, nothing queued — before the `AudioContext`
+ * itself is suspended to stop spending CPU on real-time audio rendering.
+ * Comfortably longer than `dynamics.ts`'s own decay so this only fires once
+ * the fade has actually finished, whether that's because the sim is paused,
+ * the board went static/extinct, or nobody has touched anything yet. */
+const AUTO_SUSPEND_GRACE_SECONDS = 4;
+
+/** Below this, `DroneParams.weight` counts as "silent" for auto-suspend
+ * purposes — small enough it's already inaudible, not exactly zero (ramps
+ * asymptote but never quite reach it). */
+const AUTO_SUSPEND_WEIGHT_EPS = 0.002;
 
 /** How long (seconds) a real edit keeps "reading more strongly" nearby
  * births/deaths before decaying back to nothing — see `setProximityBoost`. */
@@ -171,8 +191,18 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
   let recentEditAt: { x: number; y: number; at: number } | null = null;
   let centroidSampleCounter = 0;
 
+  // ---- auto-suspend state (see `AUTO_SUSPEND_GRACE_SECONDS`) ----
+  let idleSeconds = 0;
+
   function now(): number {
     return ctx?.currentTime ?? 0;
+  }
+
+  /** Resume a context we auto-suspended for CPU, if anything might now need
+   * to sound. Idempotent and cheap when already running. Never called while
+   * muted — muting has its own, explicit suspend/resume path. */
+  function wake(): void {
+    if (ctx && !muted && ctx.state === 'suspended') void ensureRunning(ctx);
   }
 
   function applyMasterGain(): void {
@@ -258,12 +288,34 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
 
   function schedulerTick(): void {
     if (!ctx || !synth || muted) return;
+    if (ctx.state === 'suspended') {
+      // Auto-suspended for CPU (see below) — still cheap to notice a live
+      // draw/erase gesture starting (the only source of sound that isn't
+      // already covered by a bus event elsewhere) and wake up for it. No
+      // musical work happens until the context is actually running again;
+      // `SoundscapeBrain.tick`'s own catch-up guard handles the frozen clock.
+      if (deps.input?.pending) wake();
+      return;
+    }
     const t = ctx.currentTime;
     sampleInteraction(t);
     const { notes, drone } = brain.tick(t);
     synth.setDrone(drone, t);
     for (const note of notes) synth.playNote(note);
     midiController.sendNotes(notes, t);
+
+    // Nothing sounding, nothing about to: count down to suspending the
+    // context so a paused/static/extinct/idle soundscape genuinely stops
+    // costing CPU, not just stops being audible.
+    const silent = drone.weight < AUTO_SUSPEND_WEIGHT_EPS
+      && notes.length === 0
+      && brain.activeVoiceCount(t) === 0
+      && !brain.hasPendingWork;
+    idleSeconds = silent ? idleSeconds + TICK_INTERVAL_SECONDS : 0;
+    if (idleSeconds >= AUTO_SUSPEND_GRACE_SECONDS) {
+      idleSeconds = 0;
+      void ctx.suspend();
+    }
   }
 
   function startScheduler(): void {
@@ -284,15 +336,24 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
   // brain itself no-ops all of this while muted, so it costs nothing before
   // the user opts in.
   const subs: Disposable[] = [
+    // Every handler below that can produce audible output calls `wake()`
+    // first — a no-op unless `schedulerTick` auto-suspended the context for
+    // CPU (see `AUTO_SUSPEND_GRACE_SECONDS`), in which case it's what brings
+    // the soundscape back before the resulting note/drone update is due.
     bus.on('gen:changed', ({ gen, population }) => {
+      wake();
       brain.onEvent({ kind: 'tick', gen, population }, now());
     }),
     bus.on('discovery:made', (discovery) => {
+      wake();
       brain.onEvent({ kind: 'discovery', discovery }, now());
     }),
     bus.on('playback:scrub', ({ gen, done }) => {
       brain.setScrubbing(!done);
-      if (!done) brain.onEvent({ kind: 'scrub', gen }, now());
+      if (!done) {
+        wake();
+        brain.onEvent({ kind: 'scrub', gen }, now());
+      }
     }),
     bus.on('audio:toggle', ({ muted: nextMuted }) => {
       applySetMuted(nextMuted);
@@ -305,6 +366,7 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
     // state; draw/erase/select commits stay quiet here, they already get
     // live feedback via `sampleInteraction`'s paint notes while dragging).
     bus.on('edit:committed', ({ cellCount }) => {
+      wake();
       if (readState().tool === 'stamp') {
         brain.onEvent({ kind: 'stamp', cellCount }, now());
       }
@@ -312,6 +374,7 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
     // Forking a future by editing behind the playhead — a distinct signature,
     // never confused with an ordinary commit.
     bus.on('branch:created', ({ fromGen }) => {
+      wake();
       brain.onEvent({ kind: 'branch', fromGen }, now());
     }),
   ];
@@ -369,6 +432,7 @@ export function createSoundscape(deps: SoundscapeDeps = {}): Soundscape {
 
     feed(events: AudioEvent[]) {
       if (disposed) return;
+      if (events.length > 0) wake();
       const t = now();
       for (const event of events) brain.onEvent(event, t);
     },

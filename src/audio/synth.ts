@@ -21,9 +21,9 @@ const REVERB_DELAY_B_SECONDS = 0.067;
 /** Hard ceiling on feedback gain — this is a decay control, never a howl. */
 const MAX_REVERB_FEEDBACK = 0.55;
 
-/** Build a short (2s) buffer of white noise, looped, for the filtered-noise
- * drone — "gentle filtered noise for population movement" per DESIGN.md.
- * Generated at runtime; never a loaded sample file. */
+/** Build a short (2s) buffer of white noise, looped, shared by every timbre
+ * that needs one (the drone's own faint "breath" layer, plus the `breath`/
+ * `perc` per-note timbres). Generated at runtime; never a loaded sample file. */
 function buildNoiseBuffer(ctx: AudioContext): AudioBuffer {
   const seconds = 2;
   const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
@@ -35,7 +35,25 @@ function buildNoiseBuffer(ctx: AudioContext): AudioBuffer {
 export class SynthGraph {
   readonly ctx: AudioContext;
   private readonly master: GainNode;
-  private readonly droneSource: AudioBufferSourceNode;
+  // The sustained drone: two gently detuned low root oscillators (their
+  // spread widens/narrows with measured MOTION, so a travelling world
+  // audibly beats/shimmers and a still one holds a pure unison), a soft
+  // octave shimmer, and a scale-consonant fifth partial that fades in with
+  // measured POPULATION (a fuller world gets a fuller chord). Replaces the
+  // old always-on filtered-white-noise bed — see `mapper.ts`'s `mapDrone`.
+  private readonly droneRootA: OscillatorNode;
+  private readonly droneRootB: OscillatorNode;
+  private readonly droneOctave: OscillatorNode;
+  private readonly droneFifth: OscillatorNode;
+  private readonly droneRootGain: GainNode;
+  private readonly droneOctaveGain: GainNode;
+  private readonly droneFifthGain: GainNode;
+  /** A very quiet, heavily filtered noise "breath" layer under the pitched
+   * drone, gated by measured ACTIVITY and hard-capped low (`MAX_DRONE_NOISE`
+   * in `mapper.ts`) — real texture, never the loudest thing in the mix. */
+  private readonly droneNoiseSource: AudioBufferSourceNode;
+  private readonly droneNoiseFilter: BiquadFilterNode;
+  private readonly droneNoiseGain: GainNode;
   private readonly droneFilter: BiquadFilterNode;
   private readonly droneGain: GainNode;
   private readonly dronePanner: StereoPannerNode;
@@ -62,25 +80,69 @@ export class SynthGraph {
 
     this.noiseBuffer = buildNoiseBuffer(ctx);
 
-    // Filtered-noise drone: always running once the context exists, gated to
-    // near-silence by `droneGain` until `setDrone` is told there's a world
-    // worth hearing.
-    this.droneSource = ctx.createBufferSource();
-    this.droneSource.buffer = this.noiseBuffer;
-    this.droneSource.loop = true;
+    // Sustained pitched drone — oscillators run continuously once the
+    // context exists (cheap, click-free to modulate), gated to genuine
+    // silence by `droneGain` (== `DroneParams.weight`, itself 0 whenever
+    // `mapDrone`'s measured activity/motion inputs are 0 — see that
+    // function's header) until there's real, measured life to describe.
+    this.droneRootA = ctx.createOscillator();
+    this.droneRootA.type = 'sine';
+    this.droneRootA.frequency.value = 110;
+    this.droneRootB = ctx.createOscillator();
+    this.droneRootB.type = 'sine';
+    this.droneRootB.frequency.value = 110;
+    this.droneOctave = ctx.createOscillator();
+    this.droneOctave.type = 'triangle';
+    this.droneOctave.frequency.value = 220;
+    this.droneFifth = ctx.createOscillator();
+    this.droneFifth.type = 'sine';
+    this.droneFifth.frequency.value = 164.81;
+
+    this.droneRootGain = ctx.createGain();
+    this.droneRootGain.gain.value = 0.28;
+    this.droneOctaveGain = ctx.createGain();
+    this.droneOctaveGain.gain.value = 0.07;
+    this.droneFifthGain = ctx.createGain();
+    this.droneFifthGain.gain.value = 0;
+
+    this.droneNoiseSource = ctx.createBufferSource();
+    this.droneNoiseSource.buffer = this.noiseBuffer;
+    this.droneNoiseSource.loop = true;
+    this.droneNoiseFilter = ctx.createBiquadFilter();
+    this.droneNoiseFilter.type = 'bandpass';
+    this.droneNoiseFilter.frequency.value = 900;
+    this.droneNoiseFilter.Q.value = 0.9;
+    this.droneNoiseGain = ctx.createGain();
+    this.droneNoiseGain.gain.value = 0;
+
     this.droneFilter = ctx.createBiquadFilter();
     this.droneFilter.type = 'lowpass';
-    this.droneFilter.Q.value = 0.3;
+    this.droneFilter.Q.value = 0.4;
     this.droneFilter.frequency.value = 180;
     this.droneGain = ctx.createGain();
     this.droneGain.gain.value = 0;
     this.dronePanner = ctx.createStereoPanner();
 
-    this.droneSource.connect(this.droneFilter);
+    this.droneRootA.connect(this.droneRootGain);
+    this.droneRootB.connect(this.droneRootGain);
+    this.droneOctave.connect(this.droneOctaveGain);
+    this.droneFifth.connect(this.droneFifthGain);
+    this.droneNoiseSource.connect(this.droneNoiseFilter);
+    this.droneNoiseFilter.connect(this.droneNoiseGain);
+
+    this.droneRootGain.connect(this.droneFilter);
+    this.droneOctaveGain.connect(this.droneFilter);
+    this.droneFifthGain.connect(this.droneFilter);
+    this.droneNoiseGain.connect(this.droneFilter);
     this.droneFilter.connect(this.droneGain);
     this.droneGain.connect(this.dronePanner);
     this.dronePanner.connect(this.master);
-    this.droneSource.start();
+
+    this.droneRootA.start();
+    this.droneRootB.start();
+    this.droneOctave.start();
+    this.droneFifth.start();
+    this.droneNoiseSource.start();
 
     // A cheap algorithmic "reverb/decay" send — a small feedback-delay
     // network, not a convolution reverb (no impulse-response sample to load,
@@ -140,9 +202,18 @@ export class SynthGraph {
   }
 
   setDrone(params: DroneParams, atTime: number): void {
-    this.droneFilter.frequency.setTargetAtTime(params.cutoffHz, atTime, DRONE_RAMP_SECONDS / 3);
-    this.droneGain.gain.setTargetAtTime(params.weight, atTime, DRONE_RAMP_SECONDS / 3);
-    this.dronePanner.pan.setTargetAtTime(params.pan, atTime, DRONE_RAMP_SECONDS / 3);
+    const ramp = DRONE_RAMP_SECONDS / 3;
+    this.droneFilter.frequency.setTargetAtTime(params.cutoffHz, atTime, ramp);
+    this.droneGain.gain.setTargetAtTime(params.weight, atTime, ramp);
+    this.dronePanner.pan.setTargetAtTime(params.pan, atTime, ramp);
+    this.droneRootA.frequency.setTargetAtTime(params.rootHz, atTime, ramp);
+    this.droneRootB.frequency.setTargetAtTime(params.rootHz, atTime, ramp);
+    this.droneOctave.frequency.setTargetAtTime(params.rootHz * 2, atTime, ramp);
+    this.droneFifth.frequency.setTargetAtTime(params.fifthHz, atTime, ramp);
+    this.droneRootA.detune.setTargetAtTime(-params.spreadCents / 2, atTime, ramp);
+    this.droneRootB.detune.setTargetAtTime(params.spreadCents / 2, atTime, ramp);
+    this.droneFifthGain.gain.setTargetAtTime(params.fifthLevel * 0.4, atTime, ramp);
+    this.droneNoiseGain.gain.setTargetAtTime(params.noiseLevel, atTime, ramp);
   }
 
   /** Render one scheduled note as a short-lived voice. Self-disposing via
@@ -189,8 +260,17 @@ export class SynthGraph {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    try { this.droneSource.stop(); } catch { /* already stopped */ }
-    this.droneSource.disconnect();
+    for (const osc of [this.droneRootA, this.droneRootB, this.droneOctave, this.droneFifth]) {
+      try { osc.stop(); } catch { /* already stopped */ }
+      osc.disconnect();
+    }
+    try { this.droneNoiseSource.stop(); } catch { /* already stopped */ }
+    this.droneNoiseSource.disconnect();
+    this.droneNoiseFilter.disconnect();
+    this.droneNoiseGain.disconnect();
+    this.droneRootGain.disconnect();
+    this.droneOctaveGain.disconnect();
+    this.droneFifthGain.disconnect();
     this.droneFilter.disconnect();
     this.droneGain.disconnect();
     this.dronePanner.disconnect();

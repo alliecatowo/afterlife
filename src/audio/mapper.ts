@@ -18,8 +18,8 @@
  *    from the discovery's real world rect, timbre varying by kind.
  */
 import type { DiscoveryEvent, Generation } from '@/core/types';
-import { hash01, quantizeToScale, SCALE_INTERVALS, TONIC_MIDI } from './scale';
-import type { NoteRequest, Timbre } from './scheduler';
+import { hash01, quantizeToScale, SCALE_INTERVALS, TONIC_MIDI, midiToHz } from './scale';
+import { BUCKET_SECONDS, type NoteRequest, type Timbre } from './scheduler';
 
 /** The tonal centre + interval set a call should quantise against. Defaults
  * to the original fixed A3 pentatonic so every existing call site (and every
@@ -71,20 +71,43 @@ export function resolveChurn(agg: BucketAggregate): number {
 }
 
 export interface DroneParams {
-  /** Low-pass cutoff in Hz. Quiet worlds are dark/muffled; dense worlds open up. */
+  /** Low-pass cutoff in Hz — brightness. Tracks both population (a bigger
+   * world opens the filter a little) and ACTIVITY (a busy bucket brightens
+   * it instantly). */
   cutoffHz: number;
-  /** 0..1 drone gain weight. */
+  /** 0..~1 overall drone gain, shaped by `DroneShape.weight`. Driven by
+   * measured ACTIVITY/MOTION, never by population alone — see `mapDrone`. */
   weight: number;
   /** -1..1 stereo pan, driven by population-centroid drift when available. */
   pan: number;
+  /** Fundamental frequency (Hz) of the sustained drone oscillators — the
+   * scale's own tonic, two octaves down, so the drone is always consonant
+   * with whatever the churn/discovery voices are doing in the foreground. */
+  rootHz: number;
+  /** Frequency (Hz) of a consonant upper partial, drawn from the SAME scale
+   * (the in-scale interval closest to a perfect fifth) — never an arbitrary
+   * fixed fifth that could clash with an unusual mode. */
+  fifthHz: number;
+  /** Detune spread (cents) between the paired root oscillators — driven by
+   * MOTION: a stationary world holds a pure unison; a travelling one beats
+   * and shimmers, audibly "moving." */
+  spreadCents: number;
+  /** 0..1 gain of the fifth partial relative to the root — driven by
+   * POPULATION: a fuller world gets a fuller (root+fifth) chord; a sparse
+   * one stays a bare root. */
+  fifthLevel: number;
+  /** 0..1 gain of a very quiet, heavily filtered noise "breath" layer —
+   * driven by ACTIVITY and hard-capped low so it is never the loudest thing
+   * in the mix, just a hint of texture under real churn. */
+  noiseLevel: number;
 }
 
 /** Population is unbounded in principle; we only need a sane knee so the
  * mapping is stable for both a handful of cells and a dense 256x160 world. */
 const POPULATION_KNEE = 2000;
 
-/** Panel-tunable drone shape. Defaults reproduce the original fixed mapping
- * exactly. `weight` is a 0..2 multiplier on the computed gain (never
+/** Panel-tunable drone shape. Defaults reproduce the original fixed mapping's
+ * filter window. `weight` is a 0..2 multiplier on the computed gain (never
  * unbounded — clamped below so the drone can be muted down or leaned into,
  * but never turned into a loud pad, preserving DESIGN's "always faint"
  * intent even at the top of the slider). `filterMinHz`/`filterMaxHz` let the
@@ -97,13 +120,99 @@ export interface DroneShape {
 
 export const DEFAULT_DRONE_SHAPE: DroneShape = { weight: 1, filterMinHz: 180, filterMaxHz: 2380 };
 
-export function mapDrone(population: number, pan = 0, shape: DroneShape = DEFAULT_DRONE_SHAPE): DroneParams {
-  const t = Math.min(1, population / POPULATION_KNEE);
+/** Real, measured inputs the drone is a function of — no fabricated inputs,
+ * no fixed oscillator running regardless of what the world is doing. See
+ * `dynamics.ts` for how `activity`/`motion` are derived from real per-bucket
+ * churn/centroid measurements and decay to 0 on their own when nothing is
+ * happening (paused, static, or extinct). */
+export interface DroneInputs {
+  /** 0..1 smoothed churn rate — "the speed of shit moving around." */
+  activity: number;
+  /** 0..1 smoothed centroid-drift speed — real travel of the population's mass. */
+  motion: number;
+  /** Raw current population — never alone enough to sustain any gain. */
+  population: number;
+}
+
+/** Hard ceiling on the drone's own gain contribution before `DroneShape.weight`
+ * scales it further — this is what keeps a maximally busy, fully "weighted-up"
+ * board from ever becoming a loud pad; see `synth.ts`'s own per-partial gain
+ * staging for the rest of the "tasteful at 20 minutes" budget. */
+const MAX_DRONE_GAIN = 0.35;
+
+/** Hard ceiling on the residual noise/breath layer's gain — always small,
+ * always subordinate to the pitched partials above it. */
+const MAX_DRONE_NOISE = 0.08;
+
+/** Detune spread (cents) at motion = 1 — audible beating/shimmer without
+ * ever sounding "out of tune." */
+const MAX_DRONE_SPREAD_CENTS = 20;
+
+/** The interval (in semitones) within `intervals` closest to a perfect
+ * fifth (7 semitones) — an in-scale "fifth" for every mode, including ones
+ * (like whole-tone) that don't contain an exact one. */
+function scaleFifthSemitones(intervals: readonly number[]): number {
+  let best = intervals[0] ?? 7;
+  let bestDistance = Infinity;
+  for (const interval of intervals) {
+    const distance = Math.abs(interval - 7);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = interval;
+    }
+  }
+  return best;
+}
+
+/**
+ * The sustained drone: a function of REAL measured board dynamics, never a
+ * fixed oscillator with a population-only floor. `weight` (and therefore
+ * audibility) is driven by `activity`/`motion` — both are 0 when the world
+ * is paused, static, or extinct, so the drone genuinely falls to silence in
+ * exactly those cases, not just "quieter." `population` still colours
+ * brightness (`cutoffHz`) and fullness (`fifthLevel`) — a bigger world reads
+ * as more spacious/full once there's something to hear — but can never by
+ * itself keep the drone sounding.
+ */
+export function mapDrone(
+  inputs: DroneInputs,
+  pan = 0,
+  shape: DroneShape = DEFAULT_DRONE_SHAPE,
+  scale: ScaleContext = DEFAULT_SCALE_CONTEXT,
+): DroneParams {
+  const activity = Math.max(0, Math.min(1, inputs.activity));
+  const motion = Math.max(0, Math.min(1, inputs.motion));
+  const populationT = Math.max(0, Math.min(1, inputs.population / POPULATION_KNEE));
+  const shapeWeight = Math.max(0, Math.min(2, shape.weight));
+
+  // "Life" = whichever reads more strongly: real churn, or real travel of
+  // the population's mass (a drifting glider swarm moves without much net
+  // churn; a field of blinkers churns without moving at all — either one
+  // should wake the drone).
+  const life = Math.max(activity, motion * 0.85);
+  // A gentle curve so modest real activity is already audible, without a
+  // floor that would keep something audible from literal zero activity.
+  const eased = Math.pow(life, 0.65);
+  const weight = eased * MAX_DRONE_GAIN * shapeWeight;
+
   const lo = Math.min(shape.filterMinHz, shape.filterMaxHz);
   const hi = Math.max(shape.filterMinHz, shape.filterMaxHz);
-  const cutoffHz = lo + t * (hi - lo);
-  const weight = (0.05 + t * 0.35) * Math.max(0, Math.min(2, shape.weight));
-  return { cutoffHz, weight, pan };
+  const brightnessT = Math.max(0, Math.min(1, populationT * 0.4 + activity * 0.6));
+  const cutoffHz = lo + brightnessT * (hi - lo);
+
+  const rootMidi = scale.tonic - 24; // two octaves down — a genuine low drone register
+  const fifthMidi = rootMidi + scaleFifthSemitones(scale.intervals);
+
+  return {
+    cutoffHz,
+    weight,
+    pan,
+    rootHz: midiToHz(rootMidi),
+    fifthHz: midiToHz(fifthMidi),
+    spreadCents: motion * MAX_DRONE_SPREAD_CENTS,
+    fifthLevel: populationT,
+    noiseLevel: activity * MAX_DRONE_NOISE,
+  };
 }
 
 /** Squash an unbounded cell-space drift into a restrained pan value. Never
@@ -112,7 +221,20 @@ export function mapCentroidDriftToPan(dx: number): number {
   return Math.tanh(dx / 8) * 0.6;
 }
 
-const CHURN_NOTE_THRESHOLDS = [1, 6, 40, 150] as const; // -> 0/1/2/3 voices (see below)
+/** Original thresholds, expressed as absolute churn-unit counts accumulated
+ * over one DEFAULT-tempo bucket (`BUCKET_SECONDS`, the fixed 72bpm eighth
+ * note). Kept only to derive `CHURN_RATE_THRESHOLDS` below — comparing a RATE
+ * (not a per-bucket count) is what makes tempo actually audible: a shorter
+ * bucket (faster tempo) accumulates less raw churn by construction, which
+ * used to cancel out the tempo change almost entirely. */
+const CHURN_NOTE_THRESHOLDS = [1, 6, 40, 150] as const;
+
+/** Churn RATE thresholds (churn units/second) -> 0/1/2/3 voices. Comparing a
+ * rate rather than a per-bucket count means the tempo slider (which changes
+ * bucket length) changes how OFTEN the instrument speaks for a given real
+ * activity level, instead of the two effects cancelling out. At the default
+ * tempo this reproduces `CHURN_NOTE_THRESHOLDS`'s classification exactly. */
+const CHURN_RATE_THRESHOLDS = CHURN_NOTE_THRESHOLDS.map((t) => t / BUCKET_SECONDS);
 
 /** Density multiplier, 0.25..2.5. 1 reproduces the original thresholds
  * exactly; >1 makes the instrument speak more readily (lower effective
@@ -122,19 +244,24 @@ export const MIN_DENSITY = 0.25;
 export const MAX_DENSITY = 2.5;
 
 /** How many churn voices this bucket should attempt, 0..3. Below the first
- * threshold we still only fire occasionally (silence is the default). */
-function churnDensity(agg: BucketAggregate, density: number): number {
+ * threshold we still only fire occasionally (silence is the default).
+ * `bucketSeconds` is the CURRENT musical grid's bucket length (the tempo
+ * control) — churn is compared as a RATE (units/second) against
+ * `CHURN_RATE_THRESHOLDS` so tempo changes are actually audible instead of
+ * being cancelled out by bucket length (see the comment on that constant). */
+function churnDensity(agg: BucketAggregate, density: number, bucketSeconds: number): number {
   const d = Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, density));
-  const thresholds = CHURN_NOTE_THRESHOLDS.map((t) => t / d);
+  const thresholds = CHURN_RATE_THRESHOLDS.map((t) => t / d);
   const c = resolveChurn(agg);
   if (c <= 0) return 0;
-  if (c < thresholds[0]!) return 0;
-  if (c < thresholds[1]!) {
+  const rate = c / Math.max(0.001, bucketSeconds);
+  if (rate < thresholds[0]!) return 0;
+  if (rate < thresholds[1]!) {
     // Sparse: only about 1 in 3 quiet buckets actually sounds.
     return hash01(agg.gen, 1) < 0.33 ? 1 : 0;
   }
-  if (c < thresholds[2]!) return 1;
-  if (c < thresholds[3]!) return 2;
+  if (rate < thresholds[2]!) return 1;
+  if (rate < thresholds[3]!) return 2;
   return 3;
 }
 
@@ -186,6 +313,10 @@ export interface ChurnOptions {
    * consequences." Never fabricated: the caller only raises this when a real
    * edit happened recently and real per-cell activity near it is elevated. */
   proximityBoost?: number;
+  /** Current musical grid's bucket length (seconds) — the tempo control's
+   * real effect, threaded through so churn is gated by RATE, not raw count.
+   * Default reproduces the original fixed-tempo behaviour exactly. */
+  bucketSeconds?: number;
 }
 
 /**
@@ -197,8 +328,9 @@ export function mapChurnToNotes(agg: BucketAggregate, options: ChurnOptions = {}
   const {
     density = 1, decay = 1, scale = DEFAULT_SCALE_CONTEXT,
     timbreWeights = DEFAULT_CHURN_TIMBRE_WEIGHTS, harmonicShift = 0, proximityBoost = 0,
+    bucketSeconds = BUCKET_SECONDS,
   } = options;
-  const count = churnDensity(agg, density);
+  const count = churnDensity(agg, density, bucketSeconds);
   if (count === 0) return [];
 
   const growing = agg.populationDelta >= 0;
