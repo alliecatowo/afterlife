@@ -46,17 +46,35 @@ export async function suppressTour(page: Page): Promise<void> {
  * Playwright's own heuristics for a moment), and unmounts ENTIRELY once
  * dismissed under `prefers-reduced-motion` (see that component's doc) — an
  * absent element is just as much "dismissed" as one with the attribute set.
+ *
+ * Deliberately click-then-POLL, not "click-and-immediately-recheck-and-
+ * reclick-on-any-miss": an earlier version re-clicked on every failed
+ * sub-500ms check, which under heavy load (three full sequential suites
+ * back-to-back) fired a genuine SECOND real pointer gesture on the canvas
+ * while React was still in the middle of mounting the guided tour's first
+ * step — sometimes just slow to reflect the FIRST click, not a dropped one.
+ * That extra gesture, arriving mid-mount, was itself implicated in a
+ * previously-unseen flake (`tour.spec.ts`'s "a step advances..." losing its
+ * "Next" button mid-click, "detached from the DOM, retrying"). Giving the
+ * first click a full, generous window to take effect with NO further
+ * clicking removes that self-inflicted race; only a truly dropped gesture
+ * (the click genuinely never registering) falls through to a second click.
  */
 export async function dismissTitle(page: Page): Promise<void> {
   const canvas = page.locator('#world-canvas');
-  await expect(async () => {
+  const isDismissed = () => page.evaluate(() => {
+    const el = document.querySelector('[data-testid="title-plate"]');
+    return el ? el.getAttribute('aria-hidden') === 'true' : true; // absent = already dismissed
+  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
     await canvas.click({ position: { x: 5, y: 5 }, force: true });
-    const ariaHidden = await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="title-plate"]');
-      return el ? el.getAttribute('aria-hidden') : 'true'; // absent = already dismissed
-    });
-    expect(ariaHidden).toBe('true');
-  }).toPass({ timeout: 10_000 });
+    try {
+      await expect.poll(isDismissed, { timeout: 3_000 }).toBe(true);
+      return;
+    } catch (err) {
+      if (attempt === 3) throw err; // genuinely stuck — fail loudly, not silently
+    }
+  }
 }
 
 /** The opening scene autoplays on boot (a live observatory, not a paused
