@@ -50,10 +50,12 @@ test.describe('mobile: HUD reachability at 390px', () => {
 
     const lens = page.getByRole('radiogroup', { name: 'Render lens' });
     await expect(lens).toBeVisible();
-    await page.getByRole('radio', { name: 'Age' }).tap();
+    // `exact: true`: 'Age' is now also a substring of 'Lineage' since the
+    // lens Toggle grew to 8 options.
+    await page.getByRole('radio', { name: 'Age', exact: true }).tap();
     // The desktop-only inline lens control is gone below `lg` — the sheet's
     // own copy is the only place this state can be verified from.
-    await expect(page.getByRole('radio', { name: 'Age' })).toHaveAttribute('data-state', 'on');
+    await expect(page.getByRole('radio', { name: 'Age', exact: true })).toHaveAttribute('data-state', 'on');
 
     const speed = page.getByRole('radiogroup', { name: 'Playback speed' });
     await expect(speed).toBeVisible();

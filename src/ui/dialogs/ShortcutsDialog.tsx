@@ -37,7 +37,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
     title: 'View',
     rows: [
-      ['1 / 2 / 3', 'Life / age / activity lens'],
+      ['1–8', 'Render lens — life / age / activity / lineage / immigration / quadlife / velocity / neighbors'],
       ['V', 'Presentation mode'],
       ['C', 'Cinematic mode — auto-pan, full-screen, hands-off (any input pauses it; Esc exits)'],
       ['?', 'This sheet'],
@@ -48,6 +48,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
     title: 'Help',
     rows: [
       ['Compass icon', 'What is this? — a short explanation, and the tour'],
+      ['L', 'Logbook — a naturalist\'s record of what you\'ve witnessed'],
       ['Replay tour', 'Walks through every feature again, from the button below'],
     ],
   },

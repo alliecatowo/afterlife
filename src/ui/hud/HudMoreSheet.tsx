@@ -18,6 +18,7 @@ import { Sheet, Toggle, Legend, IconButton } from '@/ui/primitives';
 import {
   EyeIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon, FlaskIcon, SaveIcon, WaveformIcon,
   ClockIcon, SpeakerOnIcon, SpeakerOffIcon, ExpandIcon, CompassIcon, QuestionIcon, FilmIcon,
+  LogbookIcon,
 } from '@/ui/icons';
 import type { RenderLens } from '@/core/types';
 // Same render-owned legend data `Hud.tsx` uses — keeps the mobile sheet and
@@ -52,6 +53,7 @@ export function HudMoreSheet() {
   const toggleRightPanel = useUIState((s) => s.toggleRightPanel);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
   const setAboutOpen = useTourStore((s) => s.setAboutOpen);
+  const setLogbookOpen = useUIState((s) => s.setLogbookOpen);
 
   const speed = useAppStore((s) => s.speed);
   const setSpeed = useAppStore((s) => s.setSpeed);
@@ -176,6 +178,12 @@ export function HudMoreSheet() {
             icon={<CompassIcon />}
             variant="ghost"
             onClick={() => { setAboutOpen(true); setMoreOpen(false); }}
+          />
+          <IconButton
+            label="Logbook"
+            icon={<LogbookIcon />}
+            variant="ghost"
+            onClick={() => { setLogbookOpen(true); setMoreOpen(false); }}
           />
           <IconButton
             label="Keyboard shortcuts"

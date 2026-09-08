@@ -1,68 +1,41 @@
 /**
  * ACHIEVEMENTS — public entry point.
  *
- * `src/ui/App.tsx`/`src/ui/hud/**`/`src/ui/panels/**` are the mobile agent's
- * territory for this task (see the tour work's own task brief), so — same
- * reasoning `@/ui/cinematic/index.ts` already documents for its own overlay
- * — this mounts itself into a small, self-created DOM root appended to
- * `document.body` rather than threading a HUD icon through `Hud.tsx`. A
- * small quiet tab (bottom-right, above the timeline band, styled like
- * `WorldHint`'s own restrained register) opens the logbook; the 'l'
- * shortcut does the same, guarded by the same `shouldIgnoreGlobalShortcut`
- * every other global shortcut in the app uses. See `INTEGRATION-NOTES.md`
- * for the (not required, purely nicer-later) HUD icon this would prefer.
+ * Originally self-mounted into its own DOM root (a floating "Logbook" tab)
+ * because `App.tsx`/`Hud.tsx`/`panels/**` were a concurrent mobile-layout
+ * pass's territory at the time this was built — see INTEGRATION-NOTES.md's
+ * achievements entries. That constraint is gone: this integration pass has
+ * full write access to every file, and the floating tab had a real, reported
+ * problem (it could overlap the cinematic overlay's own bottom bar at narrow
+ * widths). Relocated to a proper HUD icon button (`Hud.tsx`, and the mobile
+ * `HudMoreSheet.tsx`), exactly like `About`/`Cinematic mode`'s own entries.
  *
- * `initAchievements()` also has the side effect of importing `./store`,
- * which is what actually wires the real bus/session listeners that earn
- * entries — importing this module is the one and only thing anything else
- * needs to do to turn the whole feature on. Idempotent, same discipline as
- * `initSession()`/`initCinematic()`: a second call is a no-op.
+ * `initAchievements()` still exists and is still the one thing anything
+ * needs to call: it has the side effect of importing `./store`, which wires
+ * the real bus/session listeners that earn entries. Idempotent — a second
+ * call is a no-op, same discipline as `initSession()`/`initCinematic()`. The
+ * 'l' keyboard shortcut (documented in `ShortcutsDialog.tsx`) is wired here
+ * too, guarded by the same `shouldIgnoreGlobalShortcut` every other global
+ * shortcut in the app uses, toggling the SAME `useUIState.logbookOpen` flag
+ * the HUD button does — one source of truth for "is the logbook open,"
+ * reachable two ways.
  */
-import { createElement, useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import { shouldIgnoreGlobalShortcut } from '@/interact/globalShortcutGuard';
-import { AchievementsPanel } from './AchievementsPanel';
+import { useUIState } from '@/ui/uiState';
 import './store';
 
-const HOST_ID = 'achievements-host';
-let initialized = false;
+export { AchievementsPanel } from './AchievementsPanel';
 
-function Root() {
-  const [open, setOpen] = useState(false);
-  return createElement(
-    'div',
-    null,
-    createElement(
-      'button',
-      {
-        type: 'button',
-        'aria-label': 'Logbook',
-        onClick: () => setOpen(true),
-        className:
-          'fixed bottom-[calc(var(--size-timeline)_+_env(safe-area-inset-bottom)_+_12px)] right-3 z-[var(--z-chrome)] ' +
-          'rounded-sm border border-line bg-ink-800/80 px-2.5 py-1 text-micro uppercase tracking-[0.18em] text-ivory-300 ' +
-          'transition-colors duration-[var(--duration-instant)] ease-[var(--ease-standard)] ' +
-          'hover:bg-ink-700 hover:text-ivory-100 focus-visible:focus-ring outline-none',
-      },
-      'Logbook',
-    ),
-    createElement(AchievementsPanel, { open, onOpenChange: setOpen }),
-  );
-}
+let initialized = false;
 
 export function initAchievements(): void {
   if (initialized) return;
   initialized = true;
 
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  document.body.appendChild(host);
-  createRoot(host).render(createElement(Root));
-
   window.addEventListener('keydown', (e) => {
     if (shouldIgnoreGlobalShortcut(e.target, e.key)) return;
     if (e.key.toLowerCase() === 'l') {
-      host.querySelector('button')?.click();
+      useUIState.getState().setLogbookOpen(true);
     }
   });
 }

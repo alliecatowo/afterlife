@@ -36,6 +36,12 @@ import { shouldIgnoreGlobalShortcut } from '@/interact/globalShortcutGuard';
 import { TourOverlay } from '@/ui/tutorial/TourOverlay';
 import { AboutDialog } from '@/ui/tutorial/AboutDialog';
 import { useTourStore } from '@/ui/tutorial/tourStore';
+// The achievements logbook's dialog — mounted here (not inside `Hud.tsx`)
+// for the same reason `ShortcutsDialog`/`AboutDialog` are: it must stay
+// reachable/functional independent of `Hud`'s own presentation-mode early
+// return. The trigger BUTTON lives in `Hud.tsx`/`HudMoreSheet.tsx` (and
+// correctly disappears in presentation mode, like every other HUD icon).
+import { AchievementsPanel } from '@/ui/achievements';
 
 const TOOL_KEYS: Record<string, Tool> = { d: 'draw', e: 'erase', p: 'pan', s: 'select' };
 
@@ -68,6 +74,8 @@ export function App() {
   const dismissTitle = useUIState((s) => s.dismissTitle);
   const setWorldTouched = useUIState((s) => s.setWorldTouched);
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
+  const logbookOpen = useUIState((s) => s.logbookOpen);
+  const setLogbookOpen = useUIState((s) => s.setLogbookOpen);
 
   const [supported] = useState(() => typeof window === 'undefined' || 'CanvasRenderingContext2D' in window);
   const setDrawerOpen = useAppStore((s) => s.setDrawerOpen);
@@ -373,6 +381,7 @@ export function App() {
       <ShortcutsDialog />
       <AboutDialog />
       <TourOverlay />
+      <AchievementsPanel open={logbookOpen} onOpenChange={setLogbookOpen} />
     </TooltipProvider>
   );
 }

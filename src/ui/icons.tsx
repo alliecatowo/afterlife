@@ -383,6 +383,17 @@ export function FilmIcon(props: IconProps) {
   );
 }
 
+/** The achievements/naturalist's-log entry point (`@/ui/achievements`) — an
+ *  open notebook, distinct from `BookIcon`'s closed field guide. */
+export function LogbookIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 4.2C6.7 3.3 4.6 2.9 2.5 3v9.2c2.1-.1 4.2.3 5.5 1.2M8 4.2c1.3-.9 3.4-1.3 5.5-1.2v9.2c-2.1-.1-4.2.3-5.5 1.2V4.2Z" />
+      <path d="M4.3 5.8h2.2M4.3 8h2.2M4.3 10.2h1.6M9.5 5.8h2.2M9.5 8h2.2M9.5 10.2h1.6" />
+    </Svg>
+  );
+}
+
 /** Overflow/"more" affordance — the mobile HUD's entry point to controls that
  *  don't fit a 390px row (lens, speed, branches, compare, ...). Three dots,
  *  not a hamburger: nothing here is a navigation menu, it's a control drawer. */

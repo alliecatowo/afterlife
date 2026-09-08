@@ -25,11 +25,13 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('[');
     await expect(page.getByRole('radio', { name: '12', exact: true })).toHaveAttribute('data-state', 'on');
 
-    // '1'/'2'/'3': render lens.
+    // '1'-'8': render lens. `exact: true` matters now that the lens Toggle
+    // has 8 options — Playwright's default name match is substring-based, so
+    // 'Age' would also match 'Lineage' and 'Life' would also match 'QuadLife'.
     await page.keyboard.press('2');
-    await expect(page.getByRole('radio', { name: 'Age' })).toHaveAttribute('data-state', 'on');
+    await expect(page.getByRole('radio', { name: 'Age', exact: true })).toHaveAttribute('data-state', 'on');
     await page.keyboard.press('1');
-    await expect(page.getByRole('radio', { name: 'Life' })).toHaveAttribute('data-state', 'on');
+    await expect(page.getByRole('radio', { name: 'Life', exact: true })).toHaveAttribute('data-state', 'on');
 
     // 'g': grid toggle reflected on the canvas.
     const canvas = page.locator('#world-canvas');
@@ -129,10 +131,12 @@ test.describe('keyboard shortcuts', () => {
     );
     const xBefore = await camX();
 
-    const lifeRadio = page.getByRole('radio', { name: 'Life' });
+    // `exact: true`: 'Life' and 'Age' are now also substrings of 'QuadLife'
+    // and 'Lineage' since the lens Toggle grew to 8 options.
+    const lifeRadio = page.getByRole('radio', { name: 'Life', exact: true });
     await lifeRadio.focus();
     await page.keyboard.press('ArrowRight'); // moves roving focus to "Age", NOT the camera
-    await expect(page.getByRole('radio', { name: 'Age' })).toBeFocused();
+    await expect(page.getByRole('radio', { name: 'Age', exact: true })).toBeFocused();
     expect(await camX()).toBe(xBefore);
   });
 });

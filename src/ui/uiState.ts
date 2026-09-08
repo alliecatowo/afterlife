@@ -22,6 +22,14 @@ interface UILocalState {
   shortcutsOpen: boolean;
   setShortcutsOpen: (open: boolean) => void;
 
+  /** The achievements/naturalist's-log dialog (`@/ui/achievements`). Lives
+   *  here rather than a self-mounted DOM root now that this integration pass
+   *  has full write access to `Hud.tsx`/`HudMoreSheet.tsx` — see
+   *  INTEGRATION-NOTES.md's achievements entries for why it didn't start
+   *  here (a concurrent mobile-layout pass owned those files at the time). */
+  logbookOpen: boolean;
+  setLogbookOpen: (open: boolean) => void;
+
   /** The mobile HUD's "More" sheet — everything that doesn't fit a 390px
    *  toolbar row (lens, speed, branches, compare, ...). Desktop (`lg` and
    *  up) never opens this; those controls render inline there instead. */
@@ -56,6 +64,9 @@ export const useUIState = create<UILocalState>((set, get) => ({
 
   shortcutsOpen: false,
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+
+  logbookOpen: false,
+  setLogbookOpen: (logbookOpen) => set({ logbookOpen }),
 
   moreOpen: false,
   setMoreOpen: (moreOpen) => set({ moreOpen }),

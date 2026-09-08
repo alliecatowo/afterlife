@@ -15,6 +15,7 @@ import {
   PlayIcon, PauseIcon, StepBackIcon, StepForwardIcon, EyeIcon, ExpandIcon, CompressIcon,
   SpeakerOnIcon, SpeakerOffIcon, QuestionIcon, BranchIcon, ColumnsIcon, SlidersIcon, BookIcon,
   DrawerIcon, ClockIcon, FlaskIcon, SaveIcon, CompassIcon, WaveformIcon, MoreIcon, FilmIcon,
+  LogbookIcon,
 } from '@/ui/icons';
 import { HudMoreSheet } from './HudMoreSheet';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —
@@ -22,6 +23,13 @@ import { HudMoreSheet } from './HudMoreSheet';
 // replay entry point (see `AboutDialog`'s own "Take the guided tour" button).
 // Logged in INTEGRATION-NOTES.md.
 import { useTourStore } from '@/ui/tutorial/tourStore';
+// The achievements logbook: originally a self-mounted floating tab (a
+// concurrent mobile-layout pass owned this file at the time — see
+// INTEGRATION-NOTES.md), relocated here now that ownership boundaries are
+// gone. `initAchievements()` wires the bus listeners that earn entries
+// (idempotent); `AchievementsPanel` is the dialog itself, controlled by
+// `useUIState.logbookOpen` so the HUD button and the 'l' shortcut agree.
+import { initAchievements } from '@/ui/achievements';
 import type { RenderLens } from '@/core/types';
 // Legend content for every lens (including the 5 colour lenses) now lives with
 // the render agent's colour math, keyed by the same `RenderLens` ids — see
@@ -63,8 +71,12 @@ export function Hud() {
   const setShortcutsOpen = useUIState((s) => s.setShortcutsOpen);
   const setMoreOpen = useUIState((s) => s.setMoreOpen);
   const setAboutOpen = useTourStore((s) => s.setAboutOpen);
+  const logbookOpen = useUIState((s) => s.logbookOpen);
+  const setLogbookOpen = useUIState((s) => s.setLogbookOpen);
   const paletteMode = useUIState((s) => s.paletteMode);
   const lensLegend = useMemo(() => buildLensLegends(paletteMode), [paletteMode]);
+
+  useEffect(() => { initAchievements(); }, []);
 
   useEffect(() => subscribeReadout((r) => {
     if (genRef.current) genRef.current.textContent = String(r.gen);
@@ -339,6 +351,9 @@ export function Hud() {
         </Tooltip>
         <Tooltip content="What is this?">
           <IconButton label="About AFTERLIFE" icon={<CompassIcon />} onClick={() => setAboutOpen(true)} />
+        </Tooltip>
+        <Tooltip content="Logbook — a naturalist's record of what you've witnessed (l)">
+          <IconButton label="Logbook" icon={<LogbookIcon />} pressed={logbookOpen} onClick={() => setLogbookOpen(true)} />
         </Tooltip>
         <Tooltip content="Keyboard shortcuts (?)">
           <IconButton label="Keyboard shortcuts" icon={<QuestionIcon />} onClick={() => setShortcutsOpen(true)} />

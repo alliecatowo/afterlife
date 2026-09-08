@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { applyEditDirect, dismissTitle, ensurePaused, openApp, suppressTour, waitForGen } from './utils';
 
 test.describe('achievements logbook', () => {
-  test('opens via its quiet trigger tab, lists every achievement, and unearned ones read as honest description text (not a locked riddle)', async ({ page }) => {
+  test('opens via its HUD icon button, lists every achievement, and unearned ones read as honest description text (not a locked riddle)', async ({ page }) => {
     await suppressTour(page);
     await openApp(page);
     await dismissTitle(page);
@@ -65,12 +65,22 @@ test.describe('achievements logbook', () => {
     await expect(row.getByText(/^gen 10$/)).toBeVisible();
   });
 
-  test('never blocks a click on the world underneath its quiet trigger tab', async ({ page }) => {
+  test('the logbook trigger is a normal HUD icon button, not a floating tab overlapping the world (relocated per INTEGRATION-NOTES.md — it used to sit bottom-right, above the timeline, where it could overlap the cinematic overlay bar at narrow widths)', async ({ page }) => {
     await suppressTour(page);
     await openApp(page);
     await dismissTitle(page);
     await page.getByRole('button', { name: 'Pause', exact: true }).click();
 
+    // Lives in the HUD strip now, alongside About/Shortcuts — nowhere near
+    // the bottom-left of the canvas the old floating tab used to sit above.
+    const trigger = page.getByRole('button', { name: 'Logbook' });
+    const hud = page.locator('#hud-top');
+    const triggerBox = (await trigger.boundingBox())!;
+    const hudBox = (await hud.boundingBox())!;
+    expect(triggerBox.y).toBeGreaterThanOrEqual(hudBox.y);
+    expect(triggerBox.y + triggerBox.height).toBeLessThanOrEqual(hudBox.y + hudBox.height + 1);
+
+    // A click on the world (nowhere near the trigger) still registers a draw.
     const canvas = page.locator('#world-canvas');
     const popBefore = Number(await page.getByTestId('hud-pop').textContent());
     const box = (await canvas.boundingBox())!;
