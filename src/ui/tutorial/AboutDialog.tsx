@@ -22,6 +22,21 @@ export function AboutDialog() {
         ))}
         <Divider />
         <div className="flex flex-wrap justify-end gap-2">
+          {/* The site agent's landing page + 8-page wiki (`site/guide/**`,
+              served at `/afterlife/guide/`) had nothing in the app linking to
+              it — see INTEGRATION-NOTES.md's "guide" entry for the exact diff
+              this applies. `import.meta.env.BASE_URL` (not a hardcoded
+              `/afterlife/guide/`) so this keeps working under `vite dev`
+              (base `/`, aliased to the guide by `guideDevAliasPlugin`) and
+              under any future base change, not just the current deploy. A
+              real `<a>`, not a `Button` (which renders a `<button>`), so
+              right-click / open-in-new-tab / middle-click all work. */}
+          <a
+            href={`${import.meta.env.BASE_URL}guide/`}
+            className="inline-flex h-7 items-center justify-center rounded-sm border border-line px-3 text-xs text-ivory-200 hover:bg-ink-700 hover:text-ivory-100 focus-ring"
+          >
+            Read the guide
+          </a>
           <Button
             variant="solid"
             size="sm"

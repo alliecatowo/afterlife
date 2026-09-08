@@ -415,10 +415,19 @@ export function blendRgbWeighted(colors: readonly RGB[], weights: readonly numbe
   return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
 }
 
-/** One legend row: a CSS swatch (solid colour, gradient, or conic-gradient) and its meaning. */
+/**
+ * One legend row: a CSS swatch (solid colour, gradient, or conic-gradient)
+ * and its meaning. `label` is the SHORT text shown inline (the HUD's lens
+ * legend lives in a 48px-tall horizontal bar per DESIGN.md — a handful of
+ * words per row, not a sentence); `title`, when present, is the fuller
+ * explanation surfaced as a native tooltip on hover/focus so nothing said
+ * about what a colour MEANS is lost, it's just not forced into the row's
+ * width. See `Legend.tsx`.
+ */
 export interface LensLegendEntry {
   swatch: string;
   label: string;
+  title?: string;
 }
 
 /**
@@ -428,6 +437,17 @@ export interface LensLegendEntry {
  * `INTEGRATION-NOTES.md`). Colour must always be honest about simulation
  * state, never decorative — every entry names exactly what varying that
  * colour means.
+ *
+ * Labels are kept short on purpose: with all 8 lenses now in one `Toggle`,
+ * a verbose label (the full "majority-of-3 wins; ties take the 4th colour"
+ * explanation) made the HUD's single-line strip overflow past a 1440px
+ * viewport with NO visible scroll affordance on most desktop OSes — the same
+ * "control exists but isn't reachable" class of bug the mobile agent already
+ * found and fixed for narrow widths (see INTEGRATION-NOTES.md), recurring on
+ * desktop once 5 more lenses landed. The full explanation still exists, as
+ * `title` (a native tooltip) and at length in the guide/wiki
+ * (`site/guide/wiki/features/`) — nothing is actually lost, just not forced
+ * into the row's width.
  */
 export function buildLensLegends(mode: PaletteMode = 'default'): Record<ColorLens, LensLegendEntry[]> {
   const quad = mode === 'cvd'
@@ -440,29 +460,29 @@ export function buildLensLegends(mode: PaletteMode = 'default'): Record<ColorLen
   return {
     life: [{ swatch: 'var(--color-accent-life)', label: 'alive' }],
     age: [
-      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.70 0.20 155), var(--color-accent-age))', label: 'young → long-lived (spectral)' },
+      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.70 0.20 155), var(--color-accent-age))', label: 'young → long-lived', title: 'A spectral ramp: generations since birth, ending on the age accent colour for the longest-lived cells.' },
     ],
     activity: [
-      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.75 0.20 100), var(--color-accent-activity))', label: 'quiet → recently changed (spectral)' },
+      { swatch: 'linear-gradient(90deg, oklch(0.55 0.20 260), oklch(0.75 0.20 100), var(--color-accent-activity))', label: 'quiet → active', title: 'A spectral ramp: recent-change heat, ending on the activity accent colour for cells that just changed.' },
     ],
     lineage: [
-      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'family lineage — newborns blend their 3 parents’ hue' },
+      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'family hue', title: 'Heritage colour — a newborn blends its 3 parents’ hue, so visibly distinct colonies trace real lineages.' },
     ],
     immigration: [
       { swatch: immA, label: 'population A' },
-      { swatch: immB, label: 'population B (majority-of-3 wins; interbreeding blends at borders)' },
+      { swatch: immB, label: 'population B', title: 'The 2-colour Immigration variant: a majority-of-3 birth rule; interbreeding blends colours at the border between populations.' },
     ],
     quadlife: [
       { swatch: quad[0]!, label: 'species I' },
       { swatch: quad[1]!, label: 'species II' },
       { swatch: quad[2]!, label: 'species III' },
-      { swatch: quad[3]!, label: 'species IV (majority-of-3 wins; a 3-way tie takes the 4th colour)' },
+      { swatch: quad[3]!, label: 'species IV', title: 'The 4-colour QuadLife variant: majority-of-3 birth rule; a 3-way tie among parents takes the 4th, unused colour.' },
     ],
     velocity: [
-      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'local directional bias — a proxy for which way a structure is advancing; grey where undefined' },
+      { swatch: 'conic-gradient(from 0deg, red, yellow, lime, cyan, blue, magenta, red)', label: 'direction of travel', title: 'Hue from each cell’s local directional bias — a proxy for which way a structure is advancing. Grey where undefined.' },
     ],
     neighbors: [
-      { swatch: 'linear-gradient(90deg, oklch(0.80 0.16 235), oklch(0.80 0.16 155), oklch(0.80 0.16 5))', label: 'live neighbour count 0 → 8 (birth/survival band reads distinctly)' },
+      { swatch: 'linear-gradient(90deg, oklch(0.80 0.16 235), oklch(0.80 0.16 155), oklch(0.80 0.16 5))', label: 'neighbour count 0 → 8', title: 'A 9-step spectral ramp over live-neighbour count — the B3/S23 birth/survival band reads as a distinct colour band.' },
     ],
   };
 }

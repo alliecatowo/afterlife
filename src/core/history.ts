@@ -152,6 +152,29 @@ export interface TimelineStore {
    */
   goto(gen: Generation, signal?: AbortSignal, onProgress?: (done: number, total: number) => void): Promise<void>;
 
+  /**
+   * Resolves once no `goto()`/`switchBranch()` replay is in flight — i.e.
+   * `engine.gen` and the active branch's bookkeeping are guaranteed to be at
+   * their final, settled values, not a value still mid-replay.
+   *
+   * Why this exists: `goto()` mutates the shared `engine` INCREMENTALLY as it
+   * replays (deliberately — this is what lets the UI paint the world
+   * animating through intermediate generations during a long scrub, and lets
+   * `onProgress` report real progress), and yields to the event loop every
+   * `chunk` (64) steps for a replay longer than that. Anything that reads
+   * `engine.gen` synchronously to decide something — e.g. "does this edit
+   * fork or append" — can observe a genuinely intermediate, not-yet-final
+   * generation if it runs while a replay is between chunks (a caller doesn't
+   * even need to be that unlucky: the FIRST chunk of any `goto()` call runs
+   * synchronously up to 64 steps before the function's first internal
+   * `await`, so even code on the very next line after an unawaited
+   * `goto(...)` call can already observe a non-zero, non-final `engine.gen`).
+   * `await history.settled()` before trusting `engine.gen` closes that gap
+   * without changing `goto()`'s cancel-latest-wins performance behaviour —
+   * see `@/ui/session.ts`'s edit-commit/undo paths for real call sites.
+   */
+  settled(): Promise<void>;
+
   /** All recorded entries for the active branch within the window, ascending. */
   entries(): readonly HistoryEntry[];
 
@@ -251,6 +274,10 @@ class TimelineStoreImpl implements TimelineStore {
   private clock = 0;
   private pendingGoto: AbortController | null = null;
   private _lastSliceStride = 1;
+  /** Tracks the most recent `goto()`'s work, ALWAYS resolving (never
+   *  rejecting) once that call finishes or is superseded/aborted — see
+   *  `settled()`. Reassigned at the start of every `goto()` call. */
+  private settlePromise: Promise<void> = Promise.resolve();
 
   constructor(options: TimelineOptions) {
     this.engine = options.engine;
@@ -439,7 +466,19 @@ class TimelineStoreImpl implements TimelineStore {
     this.pruneWindow(b);
   }
 
-  async goto(gen: Generation, signal?: AbortSignal, onProgress?: (done: number, total: number) => void): Promise<void> {
+  goto(gen: Generation, signal?: AbortSignal, onProgress?: (done: number, total: number) => void): Promise<void> {
+    // `settlePromise` tracks THIS call specifically (reassigned before any
+    // `await`, so a `settled()` caller racing against this call always sees
+    // the latest one) — see `settled()`'s doc. `.catch(() => {})` is only for
+    // that internal bookkeeping promise; the returned `run` promise keeps its
+    // own real rejection (AbortError/HistoryWindowError) for THIS call's own
+    // direct caller, unaffected by the extra `.catch()` consumer.
+    const run = this.gotoInner(gen, signal, onProgress);
+    this.settlePromise = run.catch(() => {});
+    return run;
+  }
+
+  private async gotoInner(gen: Generation, signal?: AbortSignal, onProgress?: (done: number, total: number) => void): Promise<void> {
     const b = this.activeBranchRecord();
     if (gen < b.windowStart) throw new HistoryWindowError(gen, b.windowStart);
     const clamped = Math.min(Math.max(gen, b.windowStart), b.maxGen);
@@ -455,6 +494,19 @@ class TimelineStoreImpl implements TimelineStore {
       this.touch(b);
     } finally {
       if (this.pendingGoto === internal) this.pendingGoto = null;
+    }
+  }
+
+  /** See the `TimelineStore.settled()` doc. */
+  async settled(): Promise<void> {
+    let current = this.settlePromise;
+    await current;
+    // A NEWER goto() may have been queued while we were awaiting the first
+    // one (including from within another `settled()` caller's continuation)
+    // — keep following the chain until it stabilises on the truly-latest call.
+    while (current !== this.settlePromise) {
+      current = this.settlePromise;
+      await current;
     }
   }
 

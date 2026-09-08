@@ -121,6 +121,52 @@ describe('TimelineStore determinism', () => {
     expect(history.windowStart).toBeGreaterThan(0);
     await expect(history.goto(0)).rejects.toBeInstanceOf(HistoryWindowError);
   });
+
+  it('a long goto() leaves engine.gen at a genuinely intermediate value the moment it is called — demonstrating why a caller must never read engine.gen synchronously without awaiting settled() first (see @/ui/session.ts\'s edit-commit/undo paths and INTEGRATION-NOTES.md\'s session.ts race entry)', () => {
+    const engine = createEngine({ width: 40, height: 40 });
+    engine.seed('settle-demo', 0.3);
+    const history = createTimelineStore({ engine });
+
+    // Same setup as the "rejects a superseded call" test above: advance the
+    // live engine WITHOUT history.advance(), so only the gen-0 keyframe
+    // exists and goto(500) must replay all 500 generations — far past the
+    // 64-step chunk size.
+    for (let i = 0; i < 500; i++) engine.step();
+    history.record(500, [set(0, 0, engine.get(0, 0))]);
+
+    // Deliberately UNAWAITED: an async function's body runs SYNCHRONOUSLY up
+    // to its first internal `await`, so by the time this line returns,
+    // goto()'s first 64-step chunk has already run for real.
+    void history.goto(500);
+    expect(engine.gen).toBeGreaterThan(0);
+    expect(engine.gen).toBeLessThan(500); // genuinely mid-flight, not yet settled
+  });
+
+  it('settled() resolves only once the most recent goto() has truly finished, giving a caller the correct final engine.gen', async () => {
+    const engine = createEngine({ width: 40, height: 40 });
+    engine.seed('settle-demo-2', 0.3);
+    const history = createTimelineStore({ engine });
+
+    for (let i = 0; i < 500; i++) engine.step();
+    history.record(500, [set(0, 0, engine.get(0, 0))]);
+
+    void history.goto(500);
+    expect(engine.gen).toBeLessThan(500); // mid-flight, as above
+
+    await history.settled();
+    expect(engine.gen).toBe(500); // now genuinely settled
+
+    // Call settled() BEFORE the goto() it needs to wait for even exists yet
+    // (both are unawaited, synchronous calls back to back): settled()'s
+    // internal loop must notice `goto(1000)` reassigning the tracked promise
+    // and follow it, rather than resolving early against a stale reference.
+    for (let i = 0; i < 500; i++) engine.step();
+    history.record(1000, [set(1, 1, engine.get(1, 1))]);
+    const settledPromise = history.settled();
+    void history.goto(1000);
+    await settledPromise;
+    expect(engine.gen).toBe(1000);
+  });
 });
 
 describe('branching', () => {

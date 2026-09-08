@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { openApp } from './utils';
+import { openApp, suppressTour } from './utils';
 
 /**
  * The marketing/guide/wiki site under `/guide/` (source: `site/**`, built
@@ -86,5 +86,18 @@ test.describe('guide + wiki', () => {
     await page.goto('/guide/wiki/shortcuts/');
     await expect(page.getByRole('cell', { name: 'Play / pause' })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'This sheet' })).toBeVisible();
+  });
+
+  test('the app\'s "About" dialog links to the guide (nothing in the app pointed at it before this)', async ({ page, request }) => {
+    await suppressTour(page);
+    await openApp(page);
+    await page.getByRole('button', { name: 'About AFTERLIFE' }).click();
+    const link = page.getByRole('link', { name: 'Read the guide' });
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute('href');
+    expect(href).toBe('/guide/'); // dev base is '/', aliased to the real guide by guideDevAliasPlugin
+    const res = await request.get(href!);
+    expect(res.status()).toBe(200);
+    expect(await res.text()).toContain(GUIDE_MARKER);
   });
 });

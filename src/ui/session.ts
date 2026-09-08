@@ -345,12 +345,23 @@ export function initSession(): Session {
     if (!op) return;
     queuedEdits.push(op);
     if (!readState().playing) {
-      // Applied straight to the live engine (see `history.record`'s
-      // gen === engine.gen fast path) — re-announce `gen:changed` so the
-      // population readout and empty/extinct overlays feel the edit
-      // immediately, not only on the next real step.
-      flushEdits(engine.gen);
-      emitGen();
+      // `history.settled()` guards against reading `engine.gen` while a
+      // scrub's `goto()` replay is still mid-flight (real, demonstrated race
+      // — see INTEGRATION-NOTES.md's session.ts race entry and
+      // `tests/history.test.ts`): drawing immediately after releasing the
+      // timeline scrubber, before that scrub has actually finished replaying,
+      // must fork/record at the generation the user actually scrubbed TO, not
+      // wherever the still-in-flight replay happened to be. Usually resolves
+      // on the same microtask (nothing pending), so this adds no perceptible
+      // delay to the common case.
+      void history.settled().then(() => {
+        // Applied straight to the live engine (see `history.record`'s
+        // gen === engine.gen fast path) — re-announce `gen:changed` so the
+        // population readout and empty/extinct overlays feel the edit
+        // immediately, not only on the next real step.
+        flushEdits(engine.gen);
+        emitGen();
+      });
     }
   });
 
@@ -390,8 +401,27 @@ export function initSession(): Session {
     }
   });
 
+  /**
+   * `goto()` mutates the SAME shared `engine` the `SimLoop` steps every
+   * generation — if playback were left running while a scrub/seek replay is
+   * also in flight, two independent processes would be mutating the live
+   * engine concurrently (the loop's own `step()` interleaved with `goto()`'s
+   * chunked replay), which can corrupt state well beyond "reads a stale
+   * generation": `history.advance()` could bake a keyframe from bits that are
+   * only half-restored mid-replay. Pausing FIRST, synchronously, before the
+   * scrub itself starts is the fix — it guarantees the loop can never tick
+   * again until the user explicitly resumes play, so there is only ever one
+   * writer of `engine` at a time. See INTEGRATION-NOTES.md's session.ts race
+   * entry for the observed symptom (branch-switch racing playback) this closes.
+   */
+  function pauseForScrub(): void {
+    if (!readState().playing) return;
+    loop.stop();
+    useAppStore.getState().setPlaying(false);
+  }
+
   // ---- timeline scrubbing: goto() is self-cancelling, so rapid-fire is fine --
-  bus.on('playback:scrub', ({ gen }) => { void gotoGen(gen); });
+  bus.on('playback:scrub', ({ gen }) => { pauseForScrub(); void gotoGen(gen); });
 
   // ---- branching -----------------------------------------------------------
   function syncBranches(): void {
@@ -421,8 +451,11 @@ export function initSession(): Session {
   bus.on('history:undo', () => {
     const inverse = input.undo();
     if (!inverse) return;
-    recordOrFork(engine.gen, [inverse]);
-    if (!readState().playing) emitGen();
+    // Same `engine.gen`-mid-replay hazard as the edit-commit path above.
+    void history.settled().then(() => {
+      recordOrFork(engine.gen, [inverse]);
+      if (!readState().playing) emitGen();
+    });
   });
 
   // ---- lens: mirror the bus intent onto both live renderers ---------------
@@ -508,8 +541,15 @@ export function initSession(): Session {
       bus.emit('sculpture:close', undefined);
     },
     applyEdit(op) {
-      recordOrFork(engine.gen, [op]);
-      if (!readState().playing) emitGen();
+      // Same `engine.gen`-mid-replay hazard as the edit-commit/undo paths
+      // above — this is a public entry point (RLE import, a scripted
+      // experiment intervention) that can just as easily land while a scrub
+      // is still settling. Signature stays synchronous (existing callers
+      // don't await it); the actual record/fork just happens once safe.
+      void history.settled().then(() => {
+        recordOrFork(engine.gen, [op]);
+        if (!readState().playing) emitGen();
+      });
     },
     gotoGen,
     loadScene,

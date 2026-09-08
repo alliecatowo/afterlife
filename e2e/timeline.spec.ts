@@ -10,6 +10,26 @@ async function fullWorldSnapshot(page: import('@playwright/test').Page): Promise
 }
 
 test.describe('time travel', () => {
+  test('scrubbing the ribbon while playing pauses first (closes a real race: goto() and the sim loop must never mutate the shared engine concurrently)', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+    await waitForGen(page, 20, 15_000);
+    // Confirm we're genuinely playing before scrubbing.
+    await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+
+    const ribbon = page.getByRole('slider', { name: 'History timeline' });
+    await ribbon.focus();
+    await ribbon.press('Home');
+
+    // Scrubbing must auto-pause synchronously — the Play button (not Pause)
+    // should be visible immediately, not just eventually.
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+    const genAfterScrub = await realGen(page);
+    await page.waitForTimeout(300);
+    // Still paused: gen must not have kept climbing on its own.
+    expect(await realGen(page)).toBe(genAfterScrub);
+  });
+
   test('scrubbing backward then forward reproduces identical world state', async ({ page }) => {
     await openApp(page);
     await dismissTitle(page);
