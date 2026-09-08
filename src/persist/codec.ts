@@ -22,6 +22,7 @@ import type {
   BranchId, BranchMeta, DiscoveryEvent, EditOp, Generation, RenderLens, WorldSpec,
 } from '@/core/types';
 import { wrap } from '@/core/engine';
+import { CONWAY_RULE_STRING, parseRule } from '@/core/rule';
 
 /** A saved point of interest, e.g. "found a period-30 puffer here". */
 export interface Bookmark {
@@ -33,7 +34,7 @@ export interface Bookmark {
 }
 
 /** Current on-disk/interchange schema version. */
-export const EXPERIMENT_FORMAT_VERSION = 2 as const;
+export const EXPERIMENT_FORMAT_VERSION = 3 as const;
 
 /** The full serialisable document. JSON, no binary — bits are RLE strings / packed ints. */
 export interface ExperimentDoc {
@@ -41,6 +42,13 @@ export interface ExperimentDoc {
   title: string;
   createdAt: number;
   spec: WorldSpec;
+  /**
+   * Canonical B/S rulestring in force for this document (see `@/core/rule.ts`).
+   * Part of the world's identity exactly like `spec` — a v1/v2 document
+   * predates rule generalisation and is migrated to `"B3/S23"` (the only rule
+   * that ever existed then), never left ambiguous. See `migrateToCurrent`.
+   */
+  rule: string;
   /** Seed used for the initial universe, so gen 0 reproduces exactly. */
   seed: number | string;
   density: number;
@@ -103,6 +111,12 @@ interface PersistedDocV2 {
   bookmarks: Bookmark[];
   discoveries: DiscoveryEvent[];
   notes?: string;
+}
+
+/** Current on-disk shape: V2 plus the world's rule (see `ExperimentDoc.rule`'s doc). */
+interface PersistedDocV3 extends Omit<PersistedDocV2, 'version'> {
+  version: 3;
+  rule: string;
 }
 
 /** The original scaffolded shape (unpacked edits, no activeBranch/lens/bookmarks/discoveries). */
@@ -212,6 +226,25 @@ function validateV2(raw: Record<string, unknown>): PersistedDocV2 {
   return raw as unknown as PersistedDocV2;
 }
 
+function checkRuleField(raw: Record<string, unknown>): void {
+  if (typeof raw.rule !== 'string') fail('"rule" must be a string');
+  try {
+    parseRule(raw.rule as string);
+  } catch (err) {
+    fail(`"rule" ${(err as Error).message}`);
+  }
+}
+
+function validateV3(raw: Record<string, unknown>): PersistedDocV3 {
+  checkCommon(raw);
+  checkV2Edits(raw.edits);
+  if (typeof raw.activeBranch !== 'string') fail('"activeBranch" must be a string');
+  if (raw.bookmarks !== undefined && !Array.isArray(raw.bookmarks)) fail('"bookmarks" must be an array');
+  if (raw.discoveries !== undefined && !Array.isArray(raw.discoveries)) fail('"discoveries" must be an array');
+  checkRuleField(raw);
+  return raw as unknown as PersistedDocV3;
+}
+
 function packV1Edits(edits: PersistedDocV1['edits'], width: number, height: number): PersistedDocV2['edits'] {
   const out: PersistedDocV2['edits'] = {};
   for (const [branchId, list] of Object.entries(edits)) {
@@ -242,12 +275,18 @@ function migrateV1toV2(v1: PersistedDocV1): PersistedDocV2 {
   };
 }
 
+/** v2 predates rule generalisation entirely — the only rule that ever existed then was Conway's, so migration is unambiguous. */
+function migrateV2toV3(v2: PersistedDocV2): PersistedDocV3 {
+  return { ...v2, version: 3, rule: CONWAY_RULE_STRING };
+}
+
 /** Parse + migrate an arbitrary decoded-JSON value up to the current schema. Throws descriptively. */
-export function migrateToCurrent(raw: unknown): PersistedDocV2 {
+export function migrateToCurrent(raw: unknown): PersistedDocV3 {
   if (!isPlainObject(raw)) fail('expected a JSON object at the top level');
   const version = raw.version;
-  if (version === EXPERIMENT_FORMAT_VERSION) return validateV2(raw);
-  if (version === 1) return migrateV1toV2(validateV1(raw));
+  if (version === EXPERIMENT_FORMAT_VERSION) return validateV3(raw);
+  if (version === 2) return migrateV2toV3(validateV2(raw));
+  if (version === 1) return migrateV2toV3(migrateV1toV2(validateV1(raw)));
   if (typeof version !== 'number' || !Number.isFinite(version)) {
     fail('missing or invalid "version" field — this file is not an AFTERLIFE experiment');
   }
@@ -261,7 +300,7 @@ export function migrateToCurrent(raw: unknown): PersistedDocV2 {
 }
 
 /** Persisted → runtime document (unpack cells). */
-export function decodeDoc(p: PersistedDocV2): ExperimentDoc {
+export function decodeDoc(p: PersistedDocV3): ExperimentDoc {
   const edits: ExperimentDoc['edits'] = {};
   for (const [branchId, list] of Object.entries(p.edits)) {
     edits[branchId] = list.map((entry) => ({
@@ -274,6 +313,7 @@ export function decodeDoc(p: PersistedDocV2): ExperimentDoc {
     title: p.title,
     createdAt: p.createdAt,
     spec: p.spec,
+    rule: p.rule,
     seed: p.seed,
     density: p.density,
     activeBranch: p.activeBranch,
@@ -288,12 +328,12 @@ export function decodeDoc(p: PersistedDocV2): ExperimentDoc {
 }
 
 /** Runtime document → persisted (pack cells, fixed key order for stable JSON). */
-export function encodeDoc(doc: ExperimentDoc): PersistedDocV2 {
+export function encodeDoc(doc: ExperimentDoc): PersistedDocV3 {
   const { width, height } = doc.spec;
   const branchOrder = doc.branches.map((b) => b.id);
   const editKeys = [...branchOrder, ...Object.keys(doc.edits).filter((k) => !branchOrder.includes(k)).sort()];
 
-  const edits: PersistedDocV2['edits'] = {};
+  const edits: PersistedDocV3['edits'] = {};
   for (const branchId of editKeys) {
     const list = doc.edits[branchId];
     if (!list) continue;
@@ -305,11 +345,22 @@ export function encodeDoc(doc: ExperimentDoc): PersistedDocV2 {
       }));
   }
 
-  const out: PersistedDocV2 = {
+  // Canonicalise, and fall back to Conway rather than writing an unvalidated
+  // rule string — a defensive default, not the normal path (every ExperimentDoc
+  // a live session builds always has a real `rule`, see `session.buildExperimentDoc`).
+  let rule = CONWAY_RULE_STRING;
+  try {
+    if (doc.rule) rule = parseRule(doc.rule).rule;
+  } catch {
+    rule = CONWAY_RULE_STRING;
+  }
+
+  const out: PersistedDocV3 = {
     version: EXPERIMENT_FORMAT_VERSION,
     title: doc.title,
     createdAt: doc.createdAt,
     spec: doc.spec,
+    rule,
     seed: doc.seed,
     density: doc.density,
     activeBranch: doc.activeBranch,

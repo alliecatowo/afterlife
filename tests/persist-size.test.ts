@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mulberry32 } from '@/core/rng';
 import type { EditOp, WorldSpec } from '@/core/types';
-import { exportExperiment, type ExperimentDoc } from '@/persist/store';
+import { EXPERIMENT_FORMAT_VERSION, exportExperiment, type ExperimentDoc } from '@/persist/store';
 
 /** A "typical" AFTERLIFE session: a 256x160 world (the size ARCHITECTURE.md
  *  uses as its reference), ~40 minutes of drawing spread over a few thousand
@@ -33,10 +33,11 @@ function buildTypicalExperiment(): ExperimentDoc {
   const forkEdits = [...rootEdits.filter((e) => e.gen <= 800), ...randomEdits(800, 1400, 0.05)];
 
   return {
-    version: 2,
+    version: EXPERIMENT_FORMAT_VERSION,
     title: 'Typical session',
     createdAt: Date.now(),
     spec,
+    rule: 'B3/S23',
     seed: 'typical-session-seed',
     density: 0.12,
     activeBranch: 'branch-1',
@@ -91,10 +92,11 @@ describe('typical experiment storage size', () => {
   it('an empty/fresh experiment is tiny', () => {
     const spec: WorldSpec = { width: 256, height: 160, boundary: 'torus' };
     const doc: ExperimentDoc = {
-      version: 2,
+      version: EXPERIMENT_FORMAT_VERSION,
       title: 'Fresh',
       createdAt: Date.now(),
       spec,
+      rule: 'B3/S23',
       seed: 1,
       density: 0.1,
       activeBranch: 'root',

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createEngine } from '@/core/engine';
 import type { EditOp, WorldSpec } from '@/core/types';
-import { exportExperiment, importExperiment, type ExperimentDoc } from '@/persist/store';
+import { EXPERIMENT_FORMAT_VERSION, exportExperiment, importExperiment, type ExperimentDoc } from '@/persist/store';
 
 const SPEC: WorldSpec = { width: 16, height: 16, boundary: 'torus' };
 
@@ -28,10 +28,11 @@ const BLOCK: EditOp = {
 
 function buildDoc(): ExperimentDoc {
   return {
-    version: 2,
+    version: EXPERIMENT_FORMAT_VERSION,
     title: 'Glider study',
     createdAt: 1234567890,
     spec: SPEC,
+    rule: 'B36/S23', // non-Conway on purpose — exercises rule persistence through export/import
     seed: 'afterlife-test-seed',
     density: 0, // fully hand-drawn start via gen-0 edits below
     activeBranch: 'branch-1',
@@ -59,7 +60,7 @@ function buildDoc(): ExperimentDoc {
  *  mirroring TimelineStore's replay semantics (edits at g apply after arriving
  *  at g, before the step that produces g + 1). */
 function replay(doc: ExperimentDoc, branch: string, toGen: number): Uint8Array {
-  const engine = createEngine({ width: doc.spec.width, height: doc.spec.height });
+  const engine = createEngine({ width: doc.spec.width, height: doc.spec.height, rule: doc.rule });
   engine.seed(doc.seed, doc.density);
   const byGen = new Map(doc.edits[branch]!.map((e) => [e.gen, e.ops]));
   for (let g = 0; g <= toGen; g++) {
@@ -114,6 +115,34 @@ describe('experiment export/import', () => {
     expect(reopened.branches).toEqual(doc.branches);
   });
 
+  it('persists a non-Conway rule through export/import, and it actually governs replay', () => {
+    const doc = buildDoc();
+    expect(doc.rule).toBe('B36/S23');
+    const reopened = importExperiment(exportExperiment(doc));
+    expect(reopened.rule).toBe('B36/S23');
+
+    // Not just round-tripped as a string — replaying under it produces a
+    // DIFFERENT world than replaying the same edits under Conway would. Use a
+    // dedicated ring-of-6-neighbours seed (a documented HighLife-only birth;
+    // see tests/core-engine-rules.test.ts) rather than buildDoc()'s sparse
+    // glider, which is too sparse to ever land on a 6-neighbour cell in a
+    // handful of generations.
+    const RING: EditOp = {
+      kind: 'set',
+      cells: [
+        { x: 7, y: 7, alive: true }, { x: 8, y: 7, alive: true }, { x: 9, y: 7, alive: true },
+        { x: 7, y: 8, alive: true }, { x: 9, y: 8, alive: true },
+        { x: 7, y: 9, alive: true },
+      ],
+    };
+    const ringDoc: ExperimentDoc = { ...doc, edits: { root: [{ gen: 0, ops: [RING] }] } };
+    const reopenedRing = importExperiment(exportExperiment(ringDoc));
+    expect(reopenedRing.rule).toBe('B36/S23');
+    const underHighLife = replay(reopenedRing, 'root', 1);
+    const underConway = replay({ ...reopenedRing, rule: 'B3/S23' }, 'root', 1);
+    expect(Array.from(underHighLife)).not.toEqual(Array.from(underConway));
+  });
+
   it('rejects malformed JSON with a descriptive error', () => {
     expect(() => importExperiment('{not json')).toThrow(/invalid JSON/);
   });
@@ -146,13 +175,16 @@ describe('schema migration', () => {
       notes: 'from before bookmarks existed',
     };
     const doc = importExperiment(JSON.stringify(v1));
-    expect(doc.version).toBe(2);
+    expect(doc.version).toBe(EXPERIMENT_FORMAT_VERSION);
     expect(doc.title).toBe('legacy experiment');
     expect(doc.activeBranch).toBe('root');
     expect(doc.lens).toBe('life');
     expect(doc.bookmarks).toEqual([]);
     expect(doc.discoveries).toEqual([]);
     expect(doc.notes).toBe('from before bookmarks existed');
+    // The whole point of the migration path: a save from before rule
+    // generalisation existed opens as Conway, never left ambiguous.
+    expect(doc.rule).toBe('B3/S23');
 
     // And the migrated edits still replay to the same world.
     const rebuilt = replay(doc, 'root', 3);
@@ -163,5 +195,25 @@ describe('schema migration', () => {
     engine.step();
     engine.step();
     expect(Array.from(rebuilt)).toEqual(Array.from(engine.snapshot().bits));
+  });
+
+  it('loads a v2 payload (pre-rule-generalisation, packed edits) as Conway under the current version', () => {
+    const v2 = {
+      version: 2,
+      title: 'pre-rule save',
+      createdAt: 7,
+      spec: SPEC,
+      seed: 'v2-seed',
+      density: 0,
+      activeBranch: 'root',
+      branches: [{ id: 'root', name: 'root', parent: null, fromGen: 0, createdAt: 0 }],
+      edits: { root: [] },
+      bookmarks: [],
+      discoveries: [],
+    };
+    const doc = importExperiment(JSON.stringify(v2));
+    expect(doc.version).toBe(EXPERIMENT_FORMAT_VERSION);
+    expect(doc.rule).toBe('B3/S23');
+    expect(doc.title).toBe('pre-rule save');
   });
 });

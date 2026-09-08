@@ -84,7 +84,9 @@ export function PersistPanel() {
     if (!session) return;
     const rect = selection ?? { x: 0, y: 0, w: WORLD_SPEC.width, h: WORLD_SPEC.height };
     const cells = session.engine.region(rect);
-    download(`${effectiveTitle().replace(/\s+/g, '-').toLowerCase()}.rle`, toRLE(cells, rect, effectiveTitle()), 'text/plain');
+    // Write the WORLD'S ACTUAL rule (never a hardcoded Conway) — see
+    // `@/persist/rle.ts`'s honesty-upgrade doc.
+    download(`${effectiveTitle().replace(/\s+/g, '-').toLowerCase()}.rle`, toRLE(cells, rect, effectiveTitle(), { rule: session.engine.rule }), 'text/plain');
   };
 
   const importRle = (file: File): void => {
@@ -92,6 +94,15 @@ export function PersistPanel() {
     void file.text().then((text) => {
       try {
         const parsed = fromRLE(text);
+        // A pattern authored for a non-Conway rule only behaves as documented
+        // under that rule — adopt it for the whole world (a fresh-world
+        // operation, same as `RulesPanel`; see `Session.setRule`'s doc)
+        // rather than silently stamping it under whatever rule happened to
+        // be active, which would misrepresent the pattern.
+        if (parsed.rule !== session.engine.rule) {
+          session.setRule(parsed.rule);
+          bus.emit('toast', { message: `Switched the world to ${parsed.rule} to match this pattern.`, tone: 'info' });
+        }
         const origin = selection ?? {
           x: Math.floor(session.camera.camera.x - parsed.w / 2),
           y: Math.floor(session.camera.camera.y - parsed.h / 2),

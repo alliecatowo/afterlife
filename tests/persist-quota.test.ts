@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bus } from '@/ui/bus';
 import {
+  EXPERIMENT_FORMAT_VERSION,
   PersistQuotaError,
   STORAGE_PREFIX,
   createPersistStore,
@@ -45,10 +46,11 @@ class FakeStorage implements StorageLike {
 
 function makeDoc(title: string): ExperimentDoc {
   return {
-    version: 2,
+    version: EXPERIMENT_FORMAT_VERSION,
     title,
     createdAt: 1,
     spec: { width: 8, height: 8, boundary: 'torus' },
+    rule: 'B3/S23',
     seed: 1,
     density: 0,
     activeBranch: 'root',
