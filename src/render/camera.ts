@@ -106,8 +106,16 @@ export interface CameraController {
    */
   zoomAt(screenPx: { x: number; y: number }, factor: number): void;
 
-  /** Smoothly track a moving world point each frame until released. */
-  follow(target: CellCoord | (() => CellCoord)): void;
+  /**
+   * Smoothly track a moving world point each frame until released.
+   * `targetScale`, if given, is also critically-damped toward (independently
+   * of x/y, on its own velocity/time-constant) instead of jumping instantly —
+   * used by cinematic-style camera moves that combine a pan with a zoom
+   * change (e.g. easing into a close-up, or pulling back to an establishing
+   * shot) without a hard cut. Omit it to leave `scale` exactly as-is, same
+   * as before this parameter existed.
+   */
+  follow(target: CellCoord | (() => CellCoord), targetScale?: number): void;
 
   /** Stop following. No-op if not following. Called automatically by any
    *  user-initiated pan/zoom/drag (`set`, `panByScreen`, `zoomAt`, `fit`). */
@@ -131,16 +139,25 @@ const DEFAULT_FOLLOW_SMOOTH_TIME = 0.28; // seconds; critically damped
  * `prefersReducedMotion` — it's one cheap synchronous call, and the OS
  * setting can change mid-session.
  */
-function reducedMotionPreferred(): boolean {
+export function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 }
+
+/** Smooth-time for a `follow()`-driven scale change — deliberately slower
+ *  than `DEFAULT_FOLLOW_SMOOTH_TIME` (position). A cinematic zoom reads as
+ *  purposeful only if it lags behind the pan slightly rather than arriving
+ *  in lockstep; matching it 1:1 read, in practice, as a single mechanical
+ *  move rather than two independent camera decisions. */
+const DEFAULT_FOLLOW_SCALE_SMOOTH_TIME = 0.9;
 
 class CameraControllerImpl implements CameraController {
   #camera: Camera;
   #viewport: Viewport = { width: 1, height: 1 };
   #followFn: (() => CellCoord) | null = null;
+  #followScale: number | null = null;
   #velX = { v: 0 };
   #velY = { v: 0 };
+  #velScale = { v: 0 };
 
   constructor(initial?: Partial<Camera>) {
     this.#camera = {
@@ -196,14 +213,17 @@ class CameraControllerImpl implements CameraController {
     this.#emit();
   }
 
-  follow(target: CellCoord | (() => CellCoord)): void {
+  follow(target: CellCoord | (() => CellCoord), targetScale?: number): void {
     this.#followFn = typeof target === 'function' ? target : () => target;
+    this.#followScale = targetScale !== undefined ? clampScale(targetScale) : null;
     this.#velX.v = 0;
     this.#velY.v = 0;
+    this.#velScale.v = 0;
   }
 
   releaseFollow(): void {
     this.#followFn = null;
+    this.#followScale = null;
   }
 
   fit(rect: { x: number; y: number; w: number; h: number }, paddingPx = 32): void {
@@ -218,19 +238,24 @@ class CameraControllerImpl implements CameraController {
   tick(dtSeconds: number): void {
     if (!this.#followFn) return;
     const target = this.#followFn();
-    if (reducedMotionPreferred()) {
+    if (prefersReducedMotion()) {
       // Snap straight to the target instead of easing — `prefers-reduced-motion`
       // must suppress this the same as any other motion (scene-beat camera
       // eases and manual `follow()` calls both flow through here).
       this.#velX.v = 0;
       this.#velY.v = 0;
-      this.#camera = { x: target.x, y: target.y, scale: this.#camera.scale };
+      this.#velScale.v = 0;
+      const scale = this.#followScale !== null ? this.#followScale : this.#camera.scale;
+      this.#camera = { x: target.x, y: target.y, scale };
       this.#emit();
       return;
     }
     const x = smoothDamp(this.#camera.x, target.x, this.#velX, DEFAULT_FOLLOW_SMOOTH_TIME, dtSeconds);
     const y = smoothDamp(this.#camera.y, target.y, this.#velY, DEFAULT_FOLLOW_SMOOTH_TIME, dtSeconds);
-    this.#camera = { x, y, scale: this.#camera.scale };
+    const scale = this.#followScale !== null
+      ? smoothDamp(this.#camera.scale, this.#followScale, this.#velScale, DEFAULT_FOLLOW_SCALE_SMOOTH_TIME, dtSeconds)
+      : this.#camera.scale;
+    this.#camera = { x, y, scale };
     this.#emit();
   }
 }

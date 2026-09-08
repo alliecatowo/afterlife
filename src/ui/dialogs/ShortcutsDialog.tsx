@@ -39,6 +39,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
     rows: [
       ['1 / 2 / 3', 'Life / age / activity lens'],
       ['V', 'Presentation mode'],
+      ['C', 'Cinematic mode — auto-pan, full-screen, hands-off (any input pauses it; Esc exits)'],
       ['?', 'This sheet'],
       ['Esc', 'Close dialog / panel / presentation, or cancel the current selection / armed stamp'],
     ],

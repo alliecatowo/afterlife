@@ -166,4 +166,78 @@ describe('camera controller', () => {
       expect(cam.camera.x).toBeLessThan(100);
     });
   });
+
+  // `follow()`'s optional second argument — added for cinematic mode
+  // (`@/ui/cinematic/director.ts`), which combines a pan with a zoom change
+  // (easing into a close-up, pulling back to an establishing wide shot)
+  // without a hard cut. Kept in this file (not a new one) since it's the
+  // same `follow()`/`tick()` contract the tests above already cover.
+  describe('follow() with a target scale', () => {
+    it('leaves scale untouched when no target scale is given (existing scene-beat callers are unaffected)', () => {
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 50, y: 50 });
+      for (let i = 0; i < 60; i++) cam.tick(1 / 60);
+      expect(cam.camera.scale).toBe(10);
+    });
+
+    it('eases scale toward the target independently of x/y position easing', () => {
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 100, y: 0 }, 20);
+      cam.tick(1 / 60);
+      // Neither has arrived yet, but both are moving toward their targets.
+      expect(cam.camera.scale).toBeGreaterThan(10);
+      expect(cam.camera.scale).toBeLessThan(20);
+      for (let i = 0; i < 600; i++) cam.tick(1 / 60);
+      expect(cam.camera.scale).toBeCloseTo(20, 1);
+      expect(cam.camera.x).toBeCloseTo(100, 1);
+    });
+
+    it('clamps an out-of-range target scale to [MIN_SCALE, MAX_SCALE]', () => {
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 0, y: 0 }, 9999);
+      for (let i = 0; i < 2000; i++) cam.tick(1 / 60);
+      expect(cam.camera.scale).toBeCloseTo(MAX_SCALE, 6);
+    });
+
+    it('a later follow() call without a target scale stops animating scale (releases the previous scale target)', () => {
+      const cam = createCamera({ x: 0, y: 0, scale: 10 });
+      cam.setViewport(800, 600);
+      cam.follow({ x: 0, y: 0 }, 20);
+      cam.tick(1 / 60);
+      const midScale = cam.camera.scale;
+      expect(midScale).toBeGreaterThan(10);
+      cam.follow({ x: 5, y: 5 }); // no target scale this time
+      cam.tick(1 / 60);
+      expect(cam.camera.scale).toBe(midScale); // held exactly where it was, not still drifting toward 20
+    });
+
+    describe('prefers-reduced-motion also applies to the scale target', () => {
+      afterEach(() => {
+        // @ts-expect-error test-only cleanup of a property this suite adds
+        delete window.matchMedia;
+      });
+
+      it('snaps straight to the target scale, not just the target position', () => {
+        window.matchMedia = ((query: string) => ({
+          matches: true,
+          media: query,
+          addEventListener() {},
+          removeEventListener() {},
+          addListener() {},
+          removeListener() {},
+          dispatchEvent() { return false; },
+        })) as unknown as typeof window.matchMedia;
+        const cam = createCamera({ x: 0, y: 0, scale: 10 });
+        cam.setViewport(800, 600);
+        cam.follow({ x: 40, y: -10 }, 22);
+        cam.tick(1 / 60);
+        expect(cam.camera.x).toBe(40);
+        expect(cam.camera.y).toBe(-10);
+        expect(cam.camera.scale).toBe(22);
+      });
+    });
+  });
 });

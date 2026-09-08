@@ -31,6 +31,7 @@ import { createSoundscape, type Soundscape } from '@/audio/audio';
 import { createPersistStore, EXPERIMENT_FORMAT_VERSION, STORAGE_PREFIX, type PersistStore } from '@/persist/store';
 import type { ExperimentDoc } from '@/persist/store';
 import { scan, type ScanResult } from '@/content/recognition';
+import { initCinematic, type CinematicController } from '@/ui/cinematic';
 import { getPattern } from '@/content/patterns';
 import { OPENING_SCENE, type CameraSpec, type SceneDef } from '@/content/scenes';
 import type { EditOp, Rect, WorldSpec } from '@/core/types';
@@ -51,6 +52,10 @@ export interface Session {
   sculpture: TimeSculpture;
   soundscape: Soundscape;
   persist: PersistStore;
+  /** Cinematic mode's public entry point — see `@/ui/cinematic`'s doc. Exposed
+   *  here mainly so `e2e/` and `window.__AFTERLIFE__` can drive/assert it
+   *  without depending on the exact keyboard shortcut. */
+  cinematic: CinematicController;
   /** Ask the sculpture to open on the current selection (or the whole world). */
   openSculpture(): void;
   closeSculpture(): void;
@@ -107,6 +112,10 @@ export function initSession(): Session {
   const sculptureController = createSculpture(sculptureHost);
   const soundscape = createSoundscape();
   const persist = createPersistStore();
+  // See `@/ui/cinematic`'s doc: an "auto-pan, hold-on-what's-interesting"
+  // full-screen mode, layered on top of the existing camera/presentation
+  // machinery rather than a new chrome-hiding mechanism of its own.
+  const cinematic = initCinematic({ camera, engine });
 
   // ---- specimen stamping: arm InputController from the drawer's selection ---
   // `@/ui/uiState` tracks WHICH pattern is selected and its transform (drawer-
@@ -483,7 +492,7 @@ export function initSession(): Session {
   }
 
   session = {
-    engine, history, camera, renderer, input, loop, sculpture: sculptureController, soundscape, persist,
+    engine, history, camera, renderer, input, loop, sculpture: sculptureController, soundscape, persist, cinematic,
     openSculpture() {
       const sel = readState().selection;
       const rect = sel ?? { x: 0, y: 0, w: Math.min(64, WORLD_SPEC.width), h: Math.min(64, WORLD_SPEC.height) };

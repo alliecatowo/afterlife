@@ -168,3 +168,49 @@ now also reads `useAppStore`'s existing `speed`/`setSpeed` (an ordinary, already
 action) for the optional audio-reactive tempo nudge — no new coupling to `@/core/**`.
 **Blocking?** no.
 **Resolution:** n/a.
+
+## 2026-09-07 — cinematic — auto-pan full-screen mode (`src/ui/cinematic/**`, `src/render/camera.ts`)
+
+**Need:** a HUD entry point next to the presentation-mode button, and one new icon for it.
+I was explicitly told (by the task brief coordinating this work alongside a concurrent
+mobile-layout agent who owns `src/ui/App.tsx`/`src/ui/hud/Hud.tsx`/`src/ui/panels/**`/
+`src/styles/**`) NOT to edit those files myself, and to write the exact change here instead.
+
+**Proposed** (small, additive, mirrors the `audio`/`tutorial` agents' own HUD additions above):
+- `src/ui/icons.tsx`: add a `FilmIcon` (or reuse any existing icon that reads as "cinematic" —
+  I did not want to guess the house style for a new glyph while that file may be mid-edit).
+- `src/ui/hud/Hud.tsx`: right next to the existing "Presentation mode" `IconButton` (search for
+  `ExpandIcon`/`'Presentation mode'`), add:
+  ```tsx
+  <Tooltip content="Cinematic mode — full-screen, auto-pan, hands-off">
+    <IconButton
+      label="Cinematic mode"
+      icon={<FilmIcon />}
+      onClick={() => getSession()?.cinematic.enter()}
+    />
+  </Tooltip>
+  ```
+  `getSession()` is already imported in `Hud.tsx`. `Session.cinematic` (added to
+  `src/ui/session.ts`, which I do own) exposes `{ enter(), exit(), toggle(), isActive() }`.
+
+**What already works without that edit, so this is a nice-to-have, not a blocker:**
+Cinematic mode is fully functional today via the **'C' keyboard shortcut** (documented in
+`ShortcutsDialog.tsx`, which I did additively edit — it's not in the mobile agent's owned
+list) and via `window.__AFTERLIFE__.cinematic` in dev/e2e. It reuses the EXISTING
+`presentation` app-state flag + `presentation:toggle` bus event for chrome-hiding (calling
+their already-public setter/emit — no edits to the frozen `@/ui/store.ts`/`@/ui/bus.ts`),
+layers a best-effort Fullscreen API request on top, and mounts its own minimal fading
+HUD-replacement (`CinematicOverlay`) via a **self-created DOM root appended to
+`document.body`** — entirely outside the `App.tsx` React tree — specifically so it needed no
+integration point there either. See `src/ui/cinematic/index.ts`'s doc comment for the full
+design (interest scoring off real engine state, camera choreography, hand-back-control on any
+input, `prefers-reduced-motion` handling).
+
+Also touched (both within my stated ownership): `src/render/camera.ts` — `follow()` gained an
+optional second `targetScale` argument (backward-compatible; the one existing caller,
+`session.ts`'s scene-beat camera ease, is unaffected) so a cinematic camera move can ease a
+pan and a zoom change together instead of cutting scale instantly; and `prefersReducedMotion()`
+is now exported (was a private helper) for reuse by the cinematic director.
+
+**Blocking?** no.
+**Resolution:** n/a.
