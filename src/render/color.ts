@@ -339,10 +339,15 @@ const CVD_VERMILLION = 'oklch(0.621 0.170 47.5)';
  * derived from the design tokens where possible." The CVD palette swaps in
  * Okabe-Ito instead (see above).
  *
- * Each entry also differs in OKLCH lightness, not hue alone (life/age sit
- * around L0.79-0.87, activity/branch-a around L0.72-0.80) so species remain
- * distinguishable by lightness even if hue is imperceptible — the "never
- * rely on hue alone" requirement, applied at the palette-design level.
+ * These 4 tokens also spread across a real lightness range (life L0.87,
+ * branch-a L0.80, age L0.79, activity L0.72) rather than sharing one
+ * lightness — not a large spread, but enough that species stay somewhat
+ * distinguishable even where hue alone would be ambiguous. This is a
+ * best-effort property of REUSING existing tokens, not a guarantee the way
+ * the dedicated `cvd` palette below is (verified against protanopia/
+ * deuteranopia/tritanopia simulation) — callers who need a hard guarantee
+ * should reach for `mode: 'cvd'`, which is the actual "never rely on hue
+ * alone" answer for this palette.
  */
 export function resolveQuadPalette(mode: PaletteMode = 'default'): RGB[] {
   if (mode === 'cvd') {
