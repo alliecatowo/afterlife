@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createEngine } from '@/core/engine';
-import { RuleParseError } from '@/core/rule';
+import { createTimelineStore } from '@/core/history';
+import { CONWAY_RULE_STRING, RuleParseError } from '@/core/rule';
 
 describe('LifeEngine: rule construction', () => {
   it('defaults to Conway B3/S23', () => {
@@ -122,5 +123,57 @@ describe('LifeEngine: clone() carries the active rule', () => {
     const engine = createEngine({ width: 8, height: 8 });
     engine.setRule('B2/S');
     expect(engine.clone().rule).toBe('B2/S');
+  });
+});
+
+describe('Guard: loading authored content forces Conway regardless of the current rule', () => {
+  /**
+   * Mirrors the EXACT sequence `@/ui/session.ts`'s `loadScene()` performs
+   * (see its doc: "NON-NEGOTIABLE ... force it here regardless of whatever
+   * rule the user had selected") — `setRule` BEFORE `clear()`/history reset,
+   * so there is never a moment where old-rule bits exist under a new rule.
+   * `session.ts` itself needs a live DOM/canvas to construct, so this proves
+   * the underlying mechanism it calls, rather than the wiring, which is a
+   * one-line, directly-readable call into exactly this.
+   */
+  function simulateLoadScene(engine: ReturnType<typeof createEngine>, history: ReturnType<typeof createTimelineStore>, cells: Array<{ x: number; y: number }>): void {
+    engine.setRule(CONWAY_RULE_STRING);
+    engine.clear();
+    history.reset();
+    if (cells.length > 0) {
+      history.record(0, [{ kind: 'set', cells: cells.map((c) => ({ x: c.x, y: c.y, alive: true })) }]);
+    }
+  }
+
+  it('a scene loads as Conway even after the user switched to a wildly different rule', () => {
+    const engine = createEngine({ width: 16, height: 16, rule: 'B2/S' }); // Seeds: no survivals at all
+    const history = createTimelineStore({ engine });
+    engine.set(1, 1, true); // some prior custom-rule state
+    for (let i = 0; i < 5; i++) engine.step();
+
+    const sceneCells = [{ x: 4, y: 4 }, { x: 5, y: 5 }, { x: 6, y: 6 }]; // a diagonal, arbitrary "scene"
+    simulateLoadScene(engine, history, sceneCells);
+
+    expect(engine.rule).toBe('B3/S23');
+    expect(engine.gen).toBe(0);
+    // The scene's exact cells, nothing left over from the prior rule/state.
+    const live = new Set<string>();
+    engine.forEachLive({ x: 0, y: 0, w: 16, h: 16 }, (x, y) => { live.add(`${x},${y}`); });
+    expect(live).toEqual(new Set(sceneCells.map((c) => `${c.x},${c.y}`)));
+
+    // And it now genuinely EVOLVES as Conway, not Seeds — a still life
+    // (block) planted alongside the scene's cells stays put for 10 gens,
+    // which would be false under Seeds (nothing ever survives there).
+    engine.set(10, 10, true); engine.set(11, 10, true); engine.set(10, 11, true); engine.set(11, 11, true);
+    for (let i = 0; i < 10; i++) engine.step();
+    expect(engine.get(10, 10) && engine.get(11, 10) && engine.get(10, 11) && engine.get(11, 11)).toBe(true);
+  });
+
+  it('a fresh clone/branch made after loading the scene also stays Conway', () => {
+    const engine = createEngine({ width: 16, height: 16, rule: 'B36/S23' });
+    const history = createTimelineStore({ engine });
+    simulateLoadScene(engine, history, [{ x: 2, y: 2 }]);
+    expect(history.engine.rule).toBe('B3/S23');
+    expect(engine.clone().rule).toBe('B3/S23');
   });
 });
