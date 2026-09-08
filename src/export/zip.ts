@@ -116,5 +116,6 @@ export function buildZip(entries: readonly ZipEntry[]): Uint8Array {
 }
 
 export function buildZipBlob(entries: readonly ZipEntry[]): Blob {
-  return new Blob([buildZip(entries)], { type: 'application/zip' });
+  const bytes = buildZip(entries);
+  return new Blob([bytes.buffer as ArrayBuffer], { type: 'application/zip' });
 }

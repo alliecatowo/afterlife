@@ -15,7 +15,7 @@
  * wall-clock time to *encode* the file scales with the output's duration.
  */
 import type { FrameSource, ProgressCallback } from './types';
-import { ExportUnsupportedError, isAbortError } from './errors';
+import { ExportUnsupportedError } from './errors';
 
 export const WEBM_MIME_CANDIDATES = [
   'video/webm;codecs=vp9,opus',
@@ -41,8 +41,6 @@ interface CanvasCaptureTrack extends MediaStreamTrack {
 
 export interface RecordWebmOptions {
   fps: number;
-  /** Extra audio track to mux in (already-decoded, realtime-played source — see `audioMux.ts`). */
-  audioTrack?: MediaStreamTrack;
   videoBitsPerSecond?: number;
   onProgress?: ProgressCallback;
   signal?: AbortSignal;
@@ -83,9 +81,7 @@ export async function recordWebm(source: FrameSource, opts: RecordWebmOptions): 
     videoTrack = canvasStream.getVideoTracks()[0] as CanvasCaptureTrack | undefined ?? null;
     if (!videoTrack) throw new ExportUnsupportedError('This browser could not create a canvas capture stream for video export.');
 
-    const tracks: MediaStreamTrack[] = [videoTrack];
-    if (opts.audioTrack) tracks.push(opts.audioTrack);
-    const stream = new MediaStream(tracks);
+    const stream = new MediaStream([videoTrack]);
 
     const chunks: Blob[] = [];
     recorder = new MediaRecorder(stream, {
@@ -129,7 +125,6 @@ export async function recordWebm(source: FrameSource, opts: RecordWebmOptions): 
     if (recorder && recorder.state !== 'inactive') {
       try { recorder.stop(); } catch { /* already stopping */ }
     }
-    if (isAbortError(err)) throw err;
     throw err;
   } finally {
     videoTrack?.stop();

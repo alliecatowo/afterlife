@@ -152,3 +152,4 @@ export { EXPORT_PRESETS, DEFAULT_EXPORT_SETTINGS, applyPreset } from './presets'
 export type { ExportPreset, ExportSettings, ExportFormat } from './presets';
 export { computeFramePlan } from './pacing';
 export { formatBytes, formatDuration, estimateWebmBytes, estimatePngZipBytes } from './estimate';
+export { ExportUnsupportedError, isAbortError } from './errors';

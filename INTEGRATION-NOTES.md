@@ -1253,3 +1253,86 @@ underlying stop value is untouched until the user actually changes it.
 **Resolution:** self-mounted reachability + keyboard shortcut ship today; the Hud.tsx/
 PanelRight.tsx/uiState.ts diff above is ready for whoever next has write access to those
 files, per this task's own ownership rule.
+
+## 2026-09-08 — media-export — `src/export/**`, `src/ui/panels/ExportPanel.tsx`, `PersistPanel.tsx`
+**Need:** n/a — informational record. Built video/frame export: `src/export/**` (new
+module) plus a small, additive extension of `PersistPanel.tsx`'s existing "Images" section
+(it already covered still PNG export, so per this task's own instructions I extended it
+rather than inventing a new right-panel tab/HUD button — no `uiState.ts`/`PanelRight.tsx`/
+`Hud.tsx` touch needed at all).
+
+**Shipped, reachable in the UI today (PersistPanel -> "Export video…"):**
+- **Offline deterministic WebM export.** `replay.ts` builds an INDEPENDENT `LifeEngine` via
+  `TimelineStore.cloneBranchAt` (the same mechanism `session.ts`'s compare view already
+  uses) and steps it forward re-applying real recorded `EditOp`s in the exact apply-then-
+  step order `history.ts`'s own internal replay uses — never touches the live engine/
+  history/camera. `worldFrameSource.ts` drives a SECOND `WorldRenderer` instance (again,
+  the same pattern as the compare view) attached to a hidden-but-laid-out canvas
+  (`hiddenCanvas.ts` — a detached or `display:none` canvas reports a zero layout box, which
+  breaks `WorldRenderer.resize()`, so this canvas is real, sized, `visibility:hidden`
+  instead), reading the CURRENT `useAppStore`/`useArtStore` lens/grid/art state at export
+  time so it renders whatever the user is actually looking at, including whichever theme is
+  active (theme colours resolve off `document.documentElement`'s CSS custom properties
+  globally, so this needed zero extra wiring against the theming agent's work). Encoded via
+  `webmRecorder.ts` (`MediaRecorder` + `canvas.captureStream(0)` + manual
+  `track.requestFrame()`, codec-detected via `MediaRecorder.isTypeSupported`, degrades to an
+  honest `ExportUnsupportedError` — surfaced in the UI as a plain warning + disabled Export
+  button — rather than producing a broken file). Cancellable via `AbortSignal` threaded
+  through the replay cursor, frame source and recorder; progress reported per frame.
+- **Zipped PNG sequence export** (`pngZipExport.ts` + hand-written `zip.ts`/`crc32.ts`,
+  STORED entries — PNG is already compressed, a second pass would waste CPU for nothing).
+  Same deterministic replay/frame-source pipeline, fully offline (no `MediaRecorder`
+  realtime-pacing constraint at all — this one really can run faster than real time).
+- Bounded + honest: `limits.ts` caps frame count (stride-sampled, anchored on first+last
+  frame, mirroring `@/sculpture/budget.ts`'s policy) and resolution, always returning a
+  human-readable reduction note surfaced as a toast rather than silently truncating.
+- 3 presets (share-on-social / high-quality / PNG-sequence) + full manual control (width/
+  height/fps/simulated-speed/annotate), with a live estimated-size/duration readout before
+  starting (`estimate.ts`, heuristic — documented as such, not a measured encode).
+- Optional burned-in annotation (rule string + generation range; `filename.ts`/
+  `annotate.ts`) consistent with the existing still-PNG export's caption convention.
+- Teardown: `webmRecorder.ts`'s `finally` always stops the capture track and disposes the
+  frame source (which disposes its own renderer + removes its hidden canvas from the DOM)
+  even on error/cancel; `ExportPanel.tsx` cancels any in-flight export if the dialog closes
+  mid-run; downloaded blobs' object URLs are revoked on a timer, same as `PersistPanel`'s
+  existing `download()` helper.
+
+**Cut from this pass (per the wrap-up directive — landed-but-untested code is worse than no
+code):**
+- **Animated GIF.** A complete hand-written median-cut quantiser + GIF-flavoured LZW
+  encoder + GIF89a container writer were built and typechecked, but under time pressure I
+  only had a self-authored round-trip decoder to verify the LZW bitstream against (no real
+  third-party GIF reference implementation available in this environment to check produced
+  files open correctly in an actual viewer) — not enough confidence to call it "genuinely
+  produces correct files." Deleted rather than shipped half-verified; the median-cut/LZW/
+  container logic is straightforward to resurrect from this note if someone has a way to
+  verify against a real GIF decoder.
+- **Audio (both deterministic offline render and muxed WebM+audio).** Designed and
+  partially built: `SoundscapeBrain`/`SynthGraph` (both audio-module-owned, pure/explicit-
+  time) are genuinely reusable as-is against an `OfflineAudioContext` via a safe structural
+  cast (confirmed by reading `synth.ts` fully — it never touches an `AudioContext`-only
+  member), which would have made offline audio export truly DETERMINISTIC, not a realtime
+  capture. Cut because I could not exercise `OfflineAudioContext` in this environment
+  (unavailable in jsdom/Vitest) before the wrap-up deadline, and shipping unverified audio
+  muxing risked exactly the "exists but half-works" failure mode this pass was asked to
+  avoid. **No audio export ships in this pass — WebM output is silent.** If revisited: the
+  offline path (reusing the pure brain/synth against `OfflineAudioContext`, fed from the
+  same `replay.ts` cursor) is the right design and should stay deterministic; do NOT fall
+  back to a realtime tap of the live `Soundscape` without saying so plainly, since that
+  would be a real, not deterministic, capture.
+- **Time Sculpture turntable export.** Designed (orbit the existing `TimeSculpture.orbit()`
+  camera + reuse `exportPng()` per frame) but cut for the same reason — untested against
+  real WebGL in the time available, and it's an inherently realtime-paced capture (each
+  frame needs the live scene to actually repaint) that I couldn't verify end-to-end.
+
+**Tests:** 7 new unit files, 29 tests — `pacing` (frame-timing math), `limits` (budget/
+stride-cap policy), `filename` (filename + annotation text), `estimate` (size/duration
+heuristics), `zip`/`crc32` (structural validity + CRC-32 canonical check value + content
+round-trip via manual parse), `webmRecorder` (pure codec-preference selection), `replay`
+(bit-for-bit match against `history.goto()` at the same generation, forward-only enforcement,
+`AbortSignal` cancellation) — all against real `@/core/engine`+`@/core/history`, no mocks.
+No e2e coverage added for the export UI itself (time-boxed out) — the still-PNG export e2e
+coverage in `e2e/persistence.spec.ts` is untouched and still passes.
+
+**Blocking?** no.
+**Resolution:** n/a.

@@ -14,6 +14,7 @@ import { bus } from '@/ui/bus';
 import { exportExperiment, fromRLE, importExperiment, PersistQuotaError, toRLE } from '@/persist/store';
 import { Button, Divider, Field } from '@/ui/primitives';
 import { DownloadIcon, UploadIcon } from '@/ui/icons';
+import { ExportPanel } from './ExportPanel';
 
 function download(filename: string, content: string | Blob, mime = 'text/plain'): void {
   const blob = typeof content === 'string' ? new Blob([content], { type: mime }) : content;
@@ -34,6 +35,7 @@ export function PersistPanel() {
   const selection = useAppStore((s) => s.selection);
   const [saves, setSaves] = useState(() => session?.persist.list() ?? []);
   const [title, setTitle] = useState('Untitled');
+  const [videoExportOpen, setVideoExportOpen] = useState(false);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const rleInputRef = useRef<HTMLInputElement>(null);
 
@@ -217,6 +219,19 @@ export function PersistPanel() {
           )}
         </div>
       </div>
+
+      <Divider />
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-micro uppercase tracking-[0.18em] text-ivory-300">Video</span>
+        <p className="text-xs text-ivory-300">
+          An offline, deterministic replay of recorded history — WebM video or a zipped PNG sequence.
+        </p>
+        <Button size="sm" variant="ghost" onClick={() => setVideoExportOpen(true)}>
+          <DownloadIcon /> Export video…
+        </Button>
+      </div>
+      <ExportPanel open={videoExportOpen} onOpenChange={setVideoExportOpen} />
 
       <Divider />
 
