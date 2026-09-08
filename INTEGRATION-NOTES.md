@@ -920,3 +920,107 @@ this pass — not caused by, and not fixed by, this entry.
 **Resolution:** the two diffs above are ready to apply whenever `App.tsx`/`Hud.tsx` are
 free; the feature is fully functional (`BroadcastChannelTransport`, tested end to end)
 without them.
+
+---
+
+## 2026-09-08 — rules — generalised simulation rules (`src/core/**`, `src/persist/rle.ts`,
+`src/content/rules.ts`, `src/ui/panels/RulesPanel.tsx`)
+
+**What was built:** the engine now runs any outer-totalistic B/S Life-like rule, not just
+Conway's B3/S23 — full detail in the three commits on `main` from this pass (rule model +
+generic table-driven step kernel with the original hardcoded fast path kept for exactly
+Conway; RLE import/export honesty upgrade; a 10-preset curated, verified rule list). Two
+new session-facing pieces: `Session.setRule(rule)` in `src/ui/session.ts` (a fresh-world
+operation — stop, `engine.setRule` + `clear()` + `history.reset()` — documented as
+deliberately never a mid-history edit, see `LifeEngine.setRule`'s doc in
+`src/core/engine.ts`), and `src/ui/panels/RulesPanel.tsx` (preset list + validated custom
+rulestring entry, not yet mounted anywhere). `loadScene()` now force-sets Conway before
+clearing, so a curated scene/specimen/experiment always loads under B3/S23 regardless of
+whatever rule the user had selected — the non-negotiable this whole pass was scoped around.
+`ExperimentDoc` gained a required `rule` field (`persist/codec.ts`, schema v2->v3, older
+saves migrate to Conway).
+
+**Landed cleanly alongside the `multiplayer` agent's concurrent, unrelated
+`setMultiplayerGate`/`setMultiplayerEditSource`/`setMultiplayerEditInterceptor` additions to
+the same `session.ts` file** — same file, different regions, both `tsc --noEmit` clean and
+full suite green after both landed (confirmed via `git status`/`git diff --stat` before each
+commit; no manual merge was needed since neither pass touched the other's lines).
+
+**Need:** `RulesPanel` exists but isn't reachable from anywhere, and the HUD has no rule
+readout — both are in `src/ui/{uiState.ts,panels/PanelRight.tsx,hud/HudMoreSheet.tsx,hud/Hud.tsx}`,
+none of which this pass owns, and all four were either mid-edit or freshly touched by
+concurrent agents this session (`git status` showed `HudMoreSheet.tsx`/`Hud.tsx` untouched but
+`PanelRight.tsx`'s sibling panels churning — routing through this note rather than guessing at
+a merge, same call the `multiplayer` entry above made for the same reason).
+
+**Proposed (four small, additive diffs, independent of each other):**
+
+1. **`src/ui/uiState.ts`** — add `'rules'` to the `RightPanelId` union:
+   ```diff
+   -export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | null;
+   +export type RightPanelId = 'branches' | 'compare' | 'settings' | 'guide' | 'experiments' | 'save' | 'audio' | 'rules' | null;
+   ```
+
+2. **`src/ui/panels/PanelRight.tsx`** — register the panel (needs a rule icon; `@/ui/icons`
+   doesn't have one yet, `DiceIcon`/`SlidersIcon`-adjacent glyph suggested but left to
+   whoever owns `icons.tsx`):
+   ```diff
+   +import { RulesPanel } from './RulesPanel';
+   @@
+    const TITLES = {
+   +  rules: { label: 'Rules', icon: <?RuleIcon?> },
+      branches: { label: 'Branches', icon: <BranchIcon /> },
+   @@
+        {rightPanel === 'audio' && <AudioPanel />}
+   +      {rightPanel === 'rules' && <RulesPanel />}
+   ```
+
+3. **`src/ui/hud/HudMoreSheet.tsx`** — one row in `PANEL_ROWS` (mobile reachability, per this
+   pass's brief):
+   ```diff
+    { id: 'settings', label: 'Settings', icon: <SlidersIcon /> },
+   +{ id: 'rules', label: 'Rules', icon: <?RuleIcon?> },
+   ```
+
+4. **`src/ui/hud/Hud.tsx`** — a HUD readout for the active rule, zero extra renders: this
+   file already writes `gen`/`pop` straight to DOM refs inside its existing `subscribeReadout`
+   callback (bridge #1 in ARCHITECTURE.md's performance rule) — `Session.setRule()` always
+   ends by calling the same `emitGen()` that fires `gen:changed` on every ordinary step, so
+   the SAME callback already fires whenever the rule changes; no new bus event needed (deliberately
+   not proposing one for the frozen `src/ui/bus.ts`). Add one more DOM ref written from that
+   existing callback, e.g. next to the `gen`/`pop` `Readout`s:
+   ```diff
+    <Readout label="gen" value={<span ref={genRef} data-testid="hud-gen">0</span>} digits={6} />
+    <Readout label="pop" value={<span ref={popRef} data-testid="hud-pop">0</span>} digits={6} accent="life" />
+   +<Readout label="rule" value={<span ref={ruleRef} data-testid="hud-rule">B3/S23</span>} digits={9} />
+   ```
+   ```diff
+    useEffect(() => subscribeReadout((r) => {
+      if (genRef.current) genRef.current.textContent = String(r.gen);
+      if (popRef.current) popRef.current.textContent = String(r.population);
+   +  if (ruleRef.current) ruleRef.current.textContent = getSession()?.engine.rule ?? 'B3/S23';
+    }), []);
+   ```
+   A button to OPEN the rules panel (matching the Branches/Compare/.../Settings row) is a
+   fifth, purely mechanical addition following the exact same `Tooltip`+`IconButton`+
+   `toggleRightPanel('rules')` pattern already used for every other panel there — omitted
+   from this diff only because it needs the same icon decision as #2/#3 above.
+
+**Why not applied directly:** same reasoning as the `multiplayer` entry immediately above —
+these are `ui`-owned files under active concurrent churn this session; a diff avoids a
+collision. `RulesPanel` is fully functional and tested standalone (`tests/ui-rules-panel.test.tsx`)
+without any of the above; it just isn't reachable from the running app yet.
+
+**Verified state, this pass's own files in isolation:** `tsc --noEmit` clean · full suite
+718/718 (up from the 522/522 baseline: +45 core rule/engine/history tests, +renamed persist-rle
+coverage, +15 content-rules preset-verification tests, +8 RulesPanel component tests, +2
+persist-experiment rule-persistence tests) · Conway performance measured before/after this
+pass's engine changes on a 512x512 board, 200 steps after a 20-step warmup, jsdom/vitest
+harness (absolute numbers are higher than ARCHITECTURE's cited 1.7ms/step, which was almost
+certainly measured in a real browser without jsdom's overhead — before/after under the SAME
+harness is the fair comparison): **3.2598 ms/step before -> 3.2856 ms/step after (+0.8%,
+within run-to-run noise)** — the specialised Conway kernel is untouched code, dispatched to
+whenever `rule.isConway`.
+
+**Blocking?** no.
+**Resolution:**
