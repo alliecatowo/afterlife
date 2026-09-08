@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_THEMES } from '@/ui/theme/themes';
 import { ALL_THEME_TOKENS } from '@/ui/theme/tokens';
-import { validateTheme, isThemeValid, accentDistances, contrastReport, MIN_ACCENT_DISTANCE, WCAG_AA_BODY } from '@/ui/theme/validate';
+import { validateTheme, isThemeValid, accentDistances, contrastReport, MIN_ACCENT_DISTANCE } from '@/ui/theme/validate';
+import { WCAG_AA_BODY } from '@/ui/theme/color';
 
 describe('semantic-distinctness validator', () => {
   it('every shipped theme passes full validation', () => {

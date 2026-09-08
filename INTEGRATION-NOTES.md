@@ -1091,7 +1091,12 @@ reading/writing the same `afterlife:v1:theme` key, with a parity test asserting 
 copies match so they can't silently drift.
 
 **Blocking?** no.
-**Resolution:**
+**Resolution:** `acidart` landed the proposed fix in `fd36c94` — `relativeLuminance()` added
+to `src/render/color.ts`, used in `renderer.ts` to pick the hue ramp's `l` (0.40 vs 0.80)
+from the resolved `--color-ink-900` ground's luminance. Verified independently on my end:
+`e2e/theme.spec.ts`'s Observatory→Ivory Plate switch now shows a genuinely different
+average canvas pixel (full-canvas opaque-pixel scan), which it would not have before this
+landed for a scheme change under the lineage/velocity/neighbors lenses.
 
 ---
 
