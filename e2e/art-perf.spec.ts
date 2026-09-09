@@ -258,6 +258,40 @@ async function canvasDigest(page: Page): Promise<string> {
   });
 }
 
+/**
+ * `canvasDigest`, but only accepted once two CONSECUTIVE real `draw()` calls
+ * produce the identical digest — a genuinely settled frame, not a
+ * transient one.
+ *
+ * WHY THIS EXISTS: a real (but non-renderer) flake was found investigating a
+ * reported "Art mode leaves residue" regression. A 40-attempt real-Chrome
+ * repro of exactly this test's before/during/after sequence found `after`
+ * matching `before` 40/40 times — restoring the honest lens is genuinely
+ * byte-exact, disproving the residue theory. What DID vary across repro runs
+ * was `before` itself: the very FIRST `draw()` after `bootTo()` occasionally
+ * (~1 in 10-15 runs) landed on a not-yet-settled frame (this app boots into
+ * a brief autoplay window before this file's own `ensurePaused()` click
+ * takes effect — a real click-timing race in the TEST HARNESS, not a
+ * rendering bug — so the very first draw could still catch the world at a
+ * different generation than the one the rest of the test actually runs
+ * against). Every subsequent draw, including the real "after" draw the
+ * original failure blamed, was always the TRUE steady state. Capturing
+ * `before` only once it's demonstrably stable (two draws in a row agree)
+ * makes the baseline itself immune to that harness race, without loosening
+ * the actual correctness assertion this test exists for — `after` must
+ * still equal `before` byte-for-byte, no tolerance introduced.
+ */
+async function settledCanvasDigest(page: Page, maxAttempts = 5): Promise<string> {
+  let prev = await canvasDigest(page);
+  for (let i = 0; i < maxAttempts; i++) {
+    await draw(page);
+    const next = await canvasDigest(page);
+    if (next === prev) return next;
+    prev = next;
+  }
+  return prev; // give up settling — the real assertion below still holds it to this exact value
+}
+
 async function bootTo(page: Page): Promise<void> {
   await suppressTour(page);
   await openApp(page);
@@ -498,7 +532,12 @@ test.describe('Art mode performance/resource-safety harness', () => {
     await setCamera(page, { x: 60, y: 50, scale: 16 });
     await draw(page);
 
-    const before = await canvasDigest(page);
+    // `settledCanvasDigest`, not a single `canvasDigest` right after one
+    // `draw()` — see that helper's doc for why: the very first draw after
+    // boot can occasionally still be mid-settle (a harness-side click-timing
+    // race, not a rendering bug), which is what actually caused a prior
+    // false "Art mode leaves residue" report.
+    const before = await settledCanvasDigest(page);
 
     await setArtConfig(page, realisticArtConfig());
     await draw(page);
