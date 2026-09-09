@@ -129,26 +129,26 @@ async function mockWebcam(page: Page): Promise<void> {
   });
 }
 
-// TEMPORARY CONTAINMENT HOTFIX — 2026-09-08, STILL IN EFFECT: a real
-// production report showed Art mode rendering nothing visible while
-// hard-crashing the reporter's machine. A follow-up (`e2e/art-perf.spec.ts`)
-// root-caused real multi-second single-frame stalls in the glyph path and
-// shipped a frame-time watchdog + a live-cell draw cap that together
-// guarantee any such stall can happen AT MOST ONCE before Art mode
-// force-disables itself — proven, in that new file, both by injecting a
-// deterministic stall and by reproducing the original uncapped scenario.
-// Containment stays ON anyway: the fix bounds the BLAST RADIUS (never
-// repeats) but doesn't guarantee the first bad frame is short, and the exact
-// browser/graphics-stack trigger wasn't fully pinned down or verified on
-// real target hardware — see `artMount.ts`'s own updated doc for the full
-// reasoning. `@/render/artMount.ts`'s `ensureArtUiMounted` still
-// unconditionally returns, so the trigger tab/shortcut never mount and
-// `renderer.setArtConfig` is never called from anywhere real users can
-// reach — every assertion below is testing a path that is still
-// deliberately dead. Skipped rather than deleted so re-enabling Art mode is
-// "delete this skip" once containment lifts, not "rewrite this suite from
-// scratch".
-test.describe.skip('Art mode', () => {
+// CONTAINMENT HOTFIX — 2026-09-08, RESOLVED 2026-09-08/09: a real production
+// report showed Art mode rendering nothing visible while hard-crashing the
+// reporter's machine. A follow-up (`e2e/art-perf.spec.ts`) root-caused real
+// multi-second single-frame stalls in the glyph path and shipped a
+// frame-time watchdog + a live-cell draw cap that together guarantee any
+// such stall can happen AT MOST ONCE before Art mode force-disables itself —
+// proven, in that file, both by injecting a deterministic stall and by
+// reproducing the original uncapped scenario. Containment then stayed on
+// while the residual "how bad is the guaranteed-one-time first frame,
+// really" question was still open on real (not just headless) hardware.
+// That question is now closed: real-Chrome measurement found the residual
+// cost was a real but bounded (and now actively warmed-away — see
+// `renderer.ts`'s `warmUpArt` and `artMount.ts`'s `enableWithWarmup`)
+// one-time cost, verified by `e2e/art-perf.spec.ts`'s "real Chrome" describe
+// block to stay within the watchdog's ceiling with Art mode left enabled at
+// the end of a realistic session. `@/render/artMount.ts`'s
+// `ensureArtUiMounted` now does its real work again, so the trigger
+// tab/shortcut/persisted-boot path are all reachable — un-skipped
+// accordingly.
+test.describe('Art mode', () => {
   test('renders glyphs above the legibility threshold with no console errors, and turning it off restores the honest lens exactly', async ({ page }) => {
     const errors = collectConsoleErrors(page);
     await suppressTour(page);

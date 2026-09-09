@@ -22,6 +22,7 @@ function makeFakeRenderer(): WorldRenderer & { ghostCalls: unknown[]; selectionC
     setLens() {},
     setPalette() {},
     setArtConfig() {},
+    async warmUpArt() {},
     setModulationGrid() {},
     getArtDebugStats() {
       return { atlasEntries: 0, atlasBytes: 0, atlasBuildCount: 0, fillStyleCacheEntries: 0, cellCanvasCount: 0, lastArtFrameMs: 0, artFrameMsWindow: [] };

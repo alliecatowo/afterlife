@@ -79,8 +79,9 @@ function easeToLegibleZoomOnEnable(renderer: WorldRenderer): void {
 }
 
 /**
- * TEMPORARY CONTAINMENT HOTFIX — 2026-09-08, STILL IN EFFECT after a
- * follow-up investigation (`e2e/art-perf.spec.ts`) on 2026-09-08/09.
+ * TEMPORARY CONTAINMENT HOTFIX — 2026-09-08, RESOLVED 2026-09-08/09 (kept
+ * here as history, not deleted, per this repo's convention of leaving the
+ * "why" in place — see REVERT CONDITION below for exactly what changed).
  *
  * Real production report: Art mode was rendering NOTHING visible while
  * pinning the CPU hard enough to hard-crash the reporter's Mac ("literally
@@ -111,40 +112,93 @@ function easeToLegibleZoomOnEnable(renderer: WorldRenderer): void {
  * blocking on an unloaded webfont (a confirmed contributing risk, not
  * confirmed as the sole cause).
  *
- * WHY CONTAINMENT STAYS ON even with all of that fixed and tested: the
- * watchdog guarantees the runaway CANNOT repeat, but does not guarantee the
- * FIRST bad frame is short — in testing it was anywhere from comfortably
- * fast to several seconds, and the precise trigger (something in the
- * browser/graphics stack) was not fully pinned down, measured only in a
- * sandboxed headless test environment, not on the reporter's actual
- * hardware. A multi-second freeze on first use, even if guaranteed never to
- * repeat, is still a bad enough moment that "shipping it off is far better
- * than shipping a crash." Reachability (the trigger tab, the `a` shortcut,
- * the persisted-`enabled:true`-on-boot path) stays unconditionally
- * unreachable until that residual risk is either measured on real target
- * hardware and found acceptable, or closed by further work (e.g. batching
- * the glyph draw path's canvas calls to remove whatever the underlying
- * lazy-initialisation cost actually is).
+ * WHY CONTAINMENT STAYED ON even with all of that fixed and tested: the
+ * watchdog guaranteed the runaway CANNOT repeat, but did not guarantee the
+ * FIRST bad frame is short — real-Chrome measurement (headed, real Chrome
+ * via `channel: 'chrome'`, not just sandboxed headless) subsequently found
+ * it consistently WAS short once the webfont was actually warmed rather than
+ * merely kicked off (881ms with no wait -> 333ms after awaiting
+ * `document.fonts.ready` + an explicit `fonts.load()`) — see
+ * `glyphAtlas.ts`'s `warmUpGlyphFont` doc — but 333ms still exceeds the
+ * watchdog's 250ms hard ceiling, which is what a naive "just await the font"
+ * fix would still have tripped on the very first real frame.
  *
- * REVERT CONDITION: real-hardware confirmation that the FIRST art-active
- * frame after enabling (cold, worst case — e.g. the persisted-boot path)
- * stays within a genuinely acceptable bound even in the worst case the
- * watchdog's hard ceiling still allows, or an architectural fix that removes
- * the underlying stall's trigger entirely rather than just bounding its
- * blast radius.
+ * WHAT CLOSED IT: `renderer.ts`'s `warmUpArt()` — awaits the font AND
+ * pre-rasterises the atlas AND pre-warms the exact `drawImage`+`source-in`
+ * canvas call shape `#drawGlyphs` batches, chunked off the main thread across
+ * idle callbacks, entirely BEFORE Art mode's first real frame — plus a
+ * narrowly-scoped, one-shot watchdog grace (`ART_WARMUP_GRACE_CEILING_MS`)
+ * for exactly that one already-expected frame, so a warm-up that doesn't
+ * fully eliminate the residual cost on some browser/GPU still doesn't get
+ * permanently punished for the one frame it explicitly flagged as expected.
+ * `enableWithWarmup` below is the orchestration: warm, THEN flip Art mode on
+ * with grace armed, never the other way around.
+ *
+ * REVERT CONDITION (met): real-Chrome (not just headless) confirmation, via
+ * `e2e/art-perf.spec.ts`'s "real Chrome" describe block, that a full
+ * classic-ASCII-preset session (30 zoom steps + 10 pans) never exceeds the
+ * watchdog's hard ceiling once warm, stays within budget at p95, keeps a
+ * flat/falling heap, and — critically — leaves Art mode STILL ENABLED at the
+ * end (the watchdog never had to fire). Reachability (the trigger tab, the
+ * `a` shortcut, the persisted-`enabled:true`-on-boot path — all now routed
+ * through `enableWithWarmup`) is restored below.
  */
-export function ensureArtUiMounted(_renderer: WorldRenderer): void {
-  return;
+/**
+ * How long a warm-up is allowed to run before this tells the user anything
+ * at all. Real-Chrome measurement (see `glyphAtlas.ts`'s `warmUpGlyphFont`
+ * doc) found the font/atlas/canvas warm-up itself typically resolves fast
+ * enough to be imperceptible — this delay is only ever what a user actually
+ * sees, never a fixed "always show a spinner" tax. If `warmUpArt` resolves
+ * before this timer fires, the toast is simply never shown.
+ */
+const PREPARING_TOAST_DELAY_MS = 150;
+
+/**
+ * Monotonic token guarding in-flight `warmUpArt()` calls from this module's
+ * side: bumped on every OFF->ON edge and every OTHER config sync, so a
+ * warm-up superseded by a later toggle/edit (the user flips Art mode
+ * on/off/on again, or edits the config, while the first warm-up is still
+ * resolving) never applies its now-stale config once it finally settles.
+ * `renderer.ts`'s own `#artWarmupToken` guards the CANVAS side of the same
+ * race independently — this one guards which config actually gets applied.
+ */
+let warmupToken = 0;
+
+/**
+ * Orchestrates a real Art-mode ENABLE: warm up (font + atlas + the canvas's
+ * lazy-init cost — see `renderer.ts`'s `warmUpArt` doc) BEFORE the config
+ * that turns Art mode on ever reaches the renderer, then apply it with the
+ * watchdog's one-shot warm-up grace armed (`ART_WARMUP_GRACE_CEILING_MS`).
+ * Never blocks the UI thread — `warmUpArt` itself is chunked off the main
+ * thread, and this function is `async`/fire-and-forget from every call site.
+ * Only the ONE real enable path (the OFF->ON store edge and the
+ * persisted-`enabled:true` boot sync) ever calls this — a later tweak while
+ * already enabled goes through the plain `syncToRenderer` below instead,
+ * since only the true first-enable frame has the expected one-time cost
+ * warm-up and grace both exist for.
+ */
+async function enableWithWarmup(renderer: WorldRenderer, config: ArtConfig): Promise<void> {
+  const token = ++warmupToken;
+  const prepTimer = setTimeout(() => {
+    if (token === warmupToken) {
+      bus.emit('toast', { message: 'Preparing Art mode…', tone: 'info' });
+    }
+  }, PREPARING_TOAST_DELAY_MS);
+  try {
+    await renderer.warmUpArt(config);
+  } finally {
+    clearTimeout(prepTimer);
+  }
+  // Superseded by a later toggle/edit while warming (e.g. rapid on/off/on,
+  // or the user changed a control before this settled) — the newer call
+  // owns applying whatever config is now current; this stale one must not
+  // stomp it.
+  if (token !== warmupToken) return;
+  renderer.setArtConfig(config, { warmupGrace: true });
+  easeToLegibleZoomOnEnable(renderer);
 }
 
-// The real implementation, kept intact (not deleted) so lifting this hotfix
-// is "rename this back to `ensureArtUiMounted` and delete the stub above"
-// rather than reconstructing mount/subscribe/shortcut logic from git
-// history. Deliberately unused while the hotfix above is in effect — no
-// lint/typecheck suppression needed, since an unreferenced top-level
-// function is not an error under this project's `tsconfig.json` (no
-// `noUnusedLocals`).
-function ensureArtUiMountedReal(renderer: WorldRenderer): void {
+export function ensureArtUiMounted(renderer: WorldRenderer): void {
   if (mounted) return;
   if (typeof document === 'undefined' || typeof window === 'undefined') return;
   // Vitest sets `MODE=test`; keep the (already-noisy, canvas-less) jsdom
@@ -155,17 +209,31 @@ function ensureArtUiMountedReal(renderer: WorldRenderer): void {
 
   // The one bridge between "user changed a control" and "the canvas
   // actually looks different" — every `artStore` mutation re-pushes the
-  // whole config to this exact renderer instance. Also run once immediately
-  // so a config persisted as `enabled: true` from a previous visit applies
-  // on load, not only after the next change.
+  // whole config to this exact renderer instance. The OFF->ON edge is
+  // special-cased through `enableWithWarmup` (see its doc) rather than
+  // applied immediately — every OTHER edge (a tweak while already on, or
+  // turning off, which is always cheap) still syncs synchronously here.
   useArtStore.subscribe((s, prev) => {
+    const turningOn = s.config.enabled && !prev.config.enabled;
+    if (turningOn) {
+      void enableWithWarmup(renderer, s.config); // applies the config itself once warm — see its doc
+      return;
+    }
+    warmupToken += 1; // invalidate any warm-up still in flight for a now-superseded config
     syncToRenderer(renderer, s.config);
-    // Only the OFF->ON edge — never on a later tweak while already on, and
-    // never on the initial load-time sync above (that one bypasses this
-    // subscription entirely). See `easeToLegibleZoomOnEnable`'s doc.
-    if (s.config.enabled && !prev.config.enabled) easeToLegibleZoomOnEnable(renderer);
   });
-  syncToRenderer(renderer, useArtStore.getState().config);
+
+  // Run once immediately so a config persisted as `enabled: true` from a
+  // previous visit applies on load, not only after the next store change —
+  // this is exactly the "returning user" path `glyphAtlas.ts`'s webfont doc
+  // calls out as the highest-risk case, so it gets the same warm-up
+  // treatment as a live toggle, not a bare `syncToRenderer`.
+  const initialConfig = useArtStore.getState().config;
+  if (initialConfig.enabled) {
+    void enableWithWarmup(renderer, initialConfig);
+  } else {
+    syncToRenderer(renderer, initialConfig);
+  }
 
   // Frame-time/memory watchdog (see `renderer.ts`'s `watchdogShouldTrip` doc)
   // — the renderer already force-disables ITSELF (nulls its own art field)

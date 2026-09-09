@@ -33,7 +33,7 @@ import {
   normalizeAge, normalizeActivity, normalizeNeighbors, normalizeLineage, normalizeDensity, normalizeField,
 } from './glyphs';
 import {
-  buildGlyphAtlas, atlasCellPxBucket, getAtlasBuildCount, isGlyphFontReady, type GlyphAtlasHandle,
+  buildGlyphAtlas, atlasCellPxBucket, getAtlasBuildCount, isGlyphFontReady, warmUpGlyphFont, type GlyphAtlasHandle,
 } from './glyphAtlas';
 import {
   sampleField, isFieldAnimated, type SampledGrid, type FieldSampleParams, type FieldTransform,
@@ -169,6 +169,37 @@ export const ART_FRAME_HARD_CEILING_MS = 250;
 export const ART_WATCHDOG_WINDOW = 20;
 
 /**
+ * WARM-UP GRACE for the frame-time watchdog. Real-Chrome measurement (see
+ * `glyphAtlas.ts`'s `warmUpGlyphFont` doc for the full before/after numbers)
+ * found a genuine, expected, ONE-TIME cost on Art mode's first real frame
+ * even after the webfont is fully warmed — 333ms in the measured
+ * reproduction, comfortably over `ART_FRAME_HARD_CEILING_MS` (250ms) — most
+ * likely first-time glyph-atlas rasterisation plus canvas/GPU
+ * lazy-initialisation for the `drawImage`+`source-in` batch `#drawGlyphs`
+ * issues (see that method's doc). `warmUpArt()` below exists specifically to
+ * pay as much of that cost as possible OFF the critical path, but it cannot
+ * PROVE it always fully succeeds on every browser/GPU/driver combination —
+ * so the watchdog needs a narrow, explicit way to not punish the one
+ * expected outlier frame immediately after a real warm-up, without
+ * loosening its guarantee against a genuine runaway.
+ *
+ * The grace is armed for EXACTLY the next art-active frame after
+ * `setArtConfig(config, { warmupGrace: true })` (see that method's doc) —
+ * never persists, never re-arms itself, and is consumed (cleared) by
+ * `#recordArtFrameCost` whether or not it actually needed to do anything.
+ * That one graced frame is still bounded by `ART_WARMUP_GRACE_CEILING_MS`:
+ * comfortably above the expected one-time cost, but still a hard, finite
+ * ceiling — a genuine multi-second hang cannot hide behind this grace, it
+ * only gets a longer (not infinite) leash for the one frame the warm-up
+ * itself flagged as expected-to-be-slow. The graced frame's cost is also
+ * deliberately NOT added to `#artFrameMsWindow` (the sustained-average
+ * window), so the "every frame is a bit too expensive, forever" rule stays
+ * exactly as strict as before for every frame that follows — this grace
+ * only ever affects the one frame it's explicitly armed for.
+ */
+export const ART_WARMUP_GRACE_CEILING_MS = 2_000;
+
+/**
  * Pure: should the art-mode frame-cost watchdog trip? Two independent
  * triggers, checked separately by the caller (see `#recordArtFrameCost`):
  * a single frame at or above `hardCeilingMs` (a stall bad enough that
@@ -220,6 +251,24 @@ function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
+/** Run `fn` during a spare moment rather than synchronously — prefers
+ *  `requestIdleCallback` (spare main-thread time between frames, exactly
+ *  what a warm-up that must never contribute a long task wants) and falls
+ *  back to a plain macrotask (`setTimeout`) on engines without it (Safari,
+ *  `jsdom`). Never a hard dependency of correctness — see `warmUpArt`'s own
+ *  bounded-overall-timeout for what actually guarantees this can't hang. */
+function scheduleIdleWork(fn: () => void): void {
+  type IdleCapableWindow = typeof globalThis & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+  };
+  const w = typeof window !== 'undefined' ? (window as IdleCapableWindow) : undefined;
+  if (typeof w?.requestIdleCallback === 'function') {
+    w.requestIdleCallback(fn, { timeout: 50 });
+  } else {
+    setTimeout(fn, 0);
+  }
+}
+
 function hashStringSeed(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -266,8 +315,29 @@ export interface WorldRenderer {
    * effect at all and the honest lens renders exactly as it always did.
    * Never affects which cells are alive — purely cosmetic, like every
    * existing lens.
+   *
+   * `opts.warmupGrace` — see `ART_WARMUP_GRACE_CEILING_MS`'s doc: arms a
+   * one-shot, tightly-bounded exemption from the watchdog's hard ceiling for
+   * EXACTLY the next art-active frame, for the caller (`artMount.ts`'s
+   * `enableWithWarmup`) to pass immediately after `warmUpArt()` resolves and
+   * Art mode is about to become visible for real. Never set on any other
+   * call site — a config tweak while already enabled gets no grace, since
+   * only the true first-enable frame has the expected one-time cost this
+   * exists for.
    */
-  setArtConfig(config: ArtConfig | null): void;
+  setArtConfig(config: ArtConfig | null, opts?: { warmupGrace?: boolean }): void;
+  /**
+   * Pay as much of Art mode's expected one-time first-frame cost as possible
+   * BEFORE that frame is ever drawn for real, entirely off the critical path
+   * (never blocks the caller's UI thread for more than one small, bounded
+   * chunk at a time — see the implementation's own doc). Resolves once
+   * warm (or once a bounded overall timeout elapses — this never hangs the
+   * caller). Safe to call repeatedly; each call is independent. See
+   * `artMount.ts`'s `enableWithWarmup` for the one real call site, and
+   * `ART_WARMUP_GRACE_CEILING_MS`'s doc for why the watchdog still needs its
+   * own narrow grace even after this runs.
+   */
+  warmUpArt(config: ArtConfig): Promise<void>;
   /**
    * The modulation field's sampled image/video/webcam frame, refreshed by
    * whatever owns a `@/render/mediaField.ts` `MediaFieldSource` (currently
@@ -570,6 +640,16 @@ class WorldRendererImpl implements WorldRenderer {
   #artWatchdogTripped = false;
   #artWatchdogReason: string | null = null;
   #lastArtFrameMs = 0;
+  // One-shot exemption from the hard ceiling for exactly the next art-active
+  // frame — see `ART_WARMUP_GRACE_CEILING_MS`'s doc and `setArtConfig`'s
+  // `opts.warmupGrace`.
+  #artWarmupGraceArmed = false;
+  // Monotonic token guarding `warmUpArt()`'s async chunks: bumped by
+  // `dispose()` and by every `attach()`/`setArtConfig` call so a warm-up
+  // still mid-flight when the renderer is reattached, disposed, or the
+  // config changes again never resumes writing into a stale/reused canvas —
+  // each chunk checks it's still the current token before touching `#ctx`.
+  #artWarmupToken = 0;
 
   // Reused across every `#drawGlyphs` call (never re-`new`'d per frame — see
   // that method's doc) to stop the batched-draw command list from being 6
@@ -683,7 +763,7 @@ class WorldRendererImpl implements WorldRenderer {
     this.#dirty = true;
   }
 
-  setArtConfig(config: ArtConfig | null): void {
+  setArtConfig(config: ArtConfig | null, opts?: { warmupGrace?: boolean }): void {
     this.#art = config;
     // A fresh config (a new glyph set/preset/toggle-on) is a natural reset
     // point for the watchdog's rolling window — otherwise a single
@@ -694,7 +774,102 @@ class WorldRendererImpl implements WorldRenderer {
     // self-corrects within `ART_WATCHDOG_WINDOW` frames either way) but
     // avoids a spurious trip from a single unlucky transition frame.
     this.#artFrameMsWindow = [];
+    // Any `setArtConfig` call — not just an explicit disable — invalidates
+    // an in-flight `warmUpArt()` chunk chain: it means either the warm-up's
+    // own caller just applied it for real (the expected case, immediately
+    // followed by arming grace below) or something else changed the config
+    // out from under an in-progress warm-up (e.g. rapid on/off/on), in which
+    // case that stale warm-up's remaining chunks must not keep touching
+    // `#ctx` on the new config's behalf.
+    this.#artWarmupToken += 1;
+    this.#artWarmupGraceArmed = Boolean(opts?.warmupGrace && config?.enabled);
     this.#dirty = true;
+  }
+
+  /** How many representative `drawImage`+`source-in fillRect` pairs to issue
+   *  against the real canvas during warm-up — see `warmUpArt`'s doc. Small
+   *  enough that even one uninterrupted chunk is cheap, large enough to be a
+   *  genuine "substantial batch," matching the real shape a live frame with
+   *  a modest population issues. */
+  static readonly #WARMUP_DRAW_COUNT = 96;
+  /** Time-box per idle chunk — keeps any single warm-up chunk well under a
+   *  frame budget even if `requestIdleCallback` schedules it back-to-back
+   *  with real work. */
+  static readonly #WARMUP_CHUNK_BUDGET_MS = 6;
+  /** Overall give-up point — see `warmUpArt`'s doc: a warm-up that can't
+   *  finish promptly must never block Art mode from turning on at all. */
+  static readonly #WARMUP_TOTAL_BUDGET_MS = 1_500;
+
+  /** See `WorldRenderer.warmUpArt`'s doc for the contract this implements. */
+  async warmUpArt(config: ArtConfig): Promise<void> {
+    const token = ++this.#artWarmupToken;
+
+    // 1. The webfont — see `warmUpGlyphFont`'s doc for the real-Chrome
+    // numbers this closes (881ms -> 333ms worst frame in the measured repro).
+    await warmUpGlyphFont();
+    if (token !== this.#artWarmupToken) return; // superseded while awaiting — a later call/setArtConfig owns the canvas now
+
+    // 2. The atlas this config will actually draw with, at the comfortably-
+    // legible bucket `artMount.ts`'s `easeToLegibleZoomOnEnable` eases the
+    // camera to on enable — the common case where the real first frame's
+    // own `#ensureAtlas` call hits this exact cache entry instead of
+    // rebuilding. GLYPH_COMFORTABLE_DEVICE_PX is already a DEVICE-pixel
+    // figure (see its own doc), so no `dpr` multiplication here — the same
+    // convention `#drawGlyphs` itself uses via `devicePx = scale * dpr`.
+    const chars = resolveGlyphChars(config.glyphs.setId, config.glyphs.customChars);
+    const bucket = atlasCellPxBucket(GLYPH_COMFORTABLE_DEVICE_PX);
+    const atlas = this.#ensureAtlas(chars, bucket);
+
+    const ctx = this.#ctx;
+    const canvas = this.#canvas;
+    if (!ctx || !canvas) return; // not attached to a real canvas yet (e.g. a headless unit test) — nothing left to warm
+
+    // 3. The exact call SHAPE `#drawGlyphs` batches every real frame (a
+    // `drawImage` source-over blit, then a `source-in` tinted `fillRect`) —
+    // real measurement pinned the residual first-frame cost to landing
+    // somewhere in this exact sequence, consistent with a browser/GPU-level
+    // lazy-initialisation cost rather than anything this file's own logic
+    // controls (see `ART_WARMUP_GRACE_CEILING_MS`'s doc). Issued directly
+    // against `#ctx` — THE SAME context the real frame draws with — so
+    // whatever internal state that lazy-init warms is already warm.
+    //
+    // Chunked across several `scheduleIdleWork` turns rather than one
+    // synchronous blob: each chunk is time-boxed
+    // (`#WARMUP_CHUNK_BUDGET_MS`) and, critically, ends by synchronously
+    // redrawing the last REAL frame (`#lastEngine`, still under the OLD art
+    // config — warm-up always runs BEFORE `setArtConfig` applies the new one
+    // — see `artMount.ts`'s `enableWithWarmup`) in the SAME task, before
+    // ever yielding. The browser can only paint after a task finishes, so
+    // even though this writes to the visible canvas, nothing it draws here
+    // is ever actually shown — every task this method runs ends with the
+    // honest current frame restored.
+    let done = 0;
+    const overallDeadline = nowMs() + WorldRendererImpl.#WARMUP_TOTAL_BUDGET_MS;
+    await new Promise<void>((resolve) => {
+      const runChunk = (): void => {
+        if (token !== this.#artWarmupToken) { resolve(); return; } // superseded — stop touching #ctx
+        const chunkDeadline = nowMs() + WorldRendererImpl.#WARMUP_CHUNK_BUDGET_MS;
+        while (done < WorldRendererImpl.#WARMUP_DRAW_COUNT && nowMs() < chunkDeadline) {
+          const rect = atlas.rectFor(done % Math.max(1, chars.length));
+          ctx.save();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(atlas.canvas, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, rect.sw, rect.sh);
+          ctx.globalCompositeOperation = 'source-in';
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.004)';
+          ctx.fillRect(0, 0, rect.sw, rect.sh);
+          ctx.restore();
+          done++;
+        }
+        if (this.#lastEngine) {
+          this.draw(this.#lastEngine); // clears + redraws the real, current (non-warm-up) frame — see doc above
+        } else {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        if (done >= WorldRendererImpl.#WARMUP_DRAW_COUNT || nowMs() >= overallDeadline) { resolve(); return; }
+        scheduleIdleWork(runChunk);
+      };
+      scheduleIdleWork(runChunk);
+    });
   }
 
   setModulationGrid(grid: SampledGrid | null): void {
@@ -892,6 +1067,22 @@ class WorldRendererImpl implements WorldRenderer {
    *  once per `draw()` call that actually ran `#drawGlyphs`. */
   #recordArtFrameCost(dt: number): void {
     this.#lastArtFrameMs = dt;
+
+    // See `ART_WARMUP_GRACE_CEILING_MS`'s doc: exactly the next art-active
+    // frame after an explicit `setArtConfig(config, { warmupGrace: true })`
+    // gets a wider (but still finite) ceiling, and its cost is excluded from
+    // the sustained-average window entirely — one known, expected outlier
+    // must never count against a rule meant to catch "every frame is a bit
+    // too expensive, forever". One-shot: cleared here whether or not it was
+    // actually needed, so it can never accidentally cover a LATER frame.
+    if (this.#artWarmupGraceArmed) {
+      this.#artWarmupGraceArmed = false;
+      if (dt >= ART_WARMUP_GRACE_CEILING_MS) {
+        this.#tripArtWatchdog(`the warm-up frame itself took ${Math.round(dt)}ms, beyond even the warm-up grace ceiling (${ART_WARMUP_GRACE_CEILING_MS}ms) — treating as a genuine stall, not the expected one-time cost`);
+      }
+      return;
+    }
+
     this.#artFrameMsWindow.push(dt);
     if (this.#artFrameMsWindow.length > ART_WATCHDOG_WINDOW) this.#artFrameMsWindow.shift();
 
@@ -1870,6 +2061,8 @@ class WorldRendererImpl implements WorldRenderer {
     this.#artFrameMsWindow = [];
     this.#artWatchdogTripped = false;
     this.#artWatchdogReason = null;
+    this.#artWarmupGraceArmed = false;
+    this.#artWarmupToken += 1; // invalidate any in-flight warmUpArt() chunk chain
   }
 }
 

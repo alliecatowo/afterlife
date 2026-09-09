@@ -336,3 +336,154 @@ test.describe('Art mode performance/resource-safety harness', () => {
     expect(errors, `console errors: ${errors.join('\n')}`).toEqual([]);
   });
 });
+
+/**
+ * REAL CHROME regression test for the warm-up/watchdog-grace pass that
+ * finally lifted `artMount.ts`'s containment (see that file's updated doc).
+ * Every test above drives the renderer directly against whatever browser
+ * `playwright.art-perf.config.ts`'s `devices['Desktop Chrome']` resolves to
+ * (bundled Chromium unless overridden) — useful for deterministic
+ * measurement, but the actual production report and the follow-up
+ * measurement that root-caused it were both about REAL Chrome specifically
+ * (`channel: 'chrome'`, the same binary a real user runs, installed at
+ * `/Applications/Google Chrome.app` in this environment). `test.use` below
+ * overrides just the browser channel for this one describe block — every
+ * other `use` option from the parent config (viewport, the `--expose-gc`
+ * launch flag, etc.) still applies.
+ *
+ * This test also deliberately goes through the REAL reachable UI path (the
+ * `a` keyboard shortcut on a fresh/untouched config, which `artStore.ts`'s
+ * `toggleEnabled` resolves to the app's own `classicAsciiPreset()` — not a
+ * synthetic config this test builds itself) rather than
+ * `renderer.setArtConfig()` directly, so it exercises `artMount.ts`'s real
+ * `enableWithWarmup` orchestration end to end: warm-up, the watchdog's
+ * one-shot grace, and the trigger tab's own enabled/disabled reflection —
+ * the exact integration containment used to keep unreachable.
+ */
+test.describe('Art mode performance/resource-safety harness (real Chrome, full integration)', () => {
+  test.use({ channel: 'chrome' });
+
+  test('classic ASCII preset survives 30 zoom steps + 10 pans in real Chrome: bounded post-warm-up frames, stable heap, Art mode stays enabled, canvas visibly changes', async ({ page }) => {
+    test.setTimeout(60_000);
+    const errors = collectConsoleErrors(page);
+    await bootTo(page);
+    await seedDenseArea(page, 50, 40, 30, 30); // a real but modest live population
+    await setCamera(page, { x: 65, y: 55, scale: 16 }); // already above the legibility floor
+    await draw(page);
+
+    const before = await page.evaluate(() => {
+      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
+      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
+    });
+
+    // Instrument the REAL `draw()` the app's own render loop calls (an
+    // own-property override shadows the prototype method for this instance,
+    // so every internal `this.draw(...)` call — including `warmUpArt`'s own
+    // chunk-restoration draws — is captured too) rather than bypassing it,
+    // so every measured frame is one a real session would actually produce.
+    await page.evaluate(() => {
+      const s = (window as unknown as { __AFTERLIFE__: { renderer: { draw: (...a: unknown[]) => void } } }).__AFTERLIFE__;
+      (window as unknown as { __artFrameTimes__: number[] }).__artFrameTimes__ = [];
+      const original = s.renderer.draw.bind(s.renderer);
+      s.renderer.draw = (...args: unknown[]) => {
+        const t0 = performance.now();
+        original(...args);
+        (window as unknown as { __artFrameTimes__: number[] }).__artFrameTimes__.push(performance.now() - t0);
+      };
+    });
+
+    // The real reachable entry point — see this describe block's doc for
+    // why this, not `setArtConfig()` directly.
+    await page.keyboard.press('a');
+
+    // Warm-up (font + atlas + the canvas's own lazy-init cost, chunked off
+    // the main thread — `renderer.ts`'s `warmUpArt`) and the camera's
+    // auto-ease-to-legible-zoom both run asynchronously; give them generous
+    // real wall-clock room to fully settle before measuring steady state.
+    await page.waitForTimeout(3_000);
+
+    const duringEnabled = await page.evaluate(() => {
+      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
+      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
+    });
+    expect(duringEnabled, 'canvas must visibly differ once Art mode is on').not.toEqual(before);
+
+    // Everything measured from here on is STEADY-STATE — after the one
+    // known, explicitly graced warm-up-adjacent frame (see
+    // `ART_WARMUP_GRACE_CEILING_MS`'s doc in `renderer.ts`) — which is
+    // exactly what "once warmed" means for this harness's budgets below.
+    await page.evaluate(() => { (window as unknown as { __artFrameTimes__: number[] }).__artFrameTimes__ = []; });
+
+    const readHeap = () => page.evaluate(async () => {
+      (window as unknown as { gc?: () => void }).gc?.();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
+    });
+    const heapBefore = await readHeap();
+
+    for (let i = 0; i < 30; i++) {
+      const scale = 8 + (i % 15) * 1.5; // sweeps back and forth across the legible range
+      await page.evaluate((s) => {
+        const cam = (window as unknown as {
+          __AFTERLIFE__: { camera: { camera: { x: number; y: number }; set(c: unknown): void } };
+        }).__AFTERLIFE__.camera;
+        cam.set({ x: cam.camera.x, y: cam.camera.y, scale: s });
+      }, scale);
+      await page.waitForTimeout(40);
+    }
+
+    for (let i = 0; i < 10; i++) {
+      await page.evaluate(() => {
+        const cam = (window as unknown as {
+          __AFTERLIFE__: { camera: { camera: { x: number; y: number; scale: number }; set(c: unknown): void } };
+        }).__AFTERLIFE__.camera;
+        const c = cam.camera;
+        cam.set({ x: c.x + 3, y: c.y + 2, scale: c.scale });
+      });
+      await page.waitForTimeout(40);
+    }
+
+    const heapAfter = await readHeap();
+
+    const times: number[] = await page.evaluate(() => (
+      window as unknown as { __artFrameTimes__: number[] }
+    ).__artFrameTimes__);
+    expect(times.length, 'the 30 zoom + 10 pan steps should have produced real draw() calls').toBeGreaterThan(10);
+    const sorted = [...times].sort((a, b) => a - b);
+    const max = sorted[sorted.length - 1]!;
+    const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]!;
+
+    // Once warmed, no frame should approach the watchdog's hard ceiling
+    // (250ms) — the real-Chrome reproduction that motivated this whole pass
+    // measured 881ms/333ms worst frames WITHOUT this warm-up; this budget
+    // exists to catch a real regression back toward that territory.
+    expect(max, `max post-warm-up frame ${max.toFixed(1)}ms`).toBeLessThan(250);
+    expect(p95, `p95 post-warm-up frame ${p95.toFixed(1)}ms`).toBeLessThan(ART_FRAME_BUDGET_MS_REF);
+
+    // No genuine memory growth across a real animated session — heap should
+    // stay flat or fall, matching the real-Chrome finding this test protects
+    // (35.4->28.6MB / 30.8->31.2MB in the original reproduction). Skipped if
+    // `performance.memory` isn't available at all rather than asserting on a
+    // 0 that would trivially "pass".
+    if (heapBefore > 0 && heapAfter > 0) {
+      expect(heapAfter, `heap grew from ${(heapBefore / 1e6).toFixed(1)}MB to ${(heapAfter / 1e6).toFixed(1)}MB`)
+        .toBeLessThan(heapBefore + 5_000_000);
+    }
+
+    // The whole point: the watchdog must not have needed to fire to protect
+    // this session, and the real UI must still show Art mode ON.
+    const watchdogTripped = await page.evaluate(() => (
+      window as unknown as { __AFTERLIFE__: { renderer: { consumeArtWatchdogTrip(): string | null } } }
+    ).__AFTERLIFE__.renderer.consumeArtWatchdogTrip());
+    expect(watchdogTripped, `watchdog should not have needed to fire: ${watchdogTripped}`).toBeNull();
+    await expect(page.getByRole('button', { name: 'Turn off Art mode' })).toBeVisible();
+
+    expect(errors, `console errors: ${errors.join('\n')}`).toEqual([]);
+  });
+});
+
+/** Mirrors `renderer.ts`'s `ART_FRAME_BUDGET_MS` (32) — not imported so this
+ *  spec file stays independent of that module's internals the same way
+ *  every other budget in this file is a plain literal with an explanatory
+ *  comment, but named to make the correspondence explicit. */
+const ART_FRAME_BUDGET_MS_REF = 32;

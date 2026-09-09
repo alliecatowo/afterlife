@@ -113,6 +113,53 @@ export function isGlyphFontReady(): boolean {
   }
 }
 
+/**
+ * AWAITABLE font warm-up, for `renderer.ts`'s `warmUpArt()` to run BEFORE
+ * Art mode's first real (user-visible) frame — see `artMount.ts`'s
+ * `enableWithWarmup` doc for the caller side of this.
+ *
+ * Real-Chrome measurement that motivated this (see `renderer.ts`'s
+ * `ART_FRAME_BUDGET_MS` doc for the full before/after numbers): the
+ * fire-and-forget `document.fonts.load()` call above gives the real webfont
+ * a head start at module-import time, but a fast/returning user can still
+ * reach Art mode's first draw before that settles — measured max frame 881ms
+ * with no wait at all, 333ms after awaiting `document.fonts.ready` PLUS an
+ * explicit `fonts.load()` for the exact family this file uses. Awaiting both
+ * here (rather than relying on the app-boot-time call alone) is what lets
+ * `warmUpArt` actually pay this cost off the critical path instead of just
+ * hoping the boot-time kick-off finished in time.
+ *
+ * `document.fonts.ready` resolves once every font load already in flight has
+ * settled (success OR failure) — exactly the same head start the app-boot
+ * call already created, just properly awaited instead of raced against.
+ * The explicit `fonts.load()` afterwards is a near-instant no-op cache hit
+ * once `ready` has resolved, but guards the (rare) case the boot-time call
+ * never fired at all (e.g. this module was hot-reloaded independently in
+ * dev). Bounded by `timeoutMs` so a genuinely stalled/offline font fetch can
+ * never hang Art mode's enable path forever — `isGlyphFontReady()` (checked
+ * fresh by `buildGlyphAtlas` regardless of what happens here) is what
+ * actually guarantees no synchronous block either way; this function only
+ * ever tries to make the FAST path (real face, not the fallback) the common
+ * case for the frame the user actually sees.
+ */
+export async function warmUpGlyphFont(timeoutMs = 1200): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts) return;
+  const attempt = (async () => {
+    try {
+      await document.fonts.ready;
+      await document.fonts.load(`16px ${GLYPH_FONT_STACK}`);
+    } catch {
+      // Best-effort only, same as the module-load-time kick-off above —
+      // `isGlyphFontReady()` is the real, synchronous safety guarantee that
+      // never depends on this settling, let alone succeeding.
+    }
+  })();
+  await Promise.race([
+    attempt,
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 export interface AtlasRect {
   sx: number;
   sy: number;
