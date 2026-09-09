@@ -23,7 +23,7 @@ import { getSession } from '@/ui/session';
 import { useReducedMotion } from '@/ui/hooks/useReducedMotion';
 import { Button, Divider, Field, Slider, Toggle } from '@/ui/primitives';
 import { useArtStore } from '@/render/artStore';
-import { GLYPH_MIN_SCALE } from '@/render/renderer';
+import { GLYPH_MIN_DEVICE_PX, glyphsLegibleAt } from '@/render/renderer';
 import {
   GLYPH_DRIVERS, GLYPH_DRIVER_LABELS, GLYPH_SET_LABELS, MAX_CUSTOM_GLYPHS, MIN_CUSTOM_GLYPHS,
 } from '@/render/glyphs';
@@ -90,7 +90,12 @@ export function ArtPanel() {
 
   const reducedMotion = useReducedMotion();
   const scale = useCameraScale();
-  const glyphsLegible = scale >= GLYPH_MIN_SCALE;
+  // `glyphsLegibleAt` is DPR-aware (see its doc): the same hint the renderer
+  // itself gates on, not a separately-maintained CSS-only approximation
+  // that could tell a mobile user to zoom in further than they actually
+  // need to.
+  const dpr = getSession()?.renderer.dpr ?? 1;
+  const glyphsLegible = glyphsLegibleAt(scale, dpr);
 
   const mediaRef = useRef<MediaFieldSource | null>(null);
   const [mediaState, setMediaState] = useState<'idle' | 'image' | 'video' | 'webcam' | 'error'>('idle');
@@ -212,7 +217,7 @@ export function ArtPanel() {
         <p className="text-xs text-ivory-300">
           Keyboard shortcut: <span className="tabular text-ivory-100">A</span>. {glyphsLegible
             ? 'Zoomed in enough — glyphs are visible now.'
-            : `Zoom in further to see glyphs (needs ${GLYPH_MIN_SCALE}px/cell or more; you're at ${Math.round(scale)}px/cell — below that, the honest lens renders unmodified).`}
+            : `Zoom in further to see glyphs (needs ${GLYPH_MIN_DEVICE_PX} device px/cell or more; you're at ${Math.round(scale * dpr)} — below that, the honest lens renders unmodified). Turning the mode on eases the camera in for you when it can.`}
         </p>
       </Field>
 

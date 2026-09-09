@@ -17,6 +17,7 @@ function makeFakeRenderer(): WorldRenderer & { lensCalls: ColorLens[] } {
   return {
     lensCalls,
     viewport: { width: 800, height: 600 },
+    dpr: 1,
     attach() {},
     setCamera() {},
     setLens(lens: ColorLens) { lensCalls.push(lens); },

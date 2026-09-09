@@ -40,20 +40,51 @@ import { lfoValue, smoothNoise1D, type LfoShape } from './lfo';
 
 export type { ColorLens } from './color';
 
-/** Below this CSS px/cell, ASCII glyph rendering is illegible — Art mode
- *  falls all the way back to the honest, unmodified lens rendering (the
- *  same fallback the LOD boundary above already uses for the aggregated
- *  zoomed-out path). `ArtPanel` shows a "zoom in to see glyphs" hint driven
- *  by this exact constant, so the UI and the renderer never disagree about
- *  where the threshold is. */
-export const GLYPH_MIN_SCALE = 11;
+/**
+ * Below this many DEVICE pixels per cell, a rasterised glyph is too small to
+ * read as a character (see `buildGlyphAtlas`'s ~0.86x-cell font sizing — 8
+ * device px of cell height is roughly a 7px font, the practical floor for
+ * "reads as dense text art" before it's just a blur) — Art mode falls all
+ * the way back to the honest, unmodified lens rendering (the same fallback
+ * the LOD boundary above already uses for the aggregated zoomed-out path).
+ *
+ * DEVICE pixels, deliberately, not CSS ones (this used to be a raw CSS-`px/
+ * cell` threshold, `GLYPH_MIN_SCALE`): text legibility is a function of how
+ * many real pixels draw it, not of CSS layout units, so the same CSS scale
+ * needs a much LOWER threshold on a high-DPR phone than on a 1x desktop
+ * monitor. A real user report — "acid mode... and I hate you have to zoom
+ * in [to see it]" — was this exact gap: the old CSS-only threshold was
+ * tuned for 1x desktop and required a needlessly large CSS zoom on mobile,
+ * even though the device's own extra pixel density already made much
+ * smaller CSS cells perfectly legible. `glyphsLegibleAt` is the one place
+ * both the renderer and `ArtPanel`'s "zoom in to see glyphs" hint read this
+ * from, so they can never disagree about where the threshold is.
+ */
+export const GLYPH_MIN_DEVICE_PX = 8;
+
+/** A comfortably-legible device-pixel cell size (well above the bare
+ *  `GLYPH_MIN_DEVICE_PX` floor) — the target `artMount.ts` eases the camera
+ *  toward when Art mode is switched on below the legibility threshold, so
+ *  turning it on always visibly does something immediately rather than
+ *  requiring the user to separately discover "zoom in more". */
+export const GLYPH_COMFORTABLE_DEVICE_PX = 16;
+
+/** Pure: is a glyph legible at this CSS scale and device-pixel ratio? The
+ *  one shared gate `draw()` and `ArtPanel`'s hint both read, so they can
+ *  never drift apart. */
+export function glyphsLegibleAt(scale: number, dpr: number): boolean {
+  return scale * dpr >= GLYPH_MIN_DEVICE_PX;
+}
 
 /** Hard cap on cells drawn as individual glyphs in one frame — each glyph
  *  costs two real canvas draw calls (a cached-raster blit + a tint fill),
- *  not one `putImageData`. At `GLYPH_MIN_SCALE` a full 1440x900 viewport is
- *  already well under this; it exists purely as a safety valve against a
- *  pathological camera/viewport combination, never triggered in normal use. */
-export const MAX_GLYPH_CELLS = 40_000;
+ *  not one `putImageData`. Sized to comfortably cover a full 1440x900
+ *  viewport at `GLYPH_MIN_DEVICE_PX` even at a capped 2x device-pixel ratio
+ *  (a common retina-desktop combination: (1440/4)*(900/4) = 81,000 cells at
+ *  the CSS scale of 4 that a dpr-2 display needs to cross the 8-device-px
+ *  floor) — it exists purely as a safety valve against a pathological
+ *  camera/viewport/DPR combination, never triggered in normal use. */
+export const MAX_GLYPH_CELLS = 100_000;
 
 function nowSeconds(): number {
   return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
@@ -97,9 +128,9 @@ export interface WorldRenderer {
   /**
    * ACID ART / Art mode (`@/render/artConfig.ts`). `null`/`enabled: false`
    * restores rendering byte-identical to before Art mode ever existed —
-   * every code path this touches is gated on `this.#art?.enabled`. Above
-   * `GLYPH_MIN_SCALE`, live cells render as cached-raster glyph characters
-   * (see `GLYPH_MIN_SCALE`'s doc) whose shape/colour/position are driven by
+   * every code path this touches is gated on `this.#art?.enabled`. Above the
+   * legibility floor (see `glyphsLegibleAt`'s doc), live cells render as
+   * cached-raster glyph characters whose shape/colour/position are driven by
    * real per-cell state (age/activity/neighbours/lineage/density) and
    * optionally the modulation field; below it, Art mode has no visible
    * effect at all and the honest lens renders exactly as it always did.
@@ -159,6 +190,12 @@ export interface WorldRenderer {
   consumeDirty(): boolean;
   /** Current CSS-pixel viewport size, for wiring the camera controller. */
   readonly viewport: Readonly<Viewport>;
+  /** The device-pixel ratio this renderer's backing store is actually using
+   *  (capped — see `resize()`'s implementation), for anything outside this
+   *  module that needs to reason in real device pixels rather than CSS ones
+   *  (`glyphsLegibleAt`'s CSS-scale-and-dpr gate, `ArtPanel`'s matching
+   *  hint, `artMount.ts`'s auto-ease-to-legible-zoom target). */
+  readonly dpr: number;
   exportImage(opts?: ExportImageOptions): Promise<Blob>;
   /** Release GPU/canvas resources and listeners. */
   dispose(): void;
@@ -248,6 +285,45 @@ export function projectWorldToScreen(
   };
 }
 
+/**
+ * Pure: which copy of the repeating torus the boundary overlay should be
+ * drawn around, given the camera's CONTINUOUS (never-wrapped) position. No
+ * canvas needed — testable in isolation.
+ *
+ * BUG (found via user report — "the yellow square... quit matching up as you
+ * pan, like half down the middle"): `#drawTorusBoundary` used to stroke a
+ * rect fixed at the literal world coordinates `[0, spec.width] x
+ * [0, spec.height]` — as if that were the one true edge — while the cell
+ * renderers (`#drawZoomedIn`/`#drawZoomedOut`) sample content via `wrap(x,
+ * spec.width)` and let the SCREEN position scroll continuously with
+ * `camera.x`/`camera.y` (a torus has no single canonical position; it
+ * repeats every `spec.width`/`spec.height` cells). The two agreed only while
+ * the camera stayed within roughly half a world-size of the origin; pan
+ * further and the fixed rect either scrolled off-screen or — worse — ended
+ * up stroked across the middle of the currently visible (seamlessly
+ * wrapped, edge-less) content, since it no longer corresponded to any real
+ * feature of what was on screen.
+ *
+ * The fix: pick whichever period-copy of the grid the camera is CURRENTLY
+ * closest to (rounding, not flooring, so the overlay is never more than
+ * half a world-size away from the camera on either axis — it cannot drift
+ * arbitrarily far no matter how long you keep panning in one direction),
+ * then draw that copy's edges with the exact same `worldToScreen` transform
+ * every other overlay uses. This can never diverge from the rendered world
+ * by construction: it is derived from the same `camera.x`/`camera.y` the
+ * cell path reads on the very same `draw()` call, not a separately-tracked
+ * position of its own.
+ */
+export function torusBoundaryOrigin(
+  camera: { x: number; y: number },
+  spec: { width: number; height: number },
+): { x: number; y: number } {
+  return {
+    x: Math.round(camera.x / spec.width) * spec.width,
+    y: Math.round(camera.y / spec.height) * spec.height,
+  };
+}
+
 interface GhostState {
   pattern: StampPattern;
   x: number;
@@ -293,7 +369,6 @@ class WorldRendererImpl implements WorldRenderer {
   #tokAge!: TokenColor;
   #tokActivity!: TokenColor;
   #tokDiff!: TokenColor;
-  #tokWarn!: TokenColor;
   #tokLine!: TokenColor;
   #tokLineStrong!: TokenColor;
   #tokIvory!: TokenColor;
@@ -322,6 +397,10 @@ class WorldRendererImpl implements WorldRenderer {
 
   get viewport(): Readonly<Viewport> {
     return { width: this.#cssW, height: this.#cssH };
+  }
+
+  get dpr(): number {
+    return this.#dpr;
   }
 
   attach(canvas: HTMLCanvasElement): void {
@@ -359,7 +438,6 @@ class WorldRendererImpl implements WorldRenderer {
     this.#tokAge = resolveToken('--color-accent-age', 'oklch(0.79 0.130 78)');
     this.#tokActivity = resolveToken('--color-accent-activity', 'oklch(0.72 0.185 25)');
     this.#tokDiff = resolveToken('--color-accent-diff', 'oklch(0.85 0.170 330)');
-    this.#tokWarn = resolveToken('--color-accent-warn', 'oklch(0.80 0.150 60)');
     this.#tokLine = resolveToken('--color-line', 'oklch(0.32 0.018 198)');
     this.#tokLineStrong = resolveToken('--color-line-strong', 'oklch(0.44 0.020 199)');
     this.#tokIvory = resolveToken('--color-ivory-100', 'oklch(0.96 0.014 92)');
@@ -522,10 +600,10 @@ class WorldRendererImpl implements WorldRenderer {
     if (!ctx || !canvas) return;
 
     // Art mode is only visually active once cells are legible as glyphs
-    // (see `GLYPH_MIN_SCALE`'s doc) — below that, and always when zoomed all
+    // (see `glyphsLegibleAt`'s doc) — below that, and always when zoomed all
     // the way out, this is `false` and every honest lens renders completely
     // unmodified, byte-identical to before Art mode existed.
-    const artActive = Boolean(this.#art?.enabled) && this.#camera.scale >= GLYPH_MIN_SCALE;
+    const artActive = Boolean(this.#art?.enabled) && glyphsLegibleAt(this.#camera.scale, this.#dpr);
     if (artActive) {
       this.#currentTSec = nowSeconds();
       this.#currentLfoAcc = this.#evalLfos(this.#art!, this.#currentTSec);
@@ -816,11 +894,26 @@ class WorldRendererImpl implements WorldRenderer {
    *  character list at a device-pixel cell-size bucket. Cache is bounded so
    *  a long session of custom-string edits or an animated glyph-set LFO
    *  (which needs every built-in set's atlas available at once — see below)
-   *  can't grow it unboundedly. */
+   *  can't grow it unboundedly.
+   *
+   *  Real LRU, not FIFO: a `Map` already preserves insertion order, and
+   *  re-inserting a key on every HIT (delete then set) moves it to the most-
+   *  recently-used end for free, with eviction still just "read the first
+   *  key" — no extra bookkeeping. This matters once an animated glyph-set
+   *  LFO (`glyphSetShift` above) is cycling through several character lists
+   *  at the SAME bucket: with plain insertion-order eviction, cycling
+   *  through more than 24 (chars, bucket) combinations evicted whichever was
+   *  simply oldest by wall-clock, including ones still in active rotation —
+   *  paying a full rebuild for them again next cycle even though nothing
+   *  about their zoom level had changed. Touching on every hit keeps
+   *  anything still genuinely in use alive regardless of insertion order. */
   #ensureAtlas(chars: readonly string[], bucket: number): GlyphAtlasHandle {
     const key = `${chars.join('')}|${bucket}`;
     let atlas = this.#glyphAtlasCache.get(key);
-    if (!atlas) {
+    if (atlas) {
+      this.#glyphAtlasCache.delete(key);
+      this.#glyphAtlasCache.set(key, atlas);
+    } else {
       atlas = buildGlyphAtlas(chars, bucket);
       this.#glyphAtlasCache.set(key, atlas);
       if (this.#glyphAtlasCache.size > 24) {
@@ -838,7 +931,7 @@ class WorldRendererImpl implements WorldRenderer {
    * same shared-corner device-pixel rounding every other overlay in this
    * file uses (`#drawGhost`/`#drawSelection`/`#drawDiff`) — this is what
    * keeps the glyph grid "tight and even… no gaps or drift" at every zoom
-   * level above `GLYPH_MIN_SCALE`, not just at one magic zoom value.
+   * level above the legibility floor, not just at one magic zoom value.
    */
   #drawGlyphs(engine: LifeEngine, rect: Rect): void {
     const art = this.#art!;
@@ -889,7 +982,28 @@ class WorldRendererImpl implements WorldRenderer {
 
     const customStops = art.color.source === 'custom' ? this.#resolveCustomStops(art.color.stops) : null;
 
-    ctx.save();
+    // Two passes over a buffered command list, rather than drawing+tinting
+    // each cell immediately, so `globalCompositeOperation` is only ever
+    // toggled TWICE per frame (once per pass) instead of twice PER LIVE
+    // CELL — the second perf hypothesis from the "acid mode... destroyed the
+    // machine" report (glyph atlas thrash, fixed above via `MAX_ATLAS_CELL_
+    // PX`, was the dominant one, since it's the cost that actually scales
+    // UP with zoom; this compositing-state churn scales with on-screen live
+    // cell COUNT instead, worst at the low end near the legibility floor where
+    // the most cells are visible at once — fixing it too closes out the
+    // hypothesis rather than leaving it unchecked). Safe to reorder this way
+    // even where jittered cells overlap: each `fillRect` only ever touches
+    // the exact pixels its OWN `drawImage` call touched a moment earlier in
+    // pass one, in the same relative per-cell order as before — a later
+    // cell's tint still lands after an earlier cell's in either scheme, so
+    // an overlap's visible winner is unchanged.
+    const dxs: number[] = [];
+    const dys: number[] = [];
+    const dws: number[] = [];
+    const dhs: number[] = [];
+    const sxs: number[] = [];
+    const fillStyles: string[] = [];
+
     for (let j = 0; j < rect.h; j++) {
       const wy = wrap(rect.y + j, spec.height);
       for (let i = 0; i < rect.w; i++) {
@@ -952,13 +1066,22 @@ class WorldRendererImpl implements WorldRenderer {
           dy = Math.round(dy + (j2 - 0.5) * 2 * amp);
         }
 
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.drawImage(atlas.canvas, srcRect.sx, srcRect.sy, srcRect.sw, srcRect.sh, dx, dy, dw, dh);
-        ctx.globalCompositeOperation = 'source-in';
-        ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`;
-        ctx.fillRect(dx, dy, dw, dh);
-
+        dxs.push(dx); dys.push(dy); dws.push(dw); dhs.push(dh); sxs.push(srcRect.sx);
+        fillStyles.push(`rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`);
       }
+    }
+
+    ctx.save();
+    const n = dxs.length;
+    const cellPx = atlas.cellPx;
+    ctx.globalCompositeOperation = 'source-over';
+    for (let k = 0; k < n; k++) {
+      ctx.drawImage(atlas.canvas, sxs[k]!, 0, cellPx, cellPx, dxs[k]!, dys[k]!, dws[k]!, dhs[k]!);
+    }
+    ctx.globalCompositeOperation = 'source-in';
+    for (let k = 0; k < n; k++) {
+      ctx.fillStyle = fillStyles[k]!;
+      ctx.fillRect(dxs[k]!, dys[k]!, dws[k]!, dhs[k]!);
     }
     ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
@@ -1234,10 +1357,21 @@ class WorldRendererImpl implements WorldRenderer {
   #drawTorusBoundary(spec: { width: number; height: number }): void {
     const ctx = this.#ctx!;
     const dpr = this.#dpr;
-    const tl = this.worldToScreen(0, 0);
-    const br = this.worldToScreen(spec.width, spec.height);
+    // See `torusBoundaryOrigin`'s doc: always the period-copy of the grid
+    // nearest the camera RIGHT NOW, computed from the exact same
+    // `camera.x`/`camera.y` the cell path reads this same `draw()` call —
+    // this is what keeps it from ever drifting out of sync while panning.
+    const origin = torusBoundaryOrigin(this.#camera, spec);
+    const tl = this.worldToScreen(origin.x, origin.y);
+    const br = this.worldToScreen(origin.x + spec.width, origin.y + spec.height);
     ctx.save();
-    ctx.strokeStyle = withAlpha(this.#tokWarn, 0.55);
+    // A neutral hairline (`--color-line-strong`, "the active edge" per
+    // DESIGN.md §1's own table), not `--color-accent-warn` — wrapping is
+    // geography, not something destructive or attention-needing, which is
+    // that token's one fixed meaning. The mispositioning above was the real,
+    // reported bug; this is a one-line semantic correction alongside it, not
+    // a restyle.
+    ctx.strokeStyle = withAlpha(this.#tokLineStrong, 0.55);
     ctx.lineWidth = 1;
     ctx.setLineDash([4 * dpr, 4 * dpr]);
     ctx.strokeRect(

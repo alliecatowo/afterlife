@@ -91,11 +91,47 @@ export function buildGlyphAtlas(chars: readonly string[], cellPx: number): Glyph
   };
 }
 
+/**
+ * Hard cap on the RASTER resolution an atlas is ever built at, independent
+ * of how large a cell actually appears on screen. `#drawGlyphs` always blits
+ * via `drawImage(atlas.canvas, srcRect, dx, dy, dw, dh)` — a source rect at
+ * this fixed size scaled to whatever `dw`/`dh` the current zoom actually
+ * needs — so raster resolution and on-screen size were already decoupled;
+ * nothing stopped the BUCKET from growing unbounded with zoom before this
+ * existed. See `atlasCellPxBucket`'s doc for the perf bug this closes.
+ */
+export const MAX_ATLAS_CELL_PX = 64;
+
 /** Round a raw device-pixel cell size to a coarser bucket so the atlas isn't
  *  rebuilt on every fractional zoom tick — rebuilding is cheap (a handful of
  *  `fillText` calls) but there's no reason to do it every frame while
  *  zooming continuously. 2px buckets are imperceptible in the final glyph
- *  size but cut rebuild frequency by roughly half versus integer rounding. */
+ *  size but cut rebuild frequency by roughly half versus integer rounding.
+ *
+ *  PERF BUG (real user report: "acid mode once I zoomed in enough fucking
+ *  destroyed the machine"): with no ceiling, this bucket kept growing
+ *  linearly with `devicePx` (`camera.scale * dpr`, where `dpr` is already
+ *  capped at 2x by `WorldRendererImpl.resize()`) — at `MAX_SCALE` (40 CSS
+ *  px/cell) that's up to an 80px-per-glyph atlas on a capped-2x-DPR phone
+ *  (40 on a 1x desktop). Rasterising a VARIABLE font (JetBrains Mono
+ *  Variable — see `GLYPH_FONT_STACK`) at that size is real, non-trivial work
+ *  (font shaping/instancing + hinting, not a cheap blit) — measurably worse
+ *  on real mobile hardware than on a fast desktop's text stack — and because
+ *  the bucket is still only 2px wide, a SINGLE continuous pinch-zoom gesture
+ *  crosses dozens of distinct buckets on its way there — each one a full
+ *  atlas rebuild (`buildGlyphAtlas`'s `document.createElement('canvas')` +
+ *  one `fillText` per character), repeated every animation frame the
+ *  gesture keeps moving (`#drawGlyphs` recomputes the bucket every `draw()`
+ *  call). That is the "destroyed the machine" cliff: a font-shaping cost
+ *  that scaled with zoom level, paid continuously while zooming, at exactly
+ *  the large-cell end where each rebuild is also the most expensive one.
+ *  Capping the bucket means the atlas simply stops being rebuilt at all once
+ *  zoomed in that far — the same cached large-enough raster is reused and
+ *  scaled up by the GPU/canvas compositor (`drawImage`'s free dest-size
+ *  scaling), which is what that call was already doing on every other zoom
+ *  level anyway. 64px is comfortably larger than `@/render/renderer`'s
+ *  `GLYPH_MIN_DEVICE_PX` legibility floor while staying cheap to rasterise
+ *  and small to upscale from. */
 export function atlasCellPxBucket(devicePx: number): number {
-  return Math.max(4, Math.round(devicePx / 2) * 2);
+  return Math.min(MAX_ATLAS_CELL_PX, Math.max(4, Math.round(devicePx / 2) * 2));
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeFramePlan } from '@/export/pacing';
-import { capDimensions, capFramePlan } from '@/export/limits';
+import { capAudioDuration, capDimensions, capFramePlan } from '@/export/limits';
 
 describe('export limits: capFramePlan', () => {
   it('leaves a plan under budget untouched', () => {
@@ -33,5 +33,26 @@ describe('export limits: capDimensions', () => {
     expect(result.reduced).toBe(true);
     expect(result.value.width).toBe(2560);
     expect(result.value.height).toBe(1280);
+  });
+});
+
+describe('export limits: capAudioDuration', () => {
+  it('leaves an in-budget duration untouched', () => {
+    const result = capAudioDuration(60, 300);
+    expect(result.reduced).toBe(false);
+    expect(result.value).toBe(60);
+  });
+
+  it('truncates to the cap and reports an honest note', () => {
+    const result = capAudioDuration(500, 300);
+    expect(result.reduced).toBe(true);
+    expect(result.value).toBe(300);
+    expect(result.note).toMatch(/300s/);
+  });
+
+  it('defaults to MAX_AUDIO_SECONDS when no explicit cap is given', () => {
+    const result = capAudioDuration(1000);
+    expect(result.reduced).toBe(true);
+    expect(result.value).toBe(300);
   });
 });

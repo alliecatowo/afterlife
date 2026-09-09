@@ -43,3 +43,17 @@ export function estimatePngZipBytes(width: number, height: number, frameCount: n
   const zipOverheadPerEntry = 96; // local + central-directory header, no compression on the zip layer itself
   return Math.round((bytesPerFramePng + zipOverheadPerEntry) * frameCount) + 128;
 }
+
+/** GIF-flavoured LZW is less efficient than deflate but still compresses
+ *  flat, few-colour cellular content well; per-frame local colour tables
+ *  (see `gifExport.ts`'s doc for why every frame gets its own) add a small,
+ *  bounded per-frame overhead on top of the pixel data. */
+const GIF_BYTES_PER_PIXEL_PER_FRAME = 0.07;
+/** Graphic Control Extension + Image Descriptor + a worst-case full 256-entry
+ *  local colour table, per frame. */
+const GIF_PER_FRAME_OVERHEAD_BYTES = 32 + 256 * 3;
+
+export function estimateGifBytes(width: number, height: number, frameCount: number): number {
+  const perFramePixelBytes = width * height * GIF_BYTES_PER_PIXEL_PER_FRAME;
+  return Math.round((perFramePixelBytes + GIF_PER_FRAME_OVERHEAD_BYTES) * frameCount) + 32;
+}

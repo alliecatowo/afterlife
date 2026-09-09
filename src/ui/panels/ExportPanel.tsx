@@ -1,10 +1,13 @@
 /**
- * Video / animation export dialog. Opened from `PersistPanel`'s "Images"
- * section (which already covers the still PNG exports) — this covers moving
- * output: an offline, deterministic replay of recorded history, encoded to
- * WebM via `MediaRecorder`, or a zipped PNG sequence for real editing
- * software. See `@/export/**` for the pipeline this drives; nothing here
- * touches the live renderer/camera/engine the user is looking at.
+ * Video / animation / audio export dialog. Opened from `PersistPanel`'s
+ * "Images" section (which already covers the still PNG exports) — this
+ * covers moving/sounding output: an offline, deterministic replay of
+ * recorded history, encoded to WebM (`MediaRecorder`, optionally with a
+ * muxed deterministic audio track), an animated GIF (hand-written
+ * median-cut + LZW + GIF89a encoder), a zipped PNG sequence for real editing
+ * software, or a standalone WAV render of the soundscape. See `@/export/**`
+ * for the pipeline this drives; nothing here touches the live renderer/
+ * camera/engine/audio graph the user is looking at or listening to.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSession } from '@/ui/session';
@@ -12,8 +15,9 @@ import { bus } from '@/ui/bus';
 import { Button, Dialog, Field, Slider } from '@/ui/primitives';
 import {
   DEFAULT_EXPORT_SETTINGS, EXPORT_PRESETS, applyPreset,
-  computeFramePlan, estimatePngZipBytes, estimateWebmBytes, formatBytes, formatDuration,
-  exportWorldPngZip, exportWorldWebm, isAbortError, pickSupportedMimeType, WEBM_MIME_CANDIDATES,
+  computeFramePlan, estimateGifBytes, estimatePngZipBytes, estimateWebmBytes, formatBytes, formatDuration,
+  exportWorldAudio, exportWorldGif, exportWorldPngZip, exportWorldWebm, isAbortError,
+  pickSupportedMimeType, WEBM_MIME_CANDIDATES,
   type ExportHandle, type ExportSettings,
 } from '@/export';
 
@@ -70,9 +74,13 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
     if (!plan) return null;
     const bytes = settings.format === 'webm'
       ? estimateWebmBytes(settings.width, settings.height, settings.fps, plan.durationSeconds)
-      : estimatePngZipBytes(settings.width, settings.height, plan.frameCount);
+      : settings.format === 'gif'
+        ? estimateGifBytes(settings.width, settings.height, plan.frameCount)
+        : estimatePngZipBytes(settings.width, settings.height, plan.frameCount);
     return `~${formatBytes(bytes)} · ${formatDuration(plan.durationSeconds)} · ${plan.frameCount} frames`;
   }, [plan, settings]);
+
+  const formatLabel = settings.format === 'webm' ? 'WebM video' : settings.format === 'gif' ? 'Animated GIF' : 'PNG sequence (zip)';
 
   const applyPresetId = (id: string): void => {
     setPresetId(id);
@@ -83,25 +91,8 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
     handleRef.current?.cancel();
   };
 
-  const start = (): void => {
-    if (!session || busy) return;
-    setBusy(true);
-    setProgress({ done: 0, total: 1 });
-
-    const req = {
-      fromGen,
-      toGen,
-      width: settings.width,
-      height: settings.height,
-      fps: settings.fps,
-      gensPerSecond: settings.gensPerSecond,
-      annotate: settings.annotate,
-      onProgress: (p: { done: number; total: number }) => setProgress(p),
-    };
-
-    const handle = settings.format === 'webm' ? exportWorldWebm(req) : exportWorldPngZip(req);
+  function runExport(handle: ExportHandle<{ blob: Blob; filename: string; reductionNotes: string[] }>): void {
     handleRef.current = handle as ExportHandle<unknown>;
-
     handle.promise.then(
       (result) => {
         download(result.filename, result.blob);
@@ -125,6 +116,41 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
         bus.emit('toast', { message: `Export failed: ${(err as Error)?.message ?? 'unknown error'}`, tone: 'warn' });
       },
     );
+  }
+
+  const start = (): void => {
+    if (!session || busy) return;
+    setBusy(true);
+    setProgress({ done: 0, total: 1 });
+
+    const req = {
+      fromGen,
+      toGen,
+      width: settings.width,
+      height: settings.height,
+      fps: settings.fps,
+      gensPerSecond: settings.gensPerSecond,
+      annotate: settings.annotate,
+      includeAudio: settings.includeAudio,
+      onProgress: (p: { done: number; total: number }) => setProgress(p),
+    };
+
+    const handle = settings.format === 'webm' ? exportWorldWebm(req)
+      : settings.format === 'gif' ? exportWorldGif(req)
+        : exportWorldPngZip(req);
+    runExport(handle);
+  };
+
+  const startAudioOnly = (): void => {
+    if (!session || busy) return;
+    setBusy(true);
+    setProgress({ done: 0, total: 1 });
+    runExport(exportWorldAudio({
+      fromGen,
+      toGen,
+      gensPerSecond: settings.gensPerSecond,
+      onProgress: (p) => setProgress(p),
+    }));
   };
 
   // Cancel any in-flight export if the dialog is closed mid-run — never
@@ -137,8 +163,8 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
     <Dialog
       open={open}
       onOpenChange={(next) => { if (!next) handleRef.current?.cancel(); onOpenChange(next); }}
-      title="Export video"
-      description="An offline, deterministic replay of recorded history — exact framerate, no dropped frames, reproducible from the same generation range."
+      title="Export video / audio"
+      description="An offline, deterministic replay of recorded history — exact framerate, no dropped frames, reproducible from the same generation range. Audio (drone + churn notes) renders just as deterministically, against an OfflineAudioContext, from your current audio settings."
       width={440}
       footer={
         busy ? (
@@ -146,6 +172,9 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
         ) : (
           <>
             <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
+            <Button size="sm" variant="ghost" onClick={startAudioOnly} disabled={!session}>
+              Audio only (WAV)
+            </Button>
             <Button size="sm" onClick={start} disabled={!session || (settings.format === 'webm' && !webmSupported)}>
               Export
             </Button>
@@ -240,8 +269,22 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
           </label>
         </Field>
 
+        {settings.format === 'webm' && (
+          <Field label="Audio">
+            <label className="flex items-center gap-2 text-xs text-ivory-200 max-[480px]:min-h-11">
+              <input
+                type="checkbox"
+                checked={settings.includeAudio}
+                onChange={(e) => setSettings((s) => ({ ...s, includeAudio: e.target.checked }))}
+                className="h-3.5 w-3.5 shrink-0 accent-[var(--color-ivory-100)] max-[480px]:h-5 max-[480px]:w-5"
+              />
+              Mux in the deterministic soundscape render
+            </label>
+          </Field>
+        )}
+
         <div className="flex items-center justify-between rounded-sm border border-line px-3 py-2">
-          <span className="text-xs text-ivory-300">{settings.format === 'webm' ? 'WebM video' : 'PNG sequence (zip)'}</span>
+          <span className="text-xs text-ivory-300">{formatLabel}</span>
           <span className="tabular text-xs text-ivory-100">{estimateText ?? '—'}</span>
         </div>
 
@@ -250,6 +293,10 @@ export function ExportPanel({ open, onOpenChange }: ExportPanelProps) {
             This browser has no supported WebM video encoder — try the PNG sequence preset instead, or a recent Chrome/Edge/Firefox.
           </p>
         )}
+
+        <p className="text-xs text-ivory-300">
+          &ldquo;Audio only (WAV)&rdquo; below renders just the soundscape for the same generation range and simulated speed above — deterministic, and reflects your current Audio panel settings (scale, preset, tempo, density).
+        </p>
 
         {progress && (
           <div className="flex flex-col gap-1">

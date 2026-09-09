@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atlasCanvasSize, atlasCellPxBucket, atlasCellRect } from '@/render/glyphAtlas';
+import { atlasCanvasSize, atlasCellPxBucket, atlasCellRect, MAX_ATLAS_CELL_PX } from '@/render/glyphAtlas';
 
 describe('glyph atlas layout maths (pure, no canvas needed)', () => {
   it('lays out cells left to right with no gap or overlap', () => {
@@ -29,5 +29,26 @@ describe('glyph atlas layout maths (pure, no canvas needed)', () => {
     expect(atlasCellPxBucket(0)).toBe(4);
     // Small zoom jitter within a bucket doesn't change the bucket.
     expect(atlasCellPxBucket(20)).toBe(atlasCellPxBucket(20.9));
+  });
+
+  describe('PERF: the bucket is capped so zooming in far never keeps rebuilding a bigger and bigger atlas', () => {
+    it('never exceeds MAX_ATLAS_CELL_PX, no matter how large the on-screen cell gets', () => {
+      expect(atlasCellPxBucket(MAX_ATLAS_CELL_PX)).toBe(MAX_ATLAS_CELL_PX);
+      expect(atlasCellPxBucket(MAX_ATLAS_CELL_PX + 1)).toBe(MAX_ATLAS_CELL_PX);
+      expect(atlasCellPxBucket(200)).toBe(MAX_ATLAS_CELL_PX);
+      expect(atlasCellPxBucket(10_000)).toBe(MAX_ATLAS_CELL_PX);
+    });
+
+    it('is a flat constant once capped — no more distinct buckets to rebuild for, ever, past the cap', () => {
+      const beyondCap = [65, 100, 500, 5000, 1_000_000].map(atlasCellPxBucket);
+      expect(new Set(beyondCap).size).toBe(1);
+      expect(beyondCap[0]).toBe(MAX_ATLAS_CELL_PX);
+    });
+
+    it('below the cap, behaviour is unchanged from the original uncapped bucketing', () => {
+      for (let px = 4; px <= MAX_ATLAS_CELL_PX; px += 3) {
+        expect(atlasCellPxBucket(px)).toBe(Math.max(4, Math.round(px / 2) * 2));
+      }
+    });
   });
 });

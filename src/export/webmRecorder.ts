@@ -13,6 +13,18 @@
  * output for that frame's generation (no dropped/skipped/duplicated
  * generations the way a live capture could produce under load); only the
  * wall-clock time to *encode* the file scales with the output's duration.
+ *
+ * Optional audio muxing (`RecordWebmOptions.audioBuffer`): the SAMPLE
+ * CONTENT is exactly `@/export/audio/offlineRender.ts`'s deterministic
+ * `OfflineAudioContext` render — nothing here re-decides what the audio
+ * sounds like. Getting that already-rendered `AudioBuffer` INTO a
+ * `MediaStream` for `MediaRecorder` to mux, though, has no offline API:
+ * `AudioBuffer` -> `MediaStream` requires actually playing it through a real
+ * (non-offline) `AudioContext`'s `MediaStreamAudioDestinationNode`. That
+ * playback is real-time, same as the frame pacing above — an honest,
+ * inherent platform constraint on the MUXING step, not evidence the audio
+ * itself isn't deterministic (export it standalone via `encodeWav` to
+ * confirm independently of any muxing/timing concerns).
  */
 import type { FrameSource, ProgressCallback } from './types';
 import { ExportUnsupportedError } from './errors';
@@ -46,6 +58,18 @@ export interface RecordWebmOptions {
   signal?: AbortSignal;
   mimeCandidates?: readonly string[];
   isTypeSupported?: (type: string) => boolean;
+  /** A deterministically-rendered audio buffer (see
+   *  `@/export/audio/offlineRender.ts`) to mux into the WebM's audio track.
+   *  Played back in real time through a fresh `AudioContext` for the
+   *  duration of the capture — see this module's doc for why that's the one
+   *  unavoidably realtime part of an otherwise-deterministic audio export. */
+  audioBuffer?: AudioBuffer;
+}
+
+type AudioContextCtor = new (options?: { sampleRate?: number }) => AudioContext;
+
+function getAudioContextCtor(): AudioContextCtor | null {
+  return (globalThis as { AudioContext?: AudioContextCtor }).AudioContext ?? null;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -75,13 +99,39 @@ export async function recordWebm(source: FrameSource, opts: RecordWebmOptions): 
 
   let recorder: MediaRecorder | null = null;
   let videoTrack: CanvasCaptureTrack | null = null;
+  let audioCtx: AudioContext | null = null;
+  let audioSource: AudioBufferSourceNode | null = null;
   try {
     const firstCanvas = await source.frame(0);
     const canvasStream = firstCanvas.captureStream(0) as MediaStream;
     videoTrack = canvasStream.getVideoTracks()[0] as CanvasCaptureTrack | undefined ?? null;
     if (!videoTrack) throw new ExportUnsupportedError('This browser could not create a canvas capture stream for video export.');
 
-    const stream = new MediaStream([videoTrack]);
+    const tracks: MediaStreamTrack[] = [videoTrack];
+    if (opts.audioBuffer) {
+      const AudioCtxCtor = getAudioContextCtor();
+      if (AudioCtxCtor) {
+        // A fresh, real-time `AudioContext` — the only way to turn an
+        // already-rendered `AudioBuffer` into a `MediaStream` track for
+        // `MediaRecorder` (see this module's doc). Requesting the buffer's
+        // own sample rate keeps the muxed audio bit-for-bit the offline
+        // render's samples (no resampling); if the browser refuses that
+        // rate, fall back to its default rather than failing the whole export.
+        try {
+          audioCtx = new AudioCtxCtor({ sampleRate: opts.audioBuffer.sampleRate });
+        } catch {
+          audioCtx = new AudioCtxCtor();
+        }
+        const dest = audioCtx.createMediaStreamDestination();
+        audioSource = audioCtx.createBufferSource();
+        audioSource.buffer = opts.audioBuffer;
+        audioSource.connect(dest);
+        const audioTrack = dest.stream.getAudioTracks()[0];
+        if (audioTrack) tracks.push(audioTrack);
+      }
+    }
+
+    const stream = new MediaStream(tracks);
 
     const chunks: Blob[] = [];
     recorder = new MediaRecorder(stream, {
@@ -96,6 +146,7 @@ export async function recordWebm(source: FrameSource, opts: RecordWebmOptions): 
     });
 
     recorder.start();
+    audioSource?.start(0);
 
     const frameIntervalMs = 1000 / opts.fps;
     const startTime = performance.now();
@@ -128,6 +179,11 @@ export async function recordWebm(source: FrameSource, opts: RecordWebmOptions): 
     throw err;
   } finally {
     videoTrack?.stop();
+    if (audioSource) {
+      try { audioSource.stop(); } catch { /* already stopped/ended */ }
+      audioSource.disconnect();
+    }
+    if (audioCtx) void audioCtx.close();
     source.dispose();
   }
 }

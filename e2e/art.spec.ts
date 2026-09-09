@@ -10,7 +10,7 @@ import { applyEditDirect, collectConsoleErrors, dismissTitle, ensurePaused, open
  * not just the underlying `setArtConfig` contract.
  */
 
-const GLYPH_SCALE = 16; // comfortably above GLYPH_MIN_SCALE (11)
+const GLYPH_SCALE = 16; // comfortably above GLYPH_MIN_DEVICE_PX (8 device px; this project runs at dpr=1, so 16 CSS px/cell == 16 device px/cell)
 
 async function setCamera(page: Page, cam: { x: number; y: number; scale: number }): Promise<void> {
   await page.evaluate((c) => {

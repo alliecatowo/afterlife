@@ -73,6 +73,15 @@ test.describe('mobile: HUD reachability at 390px', () => {
       ['Save & export', 'Save & export'],
       ['Instrument', 'Instrument'],
       ['Settings', 'Settings'],
+      // The Art trigger tab (`@/render/ArtTrigger.tsx`) is `lg:`-only now —
+      // a bare floating box with no relationship to the rest of the chrome
+      // at 390px (a real user's screenshot), on top of which it had already
+      // needed a one-off repositioning to stop covering the timeline's own
+      // touch target (`ArtTrigger.tsx`'s doc, commit `6f8514f`). This row
+      // (already listed in `HudMoreSheet.tsx`'s `PANEL_ROWS`, unrelated to
+      // that change) is the one and only mobile path to Art mode now — it
+      // must actually work, not just exist in the sheet's list.
+      ['Acid Art', 'Acid Art'],
     ];
     for (const [buttonLabel, panelTitle] of panels) {
       await page.getByRole('button', { name: 'More controls' }).tap();
@@ -322,6 +331,54 @@ test.describe('mobile: the heartbeat journey — notice, scrub, edit, compare, s
     await page.getByRole('button', { name: 'More controls' }).tap();
     await page.getByRole('button', { name: 'Open time sculpture', exact: true }).tap();
     await expect(page.locator('#sculpture-canvas')).toBeVisible();
+  });
+});
+
+test.describe('mobile: the Art trigger is not a floating box at 390px, and the timeline stays fully scrubbable', () => {
+  // Regression coverage for two real user reports: (1) the self-mounted Art
+  // trigger tab (`@/render/ArtTrigger.tsx`) reading as "a bare bordered
+  // rectangle floating in space with no visual relationship to anything" on
+  // a real phone screenshot, now `lg:`-only (see that file's doc); and (2)
+  // the exact regression its own doc warns against re-introducing — commit
+  // `6f8514f` fixed this same trigger covering the timeline ribbon's own
+  // touch target at 390px. Hiding the trigger below `lg` obviously can't
+  // cover the ribbon anymore (it isn't in the DOM's visible layout at all),
+  // but this asserts that directly rather than trusting it by construction.
+  test('the floating Art trigger is absent at 390px, and its permanent home in the More sheet works instead', async ({ page }) => {
+    await suppressTour(page);
+    await openApp(page);
+    await dismissTitle(page);
+
+    await expect(page.getByRole('button', { name: 'Turn on Art mode' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Art mode settings' })).toBeHidden();
+
+    await page.getByRole('button', { name: 'More controls' }).tap();
+    await page.getByRole('button', { name: 'Acid Art', exact: true }).tap();
+    await expect(page.locator('#panel-right')).toContainText('Acid Art');
+    await expect(page.getByLabel('Enable Art mode')).toBeVisible();
+  });
+
+  test('the timeline ribbon is scrubbable all the way to its own left edge, where the old trigger used to sit', async ({ page }) => {
+    await suppressTour(page);
+    await openApp(page);
+    await dismissTitle(page);
+    await page.waitForFunction(() => {
+      const w = window as unknown as { __AFTERLIFE__?: { engine: { gen: number } } };
+      return (w.__AFTERLIFE__?.engine.gen ?? 0) >= 10;
+    }, undefined, { timeout: 15_000 });
+    await ensurePaused(page);
+    const genBefore = await currentGen(page);
+
+    const ribbon = page.getByRole('slider', { name: 'History timeline' });
+    const ribbonBox = (await ribbon.boundingBox())!;
+    // 4px in from the ribbon's own left edge — the exact spot the old
+    // `bottom-3`-positioned trigger's 44x44 touch target used to swallow.
+    const touch = await newTouchSession(page);
+    await touch.start([{ x: ribbonBox.x + 4, y: ribbonBox.y + ribbonBox.height / 2, id: 50 }]);
+    await touch.end([]);
+    await page.waitForTimeout(200);
+
+    expect(await currentGen(page), 'a tap at the ribbon\'s far-left edge must reach the ribbon, not a control floating over it').toBeLessThan(genBefore);
   });
 });
 

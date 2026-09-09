@@ -3,7 +3,7 @@
  * merge helper — no DOM.
  */
 
-export type ExportFormat = 'webm' | 'png-zip';
+export type ExportFormat = 'webm' | 'png-zip' | 'gif';
 
 export interface ExportSettings {
   width: number;
@@ -13,6 +13,9 @@ export interface ExportSettings {
   gensPerSecond: number;
   format: ExportFormat;
   annotate: boolean;
+  /** WebM only: mux the deterministic offline audio render into the clip's
+   *  audio track (see `@/export/audio/**`). Ignored for other formats. */
+  includeAudio: boolean;
 }
 
 export interface ExportPreset {
@@ -27,19 +30,25 @@ export const EXPORT_PRESETS: readonly ExportPreset[] = [
     id: 'social',
     label: 'Share on social',
     description: '720p WebM at 24fps — a good size/quality balance for feeds.',
-    settings: { width: 1280, height: 720, fps: 24, gensPerSecond: 30, format: 'webm', annotate: true },
+    settings: { width: 1280, height: 720, fps: 24, gensPerSecond: 30, format: 'webm', annotate: true, includeAudio: false },
   },
   {
     id: 'high-quality',
     label: 'High quality',
     description: '1080p WebM at 30fps, slower simulated pacing for a more legible clip.',
-    settings: { width: 1920, height: 1080, fps: 30, gensPerSecond: 20, format: 'webm', annotate: true },
+    settings: { width: 1920, height: 1080, fps: 30, gensPerSecond: 20, format: 'webm', annotate: true, includeAudio: false },
   },
   {
     id: 'frame-sequence',
     label: 'PNG sequence (zip)',
     description: 'One PNG per frame, zipped — for bringing a clip into real editing software.',
-    settings: { width: 960, height: 600, fps: 12, gensPerSecond: 24, format: 'png-zip', annotate: false },
+    settings: { width: 960, height: 600, fps: 12, gensPerSecond: 24, format: 'png-zip', annotate: false, includeAudio: false },
+  },
+  {
+    id: 'gif',
+    label: 'Animated GIF',
+    description: 'A shareable looping GIF — smaller and slower than WebM, capped resolution/frames.',
+    settings: { width: 480, height: 300, fps: 12, gensPerSecond: 20, format: 'gif', annotate: false, includeAudio: false },
   },
 ];
 

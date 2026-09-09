@@ -10,6 +10,7 @@ import { useAppStore } from '@/ui/store';
 function makeFakeRenderer(): WorldRenderer {
   return {
     viewport: { width: 800, height: 600 },
+    dpr: 1,
     attach() {},
     setCamera() {},
     setLens() {},

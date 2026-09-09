@@ -16,6 +16,7 @@ function makeFakeRenderer(): WorldRenderer & { ghostCalls: unknown[]; selectionC
     ghostCalls,
     selectionCalls,
     viewport: { width: 800, height: 600 },
+    dpr: 1,
     attach() {},
     setCamera() {},
     setLens() {},

@@ -63,7 +63,22 @@ export function ArtTrigger() {
   return (
     <div
       className={
-        'fixed left-3 z-[var(--z-overlay)] flex items-center gap-1 rounded-sm border border-line bg-surface px-1.5 py-1 shadow-[var(--shadow-hairline)] ' +
+        // `hidden lg:flex`, not just a repositioned floating box, below the
+        // `lg` (1024px) breakpoint: this is the SAME breakpoint `Hud.tsx`/
+        // `HudMoreSheet.tsx` already split every other desktop-toolbar
+        // control at (see `Hud.tsx`'s own "One breakpoint, one home for each
+        // control" doc), and `HudMoreSheet.tsx` already lists an "Acid Art"
+        // row (`PANEL_ROWS`) that opens the exact same `ArtPanel` — which
+        // has its own "Enable Art mode" checkbox — from the mobile "More"
+        // sheet. A real user's phone screenshot showed this bare bordered
+        // box floating over the world with no visual relationship to
+        // anything else in the chrome ("get designed or some shit"); below
+        // `lg` it's pure redundant clutter over a screen that's already
+        // tight on space, not a second reachability path worth its footprint
+        // — removing it there instead of trying to home it in the mobile
+        // layout is the simpler, more honest fix. The keyboard shortcut and
+        // this same trigger remain exactly as they were at `lg` and up.
+        'fixed left-3 z-[var(--z-overlay)] hidden items-center gap-1 rounded-sm border border-line bg-surface px-1.5 py-1 shadow-[var(--shadow-hairline)] lg:flex ' +
         (presentation ? 'bottom-3' : 'bottom-[calc(var(--size-timeline)_+_env(safe-area-inset-bottom)_+_var(--spacing)*4)]')
       }
       style={{ zIndex: 40 }}
