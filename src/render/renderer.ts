@@ -88,33 +88,44 @@ export function glyphsLegibleAt(scale: number, dpr: number): boolean {
 export const MAX_GLYPH_CELLS = 100_000;
 
 /**
- * Hard cap on LIVE cells actually drawn as glyphs in one frame — each one
- * costs two real canvas draw calls (a cached-raster blit + a `source-in`
- * tint fill). `MAX_GLYPH_CELLS`'s rect-AREA check above never actually
- * protects this app in practice (its whole world is smaller than that
- * threshold — see its own doc), because dead cells in the rect are nearly
- * free (`engine.get()` and `continue`) — only LIVE ones pay the expensive
- * two-draw-call path. `#drawGlyphs` counts live cells in the rect FIRST,
- * with only that cheap `engine.get()` check (no field sampling, no hue
- * rotation, no draw calls — this pre-count itself is not the expensive
- * part), and bails to the honest `#drawZoomedIn` path if the count exceeds
- * this, so a dense scene degrades gracefully to a fast, honest render
- * instead of ever attempting the expensive pass.
+ * Hard cap on LIVE cells actually drawn as glyphs in one frame.
  *
- * This is defence-in-depth, not the primary fix — see the frame-time
- * watchdog's doc above for why: direct measurement (`e2e/art-perf.spec.ts`)
- * found real multi-hundred-ms-to-multi-second single-frame stalls that did
- * NOT scale predictably with live cell count (a smaller/simpler scene
- * stalled in one run while a larger/busier one didn't, in a comparable run),
- * so no live-cell number, however conservative, can be *proven* to prevent
- * every version of the stall actually observed. What lowering this number
- * DOES reliably reduce is exposure: fewer live glyph cells per frame means
- * fewer real canvas draw calls, which is the one dimension that clearly
- * correlates with worse outcomes across every measured run even if not
- * perfectly linearly. The frame-time watchdog remains the backstop that
- * doesn't depend on this number being right for whatever hardware/browser
- * state is actually running it. */
-export const MAX_GLYPH_LIVE_CELLS = 6_000;
+ * RAISED from 6,000 to 20,000 once `#drawGlyphs` moved off "N live cells ==
+ * N real canvas draw calls" (see that method's doc for the single-blit
+ * rewrite this reflects — the fix for this whole file's dense-scene p95
+ * budget below). The old number was tuned for the OLD per-cell cost model;
+ * real Chrome measurement of the NEW path found it comfortably handles far
+ * more than 6,000 live cells:
+ *
+ *  - 900-2,940 live cells (the scenes that used to define "dense" for this
+ *    app) at a comfortable zoom: p95 well under 4ms, down from ~72ms.
+ *  - The ENTIRE app world densely alive at once (24,576 live cells — 60% of
+ *    the full 256x160 = 40,960-cell world) at a normal-to-large desktop
+ *    viewport (up to 3440px wide): p95 ~10-13ms, max ~25-32ms — still inside
+ *    this file's own 32ms sustained-average budget and nowhere near the
+ *    watchdog's 250ms hard ceiling.
+ *  - The SAME full-world scene only starts missing frame budgets at a
+ *    genuinely extreme combination this app has no realistic path to today:
+ *    a >4500px-wide viewport (well past any real monitor+browser window) AND
+ *    `MAX_SCALE` (40, the closest zoom the camera allows) simultaneously —
+ *    p95 ~19-21ms, max ~45ms. Even there, per-frame cost stays an order of
+ *    magnitude under the watchdog's 250ms hard ceiling, so a pathological
+ *    real-world case degrades to "a bit jank" under the sustained-average
+ *    watchdog, never the multi-second freeze this whole safety mechanism
+ *    exists to catch.
+ *
+ * 20,000 sits well above every realistic dense scene (this app's own world
+ * can't exceed 40,960 cells total) while staying a genuine, real ceiling —
+ * this is defence-in-depth, not the primary fix, exactly as before: see the
+ * frame-time watchdog's doc above for why a live-cell number, however
+ * chosen, can never be the ONLY defence. `#drawGlyphs` counts live cells in
+ * the rect FIRST, with only a cheap `engine.get()` check (no field sampling,
+ * no hue rotation, no pixel-buffer work — this pre-count itself is not the
+ * expensive part), and bails to the honest `#drawZoomedIn` path if the count
+ * exceeds this, so a scene beyond even this raised ceiling degrades
+ * gracefully to a fast, honest render instead of ever attempting the
+ * expensive pass. */
+export const MAX_GLYPH_LIVE_CELLS = 20_000;
 
 /**
  * FRAME-TIME/MEMORY WATCHDOG — added after a real production report: Art

@@ -391,11 +391,24 @@ test.describe('Art mode performance/resource-safety harness', () => {
 
   test('MAX_GLYPH_LIVE_CELLS: a dense scene beyond the live-cell cap never attempts the expensive glyph path at all', async ({ page }) => {
     await bootTo(page);
-    // Densely fill most of the world (well beyond the 6,000-live-cell cap)
-    // and zoom so the visible rect covers a large fraction of it.
+    // `MAX_GLYPH_LIVE_CELLS` was raised from 6,000 to 20,000 once `#drawGlyphs`
+    // moved off the old "N live cells == N real canvas draw calls" cost model
+    // (see that constant's own doc in `renderer.ts` for the real-Chrome
+    // numbers justifying the new value) — this app's own world (`WORLD`,
+    // 256x160 = 40,960 cells) can produce at most ~24,576 live cells with
+    // this file's own dense fill pattern (~60% alive), so exceeding 20,000
+    // at all requires the WHOLE world in view at once, not just "most of
+    // it." The default 1440x900 viewport at the smallest legible-for-glyphs
+    // zoom (scale 8 at this suite's forced 1x DPR) only shows ~12,000 live
+    // cells — comfortably UNDER the new cap — so this test enlarges the
+    // viewport enough to bring the entire world on screen.
+    await page.setViewportSize({ width: 2600, height: 1300 });
+    await page.waitForTimeout(200); // let the resize/ResizeObserver settle before reading canvas geometry
+    // Densely fill the ENTIRE world (well beyond the 20,000-live-cell cap)
+    // and zoom so the visible rect covers all of it.
     const seeded = await seedDenseArea(page, 0, 0, WORLD.width, WORLD.height);
-    expect(seeded).toBeGreaterThan(6_000);
-    await setCamera(page, { x: 90, y: 56, scale: 8 });
+    expect(seeded).toBeGreaterThan(20_000);
+    await setCamera(page, { x: 128, y: 80, scale: 8 });
     await setArtConfig(page, realisticArtConfig());
 
     const t0 = Date.now();
