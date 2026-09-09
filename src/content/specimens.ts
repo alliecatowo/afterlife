@@ -196,28 +196,37 @@ const RAW: readonly RawSpecimen[] = [
     explanation: 'A gun built from four blocks and two shuttles that fires one glider every 120 generations.',
     verified: { kind: 'emitter', period: 120, popGainPerPeriod: 5 } },
   { name: 'r-pentomino', category: 'seed', width: 3, height: 3, population: 5, rle: 'b2o$2o$bo!',
-    explanation: 'Five cells that churn for over a thousand generations before settling.',
+    explanation: 'Five cells that churn for over a thousand generations before settling — on an '
+      + 'unbounded grid. This world is a torus: here the debris wraps and re-enters, and it '
+      + 'actually settles into a period-2 cycle at generation 2189, population 109.',
     verified: {
       kind: 'seed', gridCaveat: 'unbounded (sparse) grid', outcome: 'stabilizes',
       stabilizesAtGen: 1103, populationAtStabilization: 116, peakPopulation: 319, peakGen: 821,
     } },
   { name: 'acorn', category: 'seed', width: 7, height: 3, population: 7, rle: 'bo$3bo$2o2b3o!',
-    explanation: 'Seven cells that take more than five thousand generations to settle.',
+    explanation: 'Seven cells that take more than five thousand generations to settle — on an '
+      + 'unbounded grid. This world is a torus, small enough that the sprawling debris will wrap '
+      + 'and re-interact with itself well before then, so the actual course here differs.',
     verified: {
       kind: 'seed', gridCaveat: 'unbounded (sparse) grid', outcome: 'stabilizes',
       stabilizesAtGen: 5206, populationAtStabilization: 633, peakPopulation: 1057, peakGen: 4408,
     } },
   { name: 'diehard', category: 'seed', width: 8, height: 3, population: 7, rle: '6bo$2o$bo3b3o!',
-    explanation: 'Seven cells that thrash for 130 generations and then vanish completely.',
+    explanation: 'Seven cells that thrash for 130 generations and then vanish completely — on an '
+      + 'unbounded grid. This world is a torus, so its wandering gliders can wrap and return '
+      + 'before that; the outcome here is not verified to match.',
     verified: { kind: 'seed', gridCaveat: 'unbounded (sparse) grid', outcome: 'dies', dieGen: 130, peakPop: 40 } },
   { name: 'b-heptomino', category: 'seed', width: 4, height: 3, population: 7, rle: '3o$b3o$2bo!',
-    explanation: 'A seven-cell methuselah that settles quickly compared to its cousins.',
+    explanation: 'A seven-cell methuselah that settles quickly compared to its cousins — figures '
+      + 'measured on an unbounded grid. This world is a torus, so behaviour here may differ.',
     verified: {
       kind: 'seed', gridCaveat: 'unbounded (sparse) grid', outcome: 'stabilizes',
       stabilizesAtGen: 148, populationAtStabilization: 28, peakPopulation: 123, peakGen: 121,
     } },
   { name: 'pi-heptomino', category: 'seed', width: 3, height: 3, population: 7, rle: '3o$obo$obo!',
-    explanation: 'A seven-cell methuselah with a longer, showier burn than the b-heptomino.',
+    explanation: 'A seven-cell methuselah with a longer, showier burn than the b-heptomino — '
+      + 'figures measured on an unbounded grid. This world is a torus, so behaviour here may '
+      + 'differ.',
     verified: {
       kind: 'seed', gridCaveat: 'unbounded (sparse) grid', outcome: 'stabilizes',
       stabilizesAtGen: 173, populationAtStabilization: 55, peakPopulation: 201, peakGen: 115,

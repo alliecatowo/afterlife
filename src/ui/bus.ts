@@ -17,7 +17,11 @@ export interface AppEvents {
   'playback:pause': void;
   'playback:step': { by: number };
   'playback:speed': { speed: number };
-  'playback:scrub': { gen: Generation; done: boolean };
+  /** `synthetic: true` marks a scrub performed on the user's behalf (e.g. the
+   *  tutorial's "Show me"), not a real drag/keyboard interaction — listeners
+   *  that award credit for the user's own action (achievements) must ignore
+   *  it. Omitted/false for genuine input from `@/ui/timeline/Timeline`. */
+  'playback:scrub': { gen: Generation; done: boolean; synthetic?: boolean };
   /* camera */
   'camera:changed': { x: number; y: number; scale: number };
   'camera:follow': { x: number; y: number } | null;

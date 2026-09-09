@@ -20,5 +20,5 @@ export * from '@/content/specimens';
 export * from '@/content/recognition';
 export * from '@/content/experiments';
 export * from '@/content/discoveries';
-export { PATTERNS, getPattern, createDiscoveryDetector, type PatternEntry, type DiscoveryDetector } from '@/content/patterns';
+export { PATTERNS, getPattern, type PatternEntry } from '@/content/patterns';
 export { MiniaturePreview, type MiniaturePreviewProps } from '@/content/MiniaturePreview';

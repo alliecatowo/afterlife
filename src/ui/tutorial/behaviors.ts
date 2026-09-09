@@ -147,7 +147,9 @@ export const TOUR_BEHAVIORS: Partial<Record<TourStepId, TourBehavior>> = {
     showMe: ({ session }) => {
       if (!session) return;
       const target = Math.max(session.history.windowStart, session.engine.gen - 30);
-      bus.emit('playback:scrub', { gen: target, done: true });
+      // `synthetic: true` — this is the tour performing the action for the
+      // visitor, not a real drag; achievements must not credit it as one.
+      bus.emit('playback:scrub', { gen: target, done: true, synthetic: true });
     },
   },
 

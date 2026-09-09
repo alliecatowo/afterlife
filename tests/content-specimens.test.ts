@@ -138,6 +138,27 @@ describe('content: specimens', () => {
     }
   });
 
+  // The `gridCaveat` field above is internal metadata — it never reaches the
+  // player. `explanation` is what actually surfaces in the UI (the drawer
+  // tooltip via `@/content/patterns`'s `note: s.explanation`, and the Field
+  // Guide body via `toFieldGuideEntry`'s `body = s.explanation`), so the
+  // caveat has to live in that string too, or a reader sees authored
+  // transient numbers with no hint that this world's bounded torus won't
+  // reproduce them. This guards against that caveat silently dropping from
+  // the user-facing text even if `gridCaveat` itself stays intact.
+  it('every seed specimen states the unbounded-grid caveat in its user-facing explanation', () => {
+    const seeds = SPECIMENS.filter((s) => s.verified.kind === 'seed');
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const s of seeds) {
+      expect(s.explanation.toLowerCase(), s.name).toContain('unbounded grid');
+      expect(s.explanation.toLowerCase(), s.name).toContain('torus');
+    }
+    // Where we have a real measured torus figure, state it — not just the caveat.
+    const rPentomino = seeds.find((s) => s.name === 'r-pentomino')!;
+    expect(rPentomino.explanation).toContain('2189');
+    expect(rPentomino.explanation).toContain('109');
+  });
+
   it('toStampPattern round-trips a specimen into a valid StampPattern usable by LifeEngine.stamp', () => {
     const s = SPECIMENS.find((s) => s.name === 'glider')!;
     const pattern = toStampPattern(s);

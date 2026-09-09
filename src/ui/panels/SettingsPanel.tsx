@@ -127,10 +127,13 @@ export function SettingsPanel() {
 
       <Divider />
 
-      <Field label="Retained history" description="How far back the timeline can scrub.">
+      <Field
+        label="History configuration"
+        description="Fixed limits, not a live readout of this session — see Export for how much is actually retained right now."
+      >
         <div className="flex gap-4">
-          <Readout label="window" value={HISTORY_WINDOW} unit="gens" digits={5} />
-          <Readout label="keyframe" value={KEYFRAME_INTERVAL} unit="gens" digits={3} />
+          <Readout label="max window" value={HISTORY_WINDOW} unit="gens" digits={5} />
+          <Readout label="keyframe every" value={KEYFRAME_INTERVAL} unit="gens" digits={3} />
         </div>
       </Field>
     </div>

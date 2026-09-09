@@ -70,6 +70,18 @@ describe('achievements store: real-state triggers', () => {
     expect(useAchievements.getState().log['scrub-backward']?.gen).toBe(40);
   });
 
+  it('does not unlock "scrub-backward" for a synthetic scrub (the tutorial\'s "Show me" performing it, not the visitor)', async () => {
+    const { bus, useAchievements } = await freshWiring();
+    bus.emit('gen:changed', { gen: 100, population: 5 });
+
+    bus.emit('playback:scrub', { gen: 40, done: true, synthetic: true });
+    expect(useAchievements.getState().log['scrub-backward']).toBeUndefined();
+
+    // A genuine scrub afterwards still earns it.
+    bus.emit('playback:scrub', { gen: 30, done: true });
+    expect(useAchievements.getState().log['scrub-backward']?.gen).toBe(30);
+  });
+
   it('unlocks "first-fork" for a real fork (fromGen > 0), not the automatic one-cell sibling branch (fromGen === 0)', async () => {
     const { bus, useAchievements } = await freshWiring();
     bus.emit('branch:created', { id: 'sibling', fromGen: 0, name: 'Flipped sibling' });

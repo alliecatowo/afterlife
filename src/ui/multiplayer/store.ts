@@ -218,6 +218,13 @@ function startRoom(
     room: spec,
     localPeerId,
     localName,
+    // Every peer announces this same fixed value over the wire — it is NOT
+    // a real per-peer colour negotiation. Nothing reads `PeerInfo.color` on
+    // receipt either: `MultiplayerPanel`'s `PeerRow` computes colour locally
+    // from role (`colorForRole('local' | 'remote')`, see `./colors.ts`) and
+    // tells additional peers apart by shape instead of inventing more
+    // accent colours. If real per-peer colour ever becomes a requirement,
+    // wire the received `color` into `PeerRow` instead of trusting this.
     localColor: 'var(--color-accent-branch-a)',
   });
   liveRoom = room;

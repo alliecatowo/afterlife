@@ -125,8 +125,10 @@ bus.on('gen:changed', ({ gen, population }) => {
   lastPopulation = population;
 });
 
-bus.on('playback:scrub', ({ gen, done }) => {
-  if (done && gen < maxGenSeen) useAchievements.getState().unlock('scrub-backward', gen);
+bus.on('playback:scrub', ({ gen, done, synthetic }) => {
+  // `synthetic` scrubs are the tutorial's "Show me" performing the drag on
+  // the visitor's behalf — only a genuine user-driven scrub earns this.
+  if (done && !synthetic && gen < maxGenSeen) useAchievements.getState().unlock('scrub-backward', gen);
 });
 
 bus.on('branch:created', ({ fromGen }) => {
