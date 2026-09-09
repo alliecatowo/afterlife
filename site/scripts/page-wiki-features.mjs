@@ -149,29 +149,35 @@ export function renderFeatures() {
             for it isn't even downloaded until you open the Multiplayer panel.
           </p>
 
-          <h2 id="export">Video export</h2>
+          <h2 id="export">Video, GIF, and audio export</h2>
           <p>
             The Save &amp; export panel can render an offline, deterministic replay of
             your world — a fresh copy of the engine, stepped forward and fed the same
             recorded edits your session already has, never the live simulation you're
-            watching — out as a <strong>WebM video</strong> or a
+            watching — out as a <strong>WebM video</strong>, an
+            <strong>animated GIF</strong>, or a
             <strong>zipped sequence of PNG frames</strong>, matching whatever lens,
             theme, or Art mode configuration you actually have on screen. Exports are
             bounded (frame count and resolution are capped, with an honest
             reduction notice rather than a silent truncation) and cancellable
-            mid-render.
+            mid-render. The GIF encoder — a hand-written median-cut colour quantiser,
+            GIF-flavoured LZW compressor, and GIF89a file writer, with no external
+            library — is verified against a real, independent GIF decoder (Chromium's
+            own), not just its own round-trip.
           </p>
           <p>
-            Three things were designed for this feature and deliberately <strong>cut
-            rather than shipped half-working</strong>: animated GIF export (a complete
-            encoder was built, but there was no independent way to confirm the files
-            it produced actually open correctly in a real viewer), audio export (the
-            pieces needed exist and were confirmed reusable, but the environment this
-            was built in couldn't actually exercise them before shipping), and a Time
-            Sculpture turntable export. <strong>Exported video is currently
-            silent.</strong> None of these were quietly dropped — see the project's
-            own contributor notes for exactly what exists and what it would take to
-            finish each one.
+            The soundscape you hear while playing can be exported too: a
+            <strong>deterministic offline audio render</strong> reproduces the same
+            drone and churn-driven notes your ears would hear, using your current
+            scale, preset, tempo, and density, as a standalone <strong>WAV</strong> or
+            muxed straight into the WebM's audio track. It's genuinely quiet while your
+            world is paused or still, and comes alive once something is actually
+            happening — verified against a real offline audio-rendering engine, not
+            assumed. A Time Sculpture turntable export was designed for this feature
+            and deliberately <strong>cut rather than shipped half-working</strong> —
+            untested against real WebGL in the time available. See the project's own
+            contributor notes for exactly what exists and what it would take to finish
+            it.
           </p>
 
           <h2 id="history-ribbon">The history ribbon</h2>

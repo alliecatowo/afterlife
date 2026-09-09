@@ -30,24 +30,56 @@ generalised, pluggable rule engine (10 verified presets, a lookup-table kernel, 
 own fast path kept) with the Rules panel mounted in the HUD; opt-in deterministic-
 lockstep multiplayer (`BroadcastChannelTransport` working today, `WebSocketTransport`
 ready for a relay), reachable via the HUD behind a lazy `import()`; offline deterministic
-video/PNG-sequence export from the Save & export panel; and an audio drone rework driven
-by measured churn-rate/motion dynamics with auto-suspend after idle silence. All of the
-above are documented in the README, ARCHITECTURE.md, and the site wiki — this log is
-supporting detail, not the primary source for a new contributor.
+video/PNG-sequence/animated-GIF export from the Save & export panel; a deterministic
+offline audio render (standalone WAV, or muxed into the WebM's audio track) against a
+real `OfflineAudioContext`; and an audio drone rework driven by measured churn-rate/
+motion dynamics with auto-suspend after idle silence. All of the above are documented
+in the README, ARCHITECTURE.md, and the site wiki — this log is supporting detail, not
+the primary source for a new contributor.
+
+**Resurrected this pass — GIF and audio export.** An earlier pass built a complete
+median-cut quantiser + GIF-flavoured LZW encoder + GIF89a writer, and confirmed
+`SoundscapeBrain`/`SynthGraph` were reusable against an `OfflineAudioContext`, then cut
+BOTH, unverified, reasoning that jsdom/Vitest had no real GIF decoder and no
+`OfflineAudioContext` to check against. That reasoning was avoidable: Playwright with
+Chromium was available the whole time, and Chromium's own `ImageDecoder` and
+`OfflineAudioContext` are genuine third-party reference implementations for exactly
+these two problems. `e2e/gif-export.spec.ts` decodes real encoder output via
+`ImageDecoder` (frame count, dimensions, every frame actually decodes, looping,
+genuinely varying pixel content across frames, a colourful `lineage`-lens frame handled
+cleanly by the median-cut palette); `e2e/audio-export.spec.ts` renders against a real
+`OfflineAudioContext` and asserts on the resulting buffer (silent before a
+constructed activity burst, audible after it, and reproducible to within an inaudible
+floating-point tolerance across two renders — see below for why not always bit-exact).
+Full detail, including a real off-by-one bug the Chromium verification caught in the
+LZW encoder (self-round-trip testing had missed it), in the "media-export" entry below.
+
+- **GIF LZW code-width timing.** `src/export/gif/lzw.ts`'s widen check has a one-code
+  offset from "textbook" LZW, because a real GIF decoder's own dictionary insertion
+  always lags the encoder's by one code (it can only learn a new string's last
+  character from the code AFTER the one that completes it). Found ONLY by testing
+  against Chromium — a self-authored decoder using the "textbook" formula on both sides
+  agreed with itself while being wrong. See that file's doc comment.
+- **Audio determinism, precisely stated.** The musical SCHEDULE (`plan.ts`: which
+  generation maps to which simulated time, which notes/drone parameters fire when) is
+  exactly, bit-for-bit reproducible — proven in `tests/export-audioPlan.test.ts`, pure
+  JS, no `AudioContext` at all. The RENDERED SAMPLES are reproducible to within ~1e-7
+  (over 100dB below full scale, inaudible, almost always below the 16-bit quantisation
+  step the WAV encoder writes) rather than always bit-exact, when the page's own live
+  `Soundscape` `AudioContext` is concurrently active (dismissing the title plate creates
+  one via a real user gesture) — an apparent Chromium-internal floating-point
+  characteristic of sharing its audio engine across two contexts, not a flaw in this
+  module's own scheduling. See `src/export/audio/offlineRender.ts`'s doc.
+- **Muxing audio into WebM is a real-time capture** of the deterministic buffer (no
+  offline API turns an `AudioBuffer` into a `MediaStream` — see `webmRecorder.ts`'s
+  doc) — the same honest, inherent `MediaRecorder` constraint the video pacing already
+  had, not a new determinism gap.
 
 **Cut, with a resurrection path — don't lose these notes:**
-- **Animated GIF export** — a complete median-cut quantiser + GIF-flavoured LZW encoder
-  + GIF89a container writer were built and typechecked, then deleted because the only
-  verification available was a self-authored round-trip decoder, with no real
-  third-party GIF reference decoder to confirm produced files actually open correctly.
-  Full detail in the "media-export" entry below (search for "Cut from this pass").
-- **Audio export** (deterministic offline render, and muxed WebM+audio) — the pure
-  `SoundscapeBrain`/`SynthGraph` pieces were confirmed reusable against an
-  `OfflineAudioContext` via a safe structural cast, which would make it genuinely
-  deterministic. Cut because `OfflineAudioContext` isn't exercisable in this project's
-  jsdom/Vitest environment. **Exported video is currently silent.** Same entry as above.
 - **Time Sculpture turntable export** — designed (orbit the existing camera, reuse the
-  existing PNG-export path per frame) but cut, untested against real WebGL. Same entry.
+  existing PNG-export path per frame) but cut, untested against real WebGL in the time
+  available. If picked up, verify the same way GIF/audio were resurrected above: a real
+  browser via Playwright, not a self-authored check.
 - **Site theming** — the app's 5 runtime themes were never ported to `site/**`. See the
   "color (theming)" entry below for the suggested approach (duplicate the token maps
   into `site/shared/theme.ts`, don't import `src/ui/theme/**` from the site).
@@ -57,10 +89,12 @@ list, including smaller items (the mobile heartbeat-journey e2e flake, `ArtPanel
 hex-only colour input, `Hud.tsx`'s zero-slack icon row).
 
 **Numbers, as last actually measured (see README.md/ARCHITECTURE.md for the current
-figures — trust those over this file if they ever disagree):** 837 unit tests across 83
-files; 115 Playwright specs (87 desktop + 22 mobile + 6 `prod-build`) with one known
-flake in `mobile.spec.ts`'s heartbeat-journey test; the Conway-vs-generalised-rule
-kernel measured at 3.2598 → 3.2856 ms/step (+0.8%, within noise) on a 512×512 board.
+figures — trust those over this file if they ever disagree):** 887 unit tests across 90
+files; end-to-end coverage grew with `e2e/gif-export.spec.ts` (3 specs) and
+`e2e/audio-export.spec.ts` (2 specs) verifying the resurrected export formats against
+real Chromium decoders — see README.md for the current total. One known flake in
+`mobile.spec.ts`'s heartbeat-journey test; the Conway-vs-generalised-rule kernel
+measured at 3.2598 → 3.2856 ms/step (+0.8%, within noise) on a 512×512 board.
 
 ===
 

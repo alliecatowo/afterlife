@@ -192,30 +192,29 @@ bit-exact, no matter how many times or in what order you scrub to a generation.
 
 Honest gaps, drawn from `INTEGRATION-NOTES.md` and the current source, not hidden:
 
-- **Two cut media-export features have a documented resurrection path, but need a
-  real verification environment to finish:**
-  - **Animated GIF export.** A complete median-cut quantiser + GIF-flavoured LZW
-    encoder + GIF89a container writer were built and typechecked, then deleted rather
-    than shipped, because the only verification available was a self-authored
-    round-trip decoder — there was no real third-party GIF reference decoder in that
-    environment to confirm produced files actually open correctly. If you have a way
-    to verify against a real decoder (or a browser that can load the output as an
-    `<img>`), this is straightforward to resurrect — see the `media-export` entry in
-    `INTEGRATION-NOTES.md`'s historical section for exactly what was built.
-  - **Audio export** (both a deterministic offline render and muxed WebM+audio).
-    `SoundscapeBrain`/`SynthGraph` (`src/audio/**`) are pure/explicit-time and were
-    confirmed (by reading `synth.ts` fully) to work against an `OfflineAudioContext`
-    via a safe structural cast — this would make offline audio export genuinely
-    deterministic, fed from the same `replay.ts` cursor video export already uses. Cut
-    because `OfflineAudioContext` isn't available in jsdom/Vitest, so it couldn't be
-    exercised before shipping. **Currently, exported WebM video is silent.** Needs a
-    real-browser test harness to verify, then wiring into `src/export/**`. If you pick
-    this up: do not fall back to a realtime tap of the live soundscape without saying
-    so — that would be a real, not deterministic, capture, a materially different and
-    weaker guarantee.
+- **Animated GIF and audio export shipped** (`src/export/gif/**`,
+  `src/export/audio/**`) after an earlier pass cut both, unverified, because the only
+  environment available at the time was jsdom/Vitest — no real GIF decoder, no
+  `OfflineAudioContext`. That reasoning turned out to be avoidable: Playwright +
+  Chromium was available all along and is a genuine third-party reference for both
+  (`e2e/gif-export.spec.ts` decodes real output via `ImageDecoder`;
+  `e2e/audio-export.spec.ts` renders against a real `OfflineAudioContext` and asserts
+  silence/activity/determinism on the resulting buffer). One real nuance surfaced
+  during that verification, worth knowing before touching either module: the GIF LZW
+  encoder's code-width-growth timing has a one-code offset from the "textbook" LZW
+  algorithm (documented in `src/export/gif/lzw.ts`'s widen-check comment — a real GIF
+  decoder's own dictionary insertion always lags the encoder's by one code); and audio
+  render samples are deterministic to within an inaudible (~1e-7, sub-16-bit-quantisation)
+  floating-point tolerance rather than always bit-exact when another `AudioContext` is
+  concurrently active on the page (documented in `offlineRender.ts`) — the musical
+  SCHEDULE itself is exactly reproducible (`tests/export-audioPlan.test.ts`, no
+  `AudioContext` involved at all).
   - **Time Sculpture turntable export** — designed (orbit the existing
-    `TimeSculpture.orbit()` camera, reuse `exportPng()` per frame) but cut for the same
-    reason: untested against real WebGL, and it's an inherently realtime-paced capture.
+    `TimeSculpture.orbit()` camera, reuse `exportPng()` per frame) but cut: untested
+    against real WebGL in the time available, and it's an inherently realtime-paced
+    capture (each frame needs the live scene to actually repaint). If you pick this up,
+    the same Playwright-against-a-real-browser approach that resurrected GIF/audio
+    above is the way to verify it, not a self-authored check.
 - **Site theming was never built.** The app has 5 runtime themes
   (`src/ui/theme/**`); `site/**` (this landing page/wiki) does not. If picked up: don't
   import `src/ui/theme/**` directly — the site deliberately has zero dependency on

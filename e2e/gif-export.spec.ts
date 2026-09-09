@@ -160,4 +160,15 @@ test.describe('GIF export vs. Chromium\'s real ImageDecoder', () => {
     expect(result.frameCount).toBeGreaterThan(0);
     expect(result.byteLength).toBeGreaterThan(0);
   });
+
+  test('GIF and audio-only export are both reachable from the real export dialog', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+    await page.getByRole('button', { name: 'Save & export' }).click();
+    await page.getByRole('button', { name: 'Export video…' }).click();
+    await expect(page.getByRole('button', { name: 'Animated GIF' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Audio only (WAV)' })).toBeVisible();
+    await page.getByRole('button', { name: 'Animated GIF' }).click();
+    await expect(page.getByText('Animated GIF', { exact: false }).last()).toBeVisible();
+  });
 });

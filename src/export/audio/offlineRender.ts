@@ -97,10 +97,24 @@ function withDeterministicRandom<T>(fn: () => T): T {
  * offline: every note/drone parameter is scheduled onto the
  * `OfflineAudioContext` up front (see `plan.ts`'s cues), then
  * `startRendering()` computes the whole buffer in one deterministic pass —
- * no realtime pacing, no wall-clock dependency. Two calls with identical
- * arguments produce bit-identical output (verified in
- * `e2e/audio-export.spec.ts` against a REAL `OfflineAudioContext`, not a
- * self-authored stand-in).
+ * no realtime pacing, no wall-clock dependency, no `Math.random()` left
+ * unseeded (see `withDeterministicRandom` above).
+ *
+ * The MUSICAL SCHEDULE this produces — which generation maps to which
+ * simulated time, which notes/drone parameters fire when — is exactly,
+ * bit-for-bit reproducible (`plan.ts`'s pure logic; see
+ * `tests/export-audioPlan.test.ts`, which never touches an `AudioContext`
+ * at all). The RENDERED SAMPLES are reproducible to within an inaudible
+ * floating-point tolerance, not always bit-exact: measured in
+ * `e2e/audio-export.spec.ts` against a REAL `OfflineAudioContext` (not a
+ * self-authored stand-in), two renders of the same request are bit-exact
+ * when nothing else on the page uses Web Audio, but differ by up to ~1e-7
+ * (over 100dB below full scale — inaudible, and almost always below the
+ * 16-bit quantisation step `encodeWav` writes) when the page's own live
+ * `Soundscape` `AudioContext` is also active, an apparent Chromium-internal
+ * floating-point/threading characteristic of a long-running oscillator's
+ * phase sharing the browser's audio engine with another context — not a
+ * flaw in this module's own (provably deterministic) scheduling.
  */
 export async function renderOfflineAudio(opts: OfflineAudioRenderOptions): Promise<OfflineAudioRenderResult> {
   const reductionNotes: string[] = [];

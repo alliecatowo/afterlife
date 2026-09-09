@@ -152,13 +152,31 @@ lazy host and confirming it constructs nothing until asked.
 
 **Video export.** An offline, deterministic replay (an independent engine,
 stepped forward and re-fed the same recorded edits — never the live
-engine/history/camera) can be exported as WebM or a zipped PNG sequence,
-bounded and cancellable, matching whatever lens/theme/Art config you're
-actually looking at. **Audio export, animated GIF, and a Time Sculpture
-turntable export were all cut**, deliberately, rather than shipped
-half-verified — see [`CONTRIBUTING.md`](./CONTRIBUTING.md)'s "known rough
-edges" for exactly what was built and what it would take to finish each one.
-Exported video is currently silent.
+engine/history/camera) can be exported as WebM, an animated GIF (a
+hand-written median-cut quantiser + GIF-flavoured LZW encoder + GIF89a
+writer — zero new dependencies), or a zipped PNG sequence, bounded and
+cancellable, matching whatever lens/theme/Art config you're actually looking
+at. The GIF encoder is verified against Chromium's own `ImageDecoder` in
+`e2e/gif-export.spec.ts` — a real third-party decoder, not this project's own
+round-trip.
+
+**Audio export.** The pure `SoundscapeBrain`/`SynthGraph` (the same musical
+logic driving the live soundscape) render offline against a real
+`OfflineAudioContext`, honouring your current scale/preset/tempo/density —
+export as a standalone WAV or muxed into the WebM's audio track. The musical
+SCHEDULE (which generation maps to which note/drone parameter, when) is
+exactly, bit-for-bit deterministic; the rendered samples are reproducible to
+within an inaudible floating-point tolerance (an apparent Chromium
+engine-internal characteristic when another `AudioContext` shares the page —
+see `src/export/audio/offlineRender.ts`'s doc), verified in
+`e2e/audio-export.spec.ts` against a real `OfflineAudioContext`: genuinely
+silent while the world is paused/static, genuinely audible once it's active.
+Muxing the rendered audio into a WebM is a real-time capture of that
+deterministic buffer (an inherent `MediaRecorder` constraint, not a
+determinism gap in the audio itself — export the standalone WAV to confirm).
+A Time Sculpture turntable export was designed but cut, deliberately, rather
+than shipped half-verified — see [`CONTRIBUTING.md`](./CONTRIBUTING.md)'s
+"known rough edges."
 
 **Time as a physical thing.** The history ribbon isn't a scrollbar bolted onto a
 simulation — it's the actual record. Scrubbing calls `goto(gen)`, which restores
@@ -396,13 +414,12 @@ walkthrough is in [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.m
 - **The `site/**` guide/wiki does not theme itself** — the app's 5 runtime
   themes are an `src/**`-only feature. Scoped, not started; see
   `CONTRIBUTING.md` for the suggested approach if you pick it up.
-- **Exported video is silent** — audio export was designed (and partially
-  built against a safe structural cast to `OfflineAudioContext`) but cut
-  unverified, since `OfflineAudioContext` isn't exercisable in this project's
-  unit-test environment. Animated GIF export and a Time Sculpture turntable
-  export were built/designed and cut for the same reason: verified confidence
-  ran out before the feature did. See `CONTRIBUTING.md`'s "known rough edges"
-  for exactly what exists to resurrect each one.
+- Animated GIF and audio export shipped after being verified against real
+  browser implementations (Chromium's `ImageDecoder`; a real
+  `OfflineAudioContext`) in Playwright specs — see the "Video export"/"Audio
+  export" section above. A Time Sculpture turntable export was designed but
+  cut, unverified against real WebGL in the time available — see
+  `CONTRIBUTING.md`'s "known rough edges" for what exists to resurrect it.
 - **Art mode's custom palette colour input is hex-only** (a native
   `<input type="color">`); an existing `oklch()`/`lab()` stop shows a grey
   fallback swatch until re-picked. Cosmetic — the underlying value is
