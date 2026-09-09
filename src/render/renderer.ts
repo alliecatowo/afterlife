@@ -32,7 +32,9 @@ import {
   GLYPH_SETS, resolveGlyphChars, glyphIndexForValue, type GlyphSetId,
   normalizeAge, normalizeActivity, normalizeNeighbors, normalizeLineage, normalizeDensity, normalizeField,
 } from './glyphs';
-import { buildGlyphAtlas, atlasCellPxBucket, type GlyphAtlasHandle } from './glyphAtlas';
+import {
+  buildGlyphAtlas, atlasCellPxBucket, getAtlasBuildCount, isGlyphFontReady, type GlyphAtlasHandle,
+} from './glyphAtlas';
 import {
   sampleField, isFieldAnimated, type SampledGrid, type FieldSampleParams, type FieldTransform,
 } from './field';
@@ -76,18 +78,146 @@ export function glyphsLegibleAt(scale: number, dpr: number): boolean {
   return scale * dpr >= GLYPH_MIN_DEVICE_PX;
 }
 
-/** Hard cap on cells drawn as individual glyphs in one frame — each glyph
- *  costs two real canvas draw calls (a cached-raster blit + a tint fill),
- *  not one `putImageData`. Sized to comfortably cover a full 1440x900
- *  viewport at `GLYPH_MIN_DEVICE_PX` even at a capped 2x device-pixel ratio
- *  (a common retina-desktop combination: (1440/4)*(900/4) = 81,000 cells at
- *  the CSS scale of 4 that a dpr-2 display needs to cross the 8-device-px
- *  floor) — it exists purely as a safety valve against a pathological
- *  camera/viewport/DPR combination, never triggered in normal use. */
+/** Hard cap on the VISIBLE RECT's total area (cells, live + dead) considered
+ *  for the glyph path at all — a cheap pre-check on `rect.w * rect.h` (no
+ *  engine reads needed) against a pathological camera/viewport/DPR
+ *  combination. Deliberately generous: this app's actual world
+ *  (`@/content/scenes.ts`'s `WORLD`, 256x160 = 40,960 cells) is smaller than
+ *  this, so it exists only as a sanity ceiling, never the load-bearing
+ *  defence — see `MAX_GLYPH_LIVE_CELLS` and the watchdog below for that. */
 export const MAX_GLYPH_CELLS = 100_000;
+
+/**
+ * Hard cap on LIVE cells actually drawn as glyphs in one frame — each one
+ * costs two real canvas draw calls (a cached-raster blit + a `source-in`
+ * tint fill). `MAX_GLYPH_CELLS`'s rect-AREA check above never actually
+ * protects this app in practice (its whole world is smaller than that
+ * threshold — see its own doc), because dead cells in the rect are nearly
+ * free (`engine.get()` and `continue`) — only LIVE ones pay the expensive
+ * two-draw-call path. `#drawGlyphs` counts live cells in the rect FIRST,
+ * with only that cheap `engine.get()` check (no field sampling, no hue
+ * rotation, no draw calls — this pre-count itself is not the expensive
+ * part), and bails to the honest `#drawZoomedIn` path if the count exceeds
+ * this, so a dense scene degrades gracefully to a fast, honest render
+ * instead of ever attempting the expensive pass.
+ *
+ * This is defence-in-depth, not the primary fix — see the frame-time
+ * watchdog's doc above for why: direct measurement (`e2e/art-perf.spec.ts`)
+ * found real multi-hundred-ms-to-multi-second single-frame stalls that did
+ * NOT scale predictably with live cell count (a smaller/simpler scene
+ * stalled in one run while a larger/busier one didn't, in a comparable run),
+ * so no live-cell number, however conservative, can be *proven* to prevent
+ * every version of the stall actually observed. What lowering this number
+ * DOES reliably reduce is exposure: fewer live glyph cells per frame means
+ * fewer real canvas draw calls, which is the one dimension that clearly
+ * correlates with worse outcomes across every measured run even if not
+ * perfectly linearly. The frame-time watchdog remains the backstop that
+ * doesn't depend on this number being right for whatever hardware/browser
+ * state is actually running it. */
+export const MAX_GLYPH_LIVE_CELLS = 6_000;
+
+/**
+ * FRAME-TIME/MEMORY WATCHDOG — added after a real production report: Art
+ * mode hard-crashed a reporter's Mac while rendering nothing visible.
+ * `e2e/art-perf.spec.ts` (built to catch exactly this class of bug) measured
+ * the glyph path directly rather than guessing, and found real, reproducible
+ * SINGLE-FRAME stalls of roughly one to several seconds — the whole main
+ * thread frozen solid for that entire span, which is both "renders nothing
+ * visible" (no repaint can happen mid-synchronous-call) and, sustained
+ * across repeated frames with no way to stop, exactly what a user
+ * experiences as "crashed."
+ *
+ * What that measurement ruled out matters as much as what it found: the
+ * stall did NOT scale linearly with live cell count (a config with FEWER
+ * live cells was, in one measured run, dramatically SLOWER than a config
+ * with many more), was NOT explained by per-cell feature complexity (a
+ * "simple" single-driver config stalled while a config with 4 LFOs, a full
+ * modulation field, and trails did not, in comparable runs), and did NOT go
+ * away when garbage collection was forced immediately beforehand. What IS
+ * consistent across every reproduction: it coincides with the first
+ * substantial batch of real, non-trivial alpha-composited canvas draw calls
+ * (`drawImage` + `source-in` `fillRect`) issued against a given render
+ * context — behaviour more consistent with a browser/graphics-stack-level
+ * lazy-initialisation cost (a GPU/compositor code path warming up) than
+ * anything this file's own per-cell logic controls. Two real, independently
+ * justified contributing risks were found and fixed alongside this
+ * (`glyphAtlas.ts`'s webfont-load-blocking fix, and `MAX_GLYPH_LIVE_CELLS`
+ * below) — but neither was confirmed as the SOLE explanation, and the exact
+ * browser-internal trigger remains not fully pinned down.
+ *
+ * That uncertainty is precisely why this watchdog — reacting to REAL
+ * measured wall-clock cost, mechanism-agnostic by design — is the primary
+ * defence rather than any static cell-count ceiling: a number tuned against
+ * this measurement environment cannot promise anything about a different
+ * browser, GPU, driver state, or the reporter's actual machine. The instant
+ * a frame is (or a short run of frames sustainably is) too expensive for
+ * whatever is actually running it, this degrades immediately — same frame,
+ * before another expensive one can start — regardless of why it was
+ * expensive. `MAX_GLYPH_CELLS` stays as a last-resort sanity ceiling (a
+ * pathological viewport/DPR combination), not the load-bearing defence.
+ */
+export const ART_FRAME_BUDGET_MS = 32;
+/** A single catastrophic frame (a stall, not just "a bit slow") trips the
+ *  watchdog immediately, without waiting to accumulate a rolling window —
+ *  see `watchdogShouldTrip`'s doc for why a sustained-average check alone
+ *  isn't enough. */
+export const ART_FRAME_HARD_CEILING_MS = 250;
+/** How many recent art-active frames the rolling average is judged over —
+ *  large enough that one-off jank (a GC pause, a background tab hiccup)
+ *  can't trip it, small enough that a genuinely sustained problem is caught
+ *  well within a second at 30+ fps. */
+export const ART_WATCHDOG_WINDOW = 20;
+
+/**
+ * Pure: should the art-mode frame-cost watchdog trip? Two independent
+ * triggers, checked separately by the caller (see `#recordArtFrameCost`):
+ * a single frame at or above `hardCeilingMs` (a stall bad enough that
+ * waiting for a rolling average to confirm it would itself be the mistake —
+ * this is exactly the "one frame took 900ms and everything downstream backs
+ * up" shape a real thermal/GPU-driver event produces), or a SUSTAINED
+ * average across the last `samples` frames above `budgetMs` (this is the
+ * "every frame is a bit too expensive, forever" shape the crash report
+ * actually described — no single frame looks alarming, but the main thread
+ * never gets a moment of idle time for the browser's own GC/compositor to
+ * catch up, which is what a real resource-exhaustion crash looks like from
+ * the inside). Exported and pure (plain numbers in, boolean out) so this
+ * decision logic is unit-testable without a canvas or a real clock.
+ */
+export function watchdogShouldTrip(
+  samples: readonly number[],
+  budgetMs: number,
+  minSamples: number,
+): boolean {
+  if (samples.length < minSamples) return false;
+  const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+  return avg > budgetMs;
+}
+
+/** Debug/perf-test-only snapshot of Art mode's real resource usage — see
+ *  `WorldRenderer.getArtDebugStats()`'s doc. */
+export interface ArtDebugStats {
+  /** Live entries in the glyph-atlas LRU cache (`renderer.ts`'s own, capped at 24). */
+  atlasEntries: number;
+  /** Total device-pixel bytes (`width * height * 4`) retained across every cached atlas canvas right now. */
+  atlasBytes: number;
+  /** Cumulative atlas rebuilds since page load (module-level counter — see `glyphAtlas.ts`'s `getAtlasBuildCount`). */
+  atlasBuildCount: number;
+  /** Distinct `fillStyle` strings computed for the MOST RECENT glyph frame — cleared every `#drawGlyphs` call, so this is a per-frame number, not cumulative. */
+  fillStyleCacheEntries: number;
+  /** 0 or 1 — the single reused offscreen canvas every zoomed-in/zoomed-out/glyph path shares. */
+  cellCanvasCount: number;
+  /** Wall-clock cost (ms) of the most recent art-active `draw()` call. */
+  lastArtFrameMs: number;
+  /** Rolling window of recent art-active frame costs the watchdog judges a sustained-average trip against. */
+  artFrameMsWindow: number[];
+}
 
 function nowSeconds(): number {
   return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+}
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 function hashStringSeed(s: string): number {
@@ -197,6 +327,25 @@ export interface WorldRenderer {
    *  hint, `artMount.ts`'s auto-ease-to-legible-zoom target). */
   readonly dpr: number;
   exportImage(opts?: ExportImageOptions): Promise<Blob>;
+  /**
+   * Debug/perf-test-only snapshot of Art mode's real resource usage (atlas
+   * cache size/bytes, fillStyle cache size, last frame cost). Cheap enough to
+   * call every frame from a test harness; never called from any production
+   * code path. See `ArtDebugStats`'s doc and `e2e/art-perf.spec.ts`.
+   */
+  getArtDebugStats(): ArtDebugStats;
+  /**
+   * Poll-and-clear: `null` unless the frame-time watchdog (see
+   * `watchdogShouldTrip`'s doc) has tripped since the last call, in which
+   * case this returns a human-readable reason and resets the flag. The
+   * watchdog itself already force-disabled Art mode on THIS renderer the
+   * instant it tripped (`#art` is nulled synchronously, before this is ever
+   * read) — this is purely how `artMount.ts` finds out, so it can sync
+   * `useArtStore` (so the UI reflects "off") and tell the user honestly via
+   * a toast, rather than the store silently disagreeing with what's on
+   * screen.
+   */
+  consumeArtWatchdogTrip(): string | null;
   /** Release GPU/canvas resources and listeners. */
   dispose(): void;
 }
@@ -413,6 +562,36 @@ class WorldRendererImpl implements WorldRenderer {
   #currentTSec = 0;
   #currentLfoAcc: Partial<Record<LfoTarget, number>> = {};
 
+  // Frame-time watchdog (see `watchdogShouldTrip`'s doc) — the primary
+  // defence against the real "hard-crashed a Mac" report, since a static
+  // cell-count ceiling can't account for how much cheaper/more expensive the
+  // same cell count is on different hardware.
+  #artFrameMsWindow: number[] = [];
+  #artWatchdogTripped = false;
+  #artWatchdogReason: string | null = null;
+  #lastArtFrameMs = 0;
+
+  // Reused across every `#drawGlyphs` call (never re-`new`'d per frame — see
+  // that method's doc) to stop the batched-draw command list from being 6
+  // fresh array allocations on every single animated frame, on top of the
+  // per-cell work that's already unavoidable.
+  #glyphDx: number[] = [];
+  #glyphDy: number[] = [];
+  #glyphDw: number[] = [];
+  #glyphDh: number[] = [];
+  #glyphSx: number[] = [];
+  #glyphFillStyles: string[] = [];
+  // Per-FRAME (cleared at the top of every `#drawGlyphs` call, never carried
+  // across frames — seeing hue rotation/colour cycling continuously shift
+  // the base hue every frame, the SET of distinct colours in use changes
+  // every frame too, so a cache that persisted across frames would grow
+  // unboundedly over a long session) dedup of the `rgba(...)` fillStyle
+  // string per exact (r, g, b, alpha) byte tuple. Many cells in a frame
+  // routinely share the exact same ramp-bucket colour, so this turns what
+  // used to be one template-literal string allocation PER LIVE CELL PER
+  // FRAME into one per DISTINCT colour actually used that frame.
+  #fillStyleCache = new Map<number, string>();
+
   get viewport(): Readonly<Viewport> {
     return { width: this.#cssW, height: this.#cssH };
   }
@@ -506,6 +685,15 @@ class WorldRendererImpl implements WorldRenderer {
 
   setArtConfig(config: ArtConfig | null): void {
     this.#art = config;
+    // A fresh config (a new glyph set/preset/toggle-on) is a natural reset
+    // point for the watchdog's rolling window — otherwise a single
+    // more-expensive-than-usual frame right after a config CHANGE (e.g. the
+    // one-time atlas rebuild a new glyph set needs) could count against a
+    // budget measured under the PREVIOUS config's very different cost
+    // profile. Not needed for correctness (the window is short and
+    // self-corrects within `ART_WATCHDOG_WINDOW` frames either way) but
+    // avoids a spurious trip from a single unlucky transition frame.
+    this.#artFrameMsWindow = [];
     this.#dirty = true;
   }
 
@@ -622,6 +810,15 @@ class WorldRendererImpl implements WorldRenderer {
     // the way out, this is `false` and every honest lens renders completely
     // unmodified, byte-identical to before Art mode existed.
     const artActive = Boolean(this.#art?.enabled) && glyphsLegibleAt(this.#camera.scale, this.#dpr);
+    // Measures the WHOLE rest of this art-active frame (trails fill, the
+    // glyph/zoomed-in draw, grid, torus boundary, and every overlay below —
+    // not just `#drawGlyphs`). See `ART_FRAME_BUDGET_MS`'s doc: a real
+    // reproduction found the expensive stall this exists to catch landing in
+    // whichever canvas call happened to be first after a cold/lazy internal
+    // browser state, which is NOT guaranteed to be inside `#drawGlyphs`
+    // specifically — narrower timing around one sub-call would have missed
+    // exactly the failure this was built to catch.
+    const artFrameStart = artActive ? nowMs() : 0;
     if (artActive) {
       this.#currentTSec = nowSeconds();
       this.#currentLfoAcc = this.#evalLfos(this.#art!, this.#currentTSec);
@@ -675,6 +872,8 @@ class WorldRendererImpl implements WorldRenderer {
     const ghost = overlays && 'ghost' in overlays ? overlays.ghost : this.#ghost;
     if (ghost) this.#drawGhost(ghost);
 
+    if (artActive) this.#recordArtFrameCost(nowMs() - artFrameStart);
+
     // Self-perpetuating animation: only while Art mode is actually visible
     // AND actually configured to change over time (an LFO, colour cycling,
     // trails decaying, or an inherently time-varying field like plasma/
@@ -686,6 +885,64 @@ class WorldRendererImpl implements WorldRenderer {
     if (artActive && this.#art && isArtConfigAnimated(this.#art, isFieldAnimated)) {
       this.#dirty = true;
     }
+  }
+
+  /** Feed one glyph-frame's real wall-clock cost into the watchdog (see
+   *  `watchdogShouldTrip`'s doc) and trip it if warranted. Called exactly
+   *  once per `draw()` call that actually ran `#drawGlyphs`. */
+  #recordArtFrameCost(dt: number): void {
+    this.#lastArtFrameMs = dt;
+    this.#artFrameMsWindow.push(dt);
+    if (this.#artFrameMsWindow.length > ART_WATCHDOG_WINDOW) this.#artFrameMsWindow.shift();
+
+    if (dt >= ART_FRAME_HARD_CEILING_MS) {
+      this.#tripArtWatchdog(`a single Art-mode frame took ${Math.round(dt)}ms (ceiling ${ART_FRAME_HARD_CEILING_MS}ms)`);
+      return;
+    }
+    if (watchdogShouldTrip(this.#artFrameMsWindow, ART_FRAME_BUDGET_MS, ART_WATCHDOG_WINDOW)) {
+      const avg = this.#artFrameMsWindow.reduce((a, b) => a + b, 0) / this.#artFrameMsWindow.length;
+      this.#tripArtWatchdog(`Art-mode frames averaged ${Math.round(avg)}ms over the last ${this.#artFrameMsWindow.length} frames (budget ${ART_FRAME_BUDGET_MS}ms)`);
+    }
+  }
+
+  /** Immediately stop paying Art mode's cost — same frame, before another
+   *  expensive one can start — and record why, for `consumeArtWatchdogTrip()`
+   *  to relay to `artMount.ts` (which syncs `useArtStore` off and tells the
+   *  user via a toast). Disabling here, at the renderer, rather than only
+   *  waiting for the store round-trip, is what makes this a genuine safety
+   *  net rather than best-effort: even if the store sync lags a frame (a
+   *  paused tab, a slow event loop — exactly the conditions this exists
+   *  for), the actual expensive computation has already stopped. */
+  #tripArtWatchdog(reason: string): void {
+    this.#art = null;
+    this.#artFrameMsWindow = [];
+    this.#artWatchdogTripped = true;
+    this.#artWatchdogReason = reason;
+    this.#dirty = true; // redraw once more, honestly, without Art mode
+  }
+
+  getArtDebugStats(): ArtDebugStats {
+    let atlasBytes = 0;
+    for (const atlas of this.#glyphAtlasCache.values()) {
+      atlasBytes += atlas.canvas.width * atlas.canvas.height * 4;
+    }
+    return {
+      atlasEntries: this.#glyphAtlasCache.size,
+      atlasBytes,
+      atlasBuildCount: getAtlasBuildCount(),
+      fillStyleCacheEntries: this.#fillStyleCache.size,
+      cellCanvasCount: this.#cellCanvas ? 1 : 0,
+      lastArtFrameMs: this.#lastArtFrameMs,
+      artFrameMsWindow: [...this.#artFrameMsWindow],
+    };
+  }
+
+  consumeArtWatchdogTrip(): string | null {
+    if (!this.#artWatchdogTripped) return null;
+    this.#artWatchdogTripped = false;
+    const reason = this.#artWatchdogReason;
+    this.#artWatchdogReason = null;
+    return reason;
   }
 
   #ensureCellCanvas(w: number, h: number): CanvasRenderingContext2D {
@@ -924,9 +1181,20 @@ class WorldRendererImpl implements WorldRenderer {
    *  simply oldest by wall-clock, including ones still in active rotation —
    *  paying a full rebuild for them again next cycle even though nothing
    *  about their zoom level had changed. Touching on every hit keeps
-   *  anything still genuinely in use alive regardless of insertion order. */
+   *  anything still genuinely in use alive regardless of insertion order.
+   *
+   *  Key also includes whether the custom glyph webfont is confirmed loaded
+   *  right now (see `isGlyphFontReady`'s doc in `glyphAtlas.ts`) — an atlas
+   *  built BEFORE the font finished loading used the local system-monospace
+   *  fallback (never the network-dependent custom face, which is what
+   *  guarantees `buildGlyphAtlas` can never block the main thread). Folding
+   *  readiness into the key means the exact moment the font finishes
+   *  loading, the next `#ensureAtlas` call for the same (chars, bucket)
+   *  naturally misses the old fallback-built entry and rebuilds with the
+   *  real face — no stale fallback-font atlas lingers for the rest of the
+   *  session, and no separate invalidation bookkeeping is needed. */
   #ensureAtlas(chars: readonly string[], bucket: number): GlyphAtlasHandle {
-    const key = `${chars.join('')}|${bucket}`;
+    const key = `${chars.join('')}|${bucket}|${isGlyphFontReady() ? 1 : 0}`;
     let atlas = this.#glyphAtlasCache.get(key);
     if (atlas) {
       this.#glyphAtlasCache.delete(key);
@@ -958,6 +1226,21 @@ class WorldRendererImpl implements WorldRenderer {
     const spec = engine.spec;
 
     if (rect.w * rect.h > MAX_GLYPH_CELLS) { this.#drawZoomedIn(engine, rect); return; }
+
+    // Cheap pre-count: only `engine.get()` + a wrap, no field/hue/draw work
+    // — see `MAX_GLYPH_LIVE_CELLS`'s doc for why this (live cells), not the
+    // rect-area check above, is the number that actually matters. Bailing
+    // HERE, before any expensive per-cell work has run, is what makes this a
+    // real pre-emptive bound rather than "notice it was too expensive after
+    // already paying for it."
+    let liveCount = 0;
+    for (let j = 0; j < rect.h && liveCount <= MAX_GLYPH_LIVE_CELLS; j++) {
+      const wy = wrap(rect.y + j, spec.height);
+      for (let i = 0; i < rect.w; i++) {
+        if (engine.get(wrap(rect.x + i, spec.width), wy)) liveCount++;
+      }
+    }
+    if (liveCount > MAX_GLYPH_LIVE_CELLS) { this.#drawZoomedIn(engine, rect); return; }
 
     const tSec = this.#currentTSec;
     const lfoAcc = this.#currentLfoAcc;
@@ -1015,12 +1298,19 @@ class WorldRendererImpl implements WorldRenderer {
     // pass one, in the same relative per-cell order as before — a later
     // cell's tint still lands after an earlier cell's in either scheme, so
     // an overlap's visible winner is unchanged.
-    const dxs: number[] = [];
-    const dys: number[] = [];
-    const dws: number[] = [];
-    const dhs: number[] = [];
-    const sxs: number[] = [];
-    const fillStyles: string[] = [];
+    // Reused instance arrays (see their field docs) — truncating via
+    // `.length = 0` reuses the existing backing store instead of allocating 6
+    // fresh arrays every single animated frame, on top of the per-cell work
+    // below that's already unavoidable.
+    const dxs = this.#glyphDx; dxs.length = 0;
+    const dys = this.#glyphDy; dys.length = 0;
+    const dws = this.#glyphDw; dws.length = 0;
+    const dhs = this.#glyphDh; dhs.length = 0;
+    const sxs = this.#glyphSx; sxs.length = 0;
+    const fillStyles = this.#glyphFillStyles; fillStyles.length = 0;
+    // Per-frame colour->fillStyle dedup — see `#fillStyleCache`'s field doc
+    // for why this is cleared every call rather than persisted.
+    const fillStyleCache = this.#fillStyleCache; fillStyleCache.clear();
 
     for (let j = 0; j < rect.h; j++) {
       const wy = wrap(rect.y + j, spec.height);
@@ -1084,8 +1374,22 @@ class WorldRendererImpl implements WorldRenderer {
           dy = Math.round(dy + (j2 - 0.5) * 2 * amp);
         }
 
+        // Exact (not quantised) byte-tuple key — `alpha` is already an
+        // integer 0..255 by this point (`Math.round` above), so this cache
+        // hits every time a cell shares its EXACT colour with an earlier one
+        // this frame (routine: many cells land in the same ramp bucket) and
+        // never trades correctness for a coarser bucket. Bitwise ops are
+        // 32-bit signed in JS, so the top byte can produce a negative key —
+        // irrelevant for a `Map`, which just needs distinct keys per tuple.
+        const styleKey = ((rgb.r & 255) << 24) | ((rgb.g & 255) << 16) | ((rgb.b & 255) << 8) | (alpha & 255);
+        let fillStyle = fillStyleCache.get(styleKey);
+        if (fillStyle === undefined) {
+          fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`;
+          fillStyleCache.set(styleKey, fillStyle);
+        }
+
         dxs.push(dx); dys.push(dy); dws.push(dw); dhs.push(dh); sxs.push(srcRect.sx);
-        fillStyles.push(`rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`);
+        fillStyles.push(fillStyle);
       }
     }
 
@@ -1562,6 +1866,10 @@ class WorldRendererImpl implements WorldRenderer {
     this.#art = null;
     this.#artGrid = null;
     this.#glyphAtlasCache.clear();
+    this.#fillStyleCache.clear();
+    this.#artFrameMsWindow = [];
+    this.#artWatchdogTripped = false;
+    this.#artWatchdogReason = null;
   }
 }
 

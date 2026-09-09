@@ -6,6 +6,7 @@ dist-ssr/
 .vite/
 # playwright artifacts
 test-results/
+test-results-art-perf/
 playwright-report/
 blob-report/
 .playwright/

@@ -26,6 +26,93 @@
 
 export const GLYPH_FONT_STACK = '"JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace';
 
+/** The same stack with the custom webfont removed — every remaining face is
+ *  either a locally-installed system font (`ui-monospace`/`SFMono-Regular`/
+ *  Menlo) or the generic `monospace` fallback, none of which ever require a
+ *  network fetch, so `fillText` with this stack can NEVER hit the
+ *  synchronous webfont-load block described below. Used by `buildGlyphAtlas`
+ *  whenever the real face isn't confirmed loaded yet. */
+const GLYPH_FALLBACK_FONT_STACK = 'ui-monospace, "SFMono-Regular", Menlo, monospace';
+
+/**
+ * A CONFIRMED, INDEPENDENTLY REAL contributing risk to the "Art mode
+ * hard-crashed a Mac while rendering nothing visible" production report —
+ * found while measuring the glyph path directly (`e2e/art-perf.spec.ts`),
+ * though NOT proven to be the sole or even dominant cause of every stall
+ * reproduced there (see `renderer.ts`'s frame-time watchdog doc for the full
+ * picture, including what was ruled out). This one is real regardless: unlike
+ * DOM/CSS text (which renders progressively — FOUT/FOIT — while a webfont
+ * loads), a `<canvas>` 2D context's `fillText` BLOCKS THE MAIN THREAD
+ * SYNCHRONOUSLY the first time it's asked to draw with a font that hasn't
+ * finished loading yet — a real, spec-documented Canvas2D/Font-Loading
+ * interaction, not specific to this app. `buildGlyphAtlas` below is the ONLY
+ * place this codebase calls `fillText` with the custom "JetBrains Mono
+ * Variable" webfont, and `artMount.ts` applies a PERSISTED `enabled: true`
+ * Art config immediately on every boot (so a returning user's preference
+ * survives a reload) — meaning a returning user with Art mode left on would
+ * hit this exact synchronous-load risk on every page load, competing with
+ * everything else boot does for the network/disk. Worth closing regardless
+ * of how much of the originally measured stall it explains.
+ *
+ * FIX, two layers (a warm-up alone was NOT reliably fast enough in testing —
+ * still blocked for over a second with roughly half a second of head start,
+ * an entirely realistic amount of time for a fast/returning user to reach
+ * Art mode in):
+ *
+ *  1. Kick off a real (async, non-blocking) load of this exact font via the
+ *     standard CSS Font Loading API as early as this module is ever
+ *     imported — `renderer.ts` imports `buildGlyphAtlas` unconditionally at
+ *     construction time (see `createRenderer()`), so this fires at app boot
+ *     for every session, whether or not Art mode is ever used. This head
+ *     start helps the common case but is NOT the safety guarantee — a slow
+ *     enough network/disk can still leave the font unloaded by the time
+ *     Art mode first needs it.
+ *  2. The actual guarantee: `buildGlyphAtlas` (below) checks
+ *     `document.fonts.check()` — a synchronous, NON-blocking query that
+ *     never itself triggers a load — before ever setting `ctx.font` to the
+ *     custom face. If it isn't confirmed ready yet, the atlas is built with
+ *     `GLYPH_FALLBACK_FONT_STACK` instead (every face in it is a local
+ *     system font — zero network cost, so `fillText` can never block on it)
+ *     — Art mode still renders immediately, just in a system-monospace face
+ *     for the brief window until the real font finishes loading, rather
+ *     than freezing the tab to wait for it. `renderer.ts`'s atlas cache key
+ *     includes this readiness flag (see its own doc), so the moment the real
+ *     font DOES finish loading, the next frame naturally rebuilds with it —
+ *     no permanent fallback, no stale atlas, and the rebuild itself is cheap
+ *     (the font is loaded by then, so no block).
+ *
+ * Together: no user can ever hit the synchronous block this file used to
+ * risk, on any timing, without losing the feature — worst case is a
+ * fraction-of-a-second cosmetic font substitution, not a frozen tab.
+ */
+if (typeof document !== 'undefined' && document.fonts?.load) {
+  void document.fonts.load(`16px ${GLYPH_FONT_STACK}`).catch(() => {
+    // Best-effort warm-up only — see this block's doc above; `isGlyphFontReady`
+    // below is what actually GUARANTEES no synchronous block regardless of
+    // whether this settles in time.
+  });
+}
+
+/**
+ * Synchronous, non-blocking (never itself triggers a load — see the
+ * `document.fonts.check()` spec) check: is the custom webfont confirmed
+ * loaded and available to `fillText` right now? `buildGlyphAtlas` uses this
+ * to decide which font stack is SAFE to use this call — see the doc above
+ * for why this, not the warm-up alone, is the real guarantee. Environments
+ * with no Font Loading API at all (SSR, `vitest`'s jsdom) report `true`:
+ * there's no async loading concept to race there in the first place, and
+ * jsdom doesn't implement canvas `getContext` at all, so `buildGlyphAtlas`
+ * is never actually invoked under it regardless.
+ */
+export function isGlyphFontReady(): boolean {
+  if (typeof document === 'undefined' || !document.fonts?.check) return true;
+  try {
+    return document.fonts.check(`16px ${GLYPH_FONT_STACK}`);
+  } catch {
+    return false; // an unparsable/unsupported check argument — degrade to the always-safe fallback, never throw
+  }
+}
+
 export interface AtlasRect {
   sx: number;
   sy: number;
@@ -54,6 +141,23 @@ export interface GlyphAtlasHandle {
 }
 
 /**
+ * Count of atlas rasters actually built (one `document.createElement
+ * ('canvas')` + N `fillText` calls each) since page load. Dev/test
+ * instrumentation only — never read by anything on the hot draw path, never
+ * influences rendering. Exists so `WorldRenderer.getArtDebugStats()` (and the
+ * perf e2e harness in `e2e/art-perf.spec.ts`, built after a real production
+ * crash report — see that file's doc) can assert atlas churn actually stays
+ * bounded (capped at `#glyphAtlasCache`'s 24-entry LRU in `renderer.ts`)
+ * instead of trusting a comment.
+ */
+let atlasBuildCount = 0;
+
+/** Current value of the atlas-build counter. Monotonic for the life of the page. */
+export function getAtlasBuildCount(): number {
+  return atlasBuildCount;
+}
+
+/**
  * Build (or rebuild) a glyph atlas for `chars` at `cellPx` DEVICE pixels per
  * cell. Centres each glyph in its cell with `textAlign='center'`/
  * `textBaseline='middle'`, at a font size just under the cell so dense
@@ -63,6 +167,7 @@ export interface GlyphAtlasHandle {
  * gap, and the glyph itself is optically centred within it.
  */
 export function buildGlyphAtlas(chars: readonly string[], cellPx: number): GlyphAtlasHandle {
+  atlasBuildCount += 1;
   const px = Math.max(1, Math.round(cellPx));
   const { w, h } = atlasCanvasSize(chars.length, px);
   const canvas = document.createElement('canvas');
@@ -77,7 +182,11 @@ export function buildGlyphAtlas(chars: readonly string[], cellPx: number): Glyph
   // leaving enough margin that JetBrains Mono's tallest glyphs never clip
   // the cell above/below at typical DPR rounding.
   const fontPx = Math.max(1, Math.round(px * 0.86));
-  ctx.font = `${fontPx}px ${GLYPH_FONT_STACK}`;
+  // See `isGlyphFontReady`'s doc: never risk the synchronous webfont-load
+  // block by setting `ctx.font` to the custom face before it's CONFIRMED
+  // loaded — a local system-monospace substitute for one frame beats
+  // freezing the tab to wait for a network fetch.
+  ctx.font = `${fontPx}px ${isGlyphFontReady() ? GLYPH_FONT_STACK : GLYPH_FALLBACK_FONT_STACK}`;
   for (let i = 0; i < chars.length; i++) {
     const cx = i * px + px / 2;
     const cy = h / 2;

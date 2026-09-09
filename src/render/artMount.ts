@@ -29,6 +29,7 @@ import { createRoot } from 'react-dom/client';
 import { createElement } from 'react';
 import { shouldIgnoreGlobalShortcut } from '@/interact/globalShortcutGuard';
 import { TooltipProvider } from '@/ui/primitives';
+import { bus } from '@/ui/bus';
 import { getSession } from '@/ui/session';
 import { ArtTrigger } from './ArtTrigger';
 import { useArtStore } from './artStore';
@@ -78,41 +79,59 @@ function easeToLegibleZoomOnEnable(renderer: WorldRenderer): void {
 }
 
 /**
- * TEMPORARY CONTAINMENT HOTFIX — 2026-09-08.
+ * TEMPORARY CONTAINMENT HOTFIX — 2026-09-08, STILL IN EFFECT after a
+ * follow-up investigation (`e2e/art-perf.spec.ts`) on 2026-09-08/09.
  *
  * Real production report: Art mode was rendering NOTHING visible while
  * pinning the CPU hard enough to hard-crash the reporter's Mac ("literally
  * crashing the mac it crashed so hard"). A prior pass believed it had fixed
  * the performance cliff (atlas raster cap, LRU cache, batched composite
- * toggles) — that evidently did not hold, so the safe assumption is a
- * resource-explosion bug still exists somewhere in the glyph/atlas/field
- * path that hasn't been root-caused yet.
+ * toggles) — that evidently did not hold.
  *
- * Rather than ship an unverified fix under crash pressure, this makes Art
- * mode UNREACHABLE from the renderer's side, unconditionally: returning here
- * means `useArtStore`'s subscription below (the ONLY code path anywhere
- * that ever calls `renderer.setArtConfig` — see this module's other
- * `syncToRenderer` call sites, there are none elsewhere) never runs, so
- * `WorldRendererImpl`'s `#art` field stays permanently `null` regardless of
- * what `useArtStore`'s `config.enabled` says — regardless of the trigger,
- * the `a` shortcut, presets, randomize, import, or a persisted `enabled:
- * true` from a previous visit. `draw()`'s `artActive` gate (`Boolean(this.
- * #art?.enabled) && ...`) is therefore always `false`, so `#drawGlyphs` (the
- * suspected crash path) is categorically unreachable, not just unlikely.
- * The self-mounted trigger tab and its keyboard shortcut also never mount,
- * so there is no control on the canvas itself that even suggests Art mode
- * is available. The `ArtPanel`'s own "Enable Art mode" checkbox (reachable
- * via the HUD's "More tools" → "Acid Art" menu, a surface owned outside
- * `src/render/**`) still exists and will locally toggle the store's state,
- * but — since nothing here ever reads it — that has no effect on the
- * renderer or the canvas.
+ * WHAT THE FOLLOW-UP FOUND (measured, not guessed — see `renderer.ts`'s
+ * `ART_FRAME_BUDGET_MS` doc and `glyphAtlas.ts`'s webfont doc for the full
+ * story): real, reproducible single-frame stalls of roughly one to several
+ * seconds in the glyph draw path — the main thread frozen solid for that
+ * whole span, which is both "renders nothing visible" and, repeated forever
+ * with nothing to stop it, exactly what reads as "crashed." The stall did
+ * NOT scale predictably with live cell count or config complexity and
+ * persisted after forcing garbage collection — evidence pointing at a
+ * browser/graphics-stack-level cost this file's own logic doesn't control,
+ * more than a tunable per-cell inefficiency.
  *
- * REVERT CONDITION: once the actual resource growth is root-caused (prime
- * suspects: glyph atlas cache keyed by (chars, bucket) unbounded across a
- * long session, per-cell allocation in the glyph draw loop, or the
- * modulation field sampling at full resolution every frame) and a fix is
- * verified under a real memory/CPU profile — not just "looks fine for a few
- * seconds" — remove this early return.
+ * WHAT WAS FIXED since: (1) a frame-time watchdog in `renderer.ts` that
+ * measures the real cost of every art-active frame and force-disables Art
+ * mode on itself, same frame, the instant a frame is catastrophically slow
+ * or a short run of frames is sustainably too slow — proven via both a
+ * deterministic injected-stall e2e test and reproduction of the original
+ * uncapped scenario; (2) `MAX_GLYPH_LIVE_CELLS`, a pre-emptive cap that
+ * stops a dense scene from ever attempting the expensive draw path at all;
+ * (3) elimination of the original per-cell array/string allocation churn;
+ * (4) a real, independently-valid fix for canvas `fillText` synchronously
+ * blocking on an unloaded webfont (a confirmed contributing risk, not
+ * confirmed as the sole cause).
+ *
+ * WHY CONTAINMENT STAYS ON even with all of that fixed and tested: the
+ * watchdog guarantees the runaway CANNOT repeat, but does not guarantee the
+ * FIRST bad frame is short — in testing it was anywhere from comfortably
+ * fast to several seconds, and the precise trigger (something in the
+ * browser/graphics stack) was not fully pinned down, measured only in a
+ * sandboxed headless test environment, not on the reporter's actual
+ * hardware. A multi-second freeze on first use, even if guaranteed never to
+ * repeat, is still a bad enough moment that "shipping it off is far better
+ * than shipping a crash." Reachability (the trigger tab, the `a` shortcut,
+ * the persisted-`enabled:true`-on-boot path) stays unconditionally
+ * unreachable until that residual risk is either measured on real target
+ * hardware and found acceptable, or closed by further work (e.g. batching
+ * the glyph draw path's canvas calls to remove whatever the underlying
+ * lazy-initialisation cost actually is).
+ *
+ * REVERT CONDITION: real-hardware confirmation that the FIRST art-active
+ * frame after enabling (cold, worst case — e.g. the persisted-boot path)
+ * stays within a genuinely acceptable bound even in the worst case the
+ * watchdog's hard ceiling still allows, or an architectural fix that removes
+ * the underlying stall's trigger entirely rather than just bounding its
+ * blast radius.
  */
 export function ensureArtUiMounted(_renderer: WorldRenderer): void {
   return;
@@ -147,6 +166,30 @@ function ensureArtUiMountedReal(renderer: WorldRenderer): void {
     if (s.config.enabled && !prev.config.enabled) easeToLegibleZoomOnEnable(renderer);
   });
   syncToRenderer(renderer, useArtStore.getState().config);
+
+  // Frame-time/memory watchdog (see `renderer.ts`'s `watchdogShouldTrip` doc)
+  // — the renderer already force-disables ITSELF (nulls its own art field)
+  // the instant a frame/sustained-average is too expensive, so the actual
+  // safety property doesn't depend on this loop running promptly. This is
+  // purely how the rest of the app finds out: sync `useArtStore` so the
+  // panel's checkbox reflects reality instead of silently disagreeing with
+  // an already-dark canvas, and tell the user honestly via a toast rather
+  // than leaving them wondering why Art mode just stopped. Polled once per
+  // animation frame — cheap (a single flag check) — rather than a fixed
+  // interval, so it can never itself contribute a scheduling gap on a
+  // struggling tab.
+  const pollWatchdog = () => {
+    const reason = renderer.consumeArtWatchdogTrip();
+    if (reason) {
+      useArtStore.getState().setEnabled(false);
+      bus.emit('toast', {
+        message: `Art mode turned itself off — it was too expensive for this device right now (${reason}). Your other settings are unchanged; you can turn it back on any time.`,
+        tone: 'warn',
+      });
+    }
+    requestAnimationFrame(pollWatchdog);
+  };
+  requestAnimationFrame(pollWatchdog);
 
   window.addEventListener('keydown', (e) => {
     if (shouldIgnoreGlobalShortcut(e.target, e.key)) return;
