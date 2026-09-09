@@ -158,7 +158,7 @@ export function App() {
   }, [titleDismissed]);
 
   // Global keyboard shortcuts NOT already owned by `@/interact/input.ts`
-  // (which handles Space, arrows [camera pan], 1/2/3 [lens], g [grid],
+  // (which handles Space, arrows [camera pan], 1-8 [lens], g [grid],
   // r/f [stamp rotate/flip], +/-/=/_ [zoom], ., [, ], z once attached by
   // `initSession()`). Ignored while typing, while a dialog owns focus, or
   // while the focused control would consume this key itself — see

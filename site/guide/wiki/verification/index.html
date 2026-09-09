@@ -243,17 +243,20 @@
             <li>On narrow screens, the drawer and inspector become slide-over sheets rather than docked columns; unlike the app's dialogs, these sheets are not focus-trapped.</li>
             <li>One hairline colour token (used for the active branch row and similar decorative accents) falls below the 3:1 ratio WCAG's non-text-contrast guidance recommends — a deliberate choice for a purely decorative edge, not an oversight.</li>
             <li>Web MIDI output and system/mic audio reactivity depend on real browser and hardware support and degrade to an honest disabled state, never a silent no-op, when unavailable.</li>
-            <li>Animated GIF export, audio export, and a Time Sculpture turntable export were all designed and partially built, then cut rather than shipped without a way to verify them — see <a href="../features/#export">Features</a>. Exported video is currently silent.</li>
+            <li>A Time Sculpture turntable export was designed (orbit the existing 3D camera, reuse the PNG-export path per frame) but cut — untested against real WebGL, and inherently realtime-paced rather than a clean offline replay like the rest of export. Animated GIF export and audio export were also cut for a time over a verification gap (no reference decoder / no <code>OfflineAudioContext</code> in the unit-test environment) but have since shipped, verified against real Chromium decoders — see <a href="../features/#export">Features</a>. Exported WebM video is not silent when an audio track is supplied.</li>
             <li>Site theming (this guide/wiki) was scoped and deliberately not built — the app's 5 runtime themes are an app-only feature today.</li>
           </ul>
           <p>
-            837 unit tests across 83 files, plus 115 Playwright end-to-end tests (87
-            desktop, 22 mobile-touch, 6 against a real production build), back all of
-            the above; <code>typecheck</code> and <code>build</code> both run clean.
-            One flake is currently known: a mobile-only touch test that scrubs, edits,
-            compares and opens the Time Sculpture in one continuous journey
-            intermittently hits a real, reproducible race in the history-scrub path
-            under full-suite load, rather than a click-timing flake.
+            895 unit tests across 91 files, plus 126 Playwright end-to-end tests across
+            27 spec files (96 desktop, 24 mobile-touch, 6 against a real production
+            build), back all of the above; <code>typecheck</code> and <code>build</code>
+            both run clean. A separate, more expensive Art-mode performance/
+            resource-safety suite (6 specs) runs on its own schedule against its own dev
+            server rather than as part of that count. One flake is currently known: a
+            mobile-only touch test that scrubs, edits, compares and opens the Time
+            Sculpture in one continuous journey intermittently hits a real, reproducible
+            race in the history-scrub path under full-suite load, rather than a
+            click-timing flake.
           </p>
 
           <nav class="wiki-pager" aria-label="Wiki pages">

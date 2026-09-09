@@ -193,26 +193,36 @@ ends the draw cleanly instead of corrupting it.
 
 ## 9. Full suite, as actually run
 
-`typecheck` (`tsc --noEmit`): clean. Unit tests: **837 passed, 0 failed**,
-across 83 files (`vitest run`). Production build (`vite build`): succeeds;
-real measured bundle sizes (Vite/rolldown's automatic chunk splitting, not
-one monolithic "app" chunk) are `app` at 287.5 kB (89.9 kB gzipped) plus
-`primitives` at 344.3 kB (109.4 kB gzipped) — together the initial JS needed
-to open the app, 632 kB / 199 kB gzipped combined — and two lazily-loaded
-chunks that cost nothing until opened: the Time Sculpture at 1.02 MB (284.9
-kB gzipped) and multiplayer at 21.0 kB (7.1 kB gzipped).
+`typecheck` (`tsc --noEmit`): clean. Unit tests: **895 passed, 0 failed**,
+across 91 files (`vitest run`). Production build (`vite build`): succeeds;
+real measured bundle sizes (Vite/rolldown's automatic chunk splitting) are a
+single `app` chunk at 646.9 kB (204.2 kB gzipped) plus the small
+`jsx-runtime` (13.6 kB / 5.3 kB gzipped) and `modulepreload-polyfill` (0.7 kB
+/ 0.4 kB gzipped) chunks Vite/rolldown always splits out — together the
+initial JS needed to open the app, 661 kB / 210 kB gzipped combined.
+Rolldown no longer splits a separate `primitives` chunk out of `app` the way
+it once did (this is what changed since the last figure here — a chunking
+decision, not a growth in actual code). Two lazily-loaded chunks cost
+nothing until opened: the Time Sculpture at 1.02 MB (284.9 kB gzipped) and
+multiplayer at 21.0 kB (7.1 kB gzipped).
 
-End-to-end (`playwright test`, 115 specs: 87 `desktop` + 22 `mobile` + 6
-`prod-build`): the one currently-known flake is in `mobile.spec.ts`'s
-heartbeat-journey test (scrub → edit → compare → sculpt by touch), which
-intermittently fails a "dragging the ribbon backward must move the
-generation backward" assertion under full-suite load. Unlike the
+End-to-end (`playwright test`, 126 specs across 27 files: 96 `desktop` + 24
+`mobile` + 6 `prod-build`): the one currently-known flake is in
+`mobile.spec.ts`'s heartbeat-journey test (scrub → edit → compare → sculpt
+by touch), which intermittently fails a "dragging the ribbon backward must
+move the generation backward" assertion under full-suite load. Unlike the
 click-timing flake this section used to describe (now fixed — see
 `INTEGRATION-NOTES.md`'s historical log for the `dismissTitle()`/camera-poll
 fixes), this one is a real, reproducible race between a scrub's chunked
 replay and something reading `engine.gen` mid-flight, in
 `session.ts`/`interact`/`history.ts` territory — tracked, not silently
-tolerated. Everything else passes in a full sequential run.
+tolerated. Everything else passes in a full sequential run. A separate,
+more expensive Art-mode performance/resource-safety suite
+(`e2e/art-perf.spec.ts`, 6 specs) is deliberately excluded from the count
+above via the main Playwright config's `testIgnore` and runs instead under
+its own `playwright.art-perf.config.ts` against its own dev server, so it
+never contends for ports with the rest of the suite in this shared
+workspace.
 
 ## 10. Newer claims: the default lens, rule presets, and theming
 

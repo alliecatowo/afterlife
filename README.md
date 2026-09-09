@@ -33,7 +33,9 @@ prefix any command below with `mise exec --`.
 | Command | Does |
 | --- | --- |
 | `npm run dev` | Vite dev server on `:5173` |
-| `npm run build` | `tsc --noEmit`, then a production build to `dist/` |
+| `npm run build` | `tsc --noEmit`, then generates the `site/**` wiki HTML (`build:site-pages`), then the production build to `dist/`. `postbuild` runs automatically afterward (npm's lifecycle hook) — see below. |
+| `npm run build:site-pages` | Just the `site/**` wiki-HTML generation step, on its own |
+| `npm run postbuild` | Flattens the built site's HTML into its final served layout; runs automatically after `build`, not meant to be invoked standalone |
 | `npm run preview` | Serve the production build locally |
 | `npm test` | Unit tests (Vitest) |
 | `npm run typecheck` | `tsc --noEmit` on its own |
@@ -368,18 +370,27 @@ walkthrough is in [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.m
   arrival orders, produce bit-identical worlds. `tests/net-guard.test.tsx`
   proves solo play imports zero of this code and constructs zero transports
   unless a user explicitly asks for multiplayer.
-- **837 unit tests** across 83 files, plus **115 Playwright end-to-end tests**
-  (87 desktop at 1440x900, 22 mobile at 390x844 touch-enabled, 6 `prod-build`
-  against a real production build served with `vite preview`); `typecheck`
-  and `build` both run clean. One flake is currently known and documented,
-  not hidden: the mobile heartbeat-journey test (scrub → edit → compare →
-  sculpt by touch) intermittently fails a ribbon-scrub-direction assertion
-  under full-suite load — see `CONTRIBUTING.md`'s "known rough edges."
-  Production bundle, measured from a real build: the initial JS needed to
-  open the app (the `app` + `primitives` chunks together) is 632 kB (199 kB
-  gzipped combined); the lazily-loaded Time Sculpture chunk is 1.02 MB
-  (285 kB gzipped) and the lazily-loaded multiplayer chunk is 21 kB (7 kB
-  gzipped) — neither loads until you open that feature.
+- **895 unit tests** across 91 files (`npm test` prints the current real count —
+  trust that over this number), plus **126 Playwright end-to-end tests across 27
+  spec files** (96 `desktop` at 1440x900, 24 `mobile` at 390x844 touch-enabled, 6
+  `prod-build` against a real production build served with `vite preview`);
+  `typecheck` and `build` both run clean. A separate, resource-heavy Art-mode
+  performance/resource-safety suite (`e2e/art-perf.spec.ts`, 6 specs) is
+  deliberately excluded from that count and from the main Playwright config
+  (`testIgnore`) — it runs under its own `playwright.art-perf.config.ts` against
+  its own dev server on port 5983, so it never contends for ports with the rest
+  of the suite (see that config's own doc). One flake is currently known and
+  documented, not hidden: the mobile heartbeat-journey test (scrub → edit →
+  compare → sculpt by touch) intermittently fails a ribbon-scrub-direction
+  assertion under full-suite load — see `CONTRIBUTING.md`'s "known rough edges."
+  Production bundle, measured from a real build: the initial JS needed to open
+  the app — one `app` chunk plus the small `jsx-runtime` and
+  `modulepreload-polyfill` chunks Vite/rolldown always splits out — is 661 kB
+  (210 kB gzipped combined); Vite/rolldown no longer splits a separate
+  `primitives` chunk out of `app` the way it once did, so don't expect to find
+  one. The lazily-loaded Time Sculpture chunk is 1.02 MB (285 kB gzipped) and
+  the lazily-loaded multiplayer chunk is 21 kB (7 kB gzipped) — neither loads
+  until you open that feature.
 
 ## Known limitations
 

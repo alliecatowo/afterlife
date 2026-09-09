@@ -18,7 +18,9 @@ Node 22 is pinned via `mise.toml`. If `node`/`npm` aren't on your `PATH` after
 | Command | Does |
 | --- | --- |
 | `npm run dev` | Vite dev server on `:5173` |
-| `npm run build` | `tsc --noEmit`, generates the `site/**` wiki HTML, then a production build to `dist/` |
+| `npm run build` | `tsc --noEmit`, generates the `site/**` wiki HTML (`build:site-pages`), then a production build to `dist/`. `postbuild` runs automatically afterward. |
+| `npm run build:site-pages` | Just the `site/**` wiki-HTML generation step, standalone |
+| `npm run postbuild` | Flattens the built site's HTML into its final served layout; an npm lifecycle hook, not meant to be run by hand |
 | `npm run preview` | Serve the production build locally |
 | `npm test` | Unit tests (Vitest) |
 | `npm run typecheck` | `tsc --noEmit` on its own |
@@ -231,8 +233,9 @@ Honest gaps, drawn from `INTEGRATION-NOTES.md` and the current source, not hidde
 - **`Hud.tsx`'s `lg`-and-up icon row has essentially zero spare width** (it's been
   measured at exactly 1440px against a 1440px viewport more than once in this app's
   history). Adding a new *dedicated* top-level icon is a real layout decision that
-  needs re-measuring, not a mechanical add — extend the `MoreToolsMenu`'s `MORE_TOOLS`
-  array instead unless you have a specific reason a feature deserves a dedicated slot.
+  needs re-measuring, not a mechanical add — add another entry to the inline `items={[…]}`
+  array passed to `MoreToolsMenu` in `Hud.tsx`'s `Hud()` instead unless you have a specific
+  reason a feature deserves a dedicated slot.
 - **The Immigration/QuadLife colourblind-safe (Okabe-Ito) palette is hardcoded**,
   not derived from `tokens.css` — the one deliberate exception, since nothing in the
   existing token palette has itself been verified colourblind-safe.

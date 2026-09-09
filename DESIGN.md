@@ -2,9 +2,11 @@
 
 > A contemporary natural-history observatory crossed with a precision musical instrument.
 
-This document is normative. Six agents build this app; this is what keeps it looking
-like one thing. If a decision isn't here, ask in `INTEGRATION-NOTES.md` — don't invent
-a second visual language.
+This document is normative. AFTERLIFE was built by seven agents working the tree in
+parallel; this is what kept it looking like one thing. That parallel-build phase is
+finished (see `ARCHITECTURE.md` §3) — this document still stands as the design system
+for anyone extending the app today. If a decision isn't here, don't invent a second
+visual language.
 
 ## 0. What this is not
 
@@ -131,7 +133,9 @@ Built on Radix primitives, unstyled, painted only with tokens:
 (ToggleGroup), `Menu` (DropdownMenu — a compact trigger + full option list for when a
 `Toggle` group would outgrow its available width, e.g. the HUD's 8-way render lens),
 `Slider`, `Panel`, `Field`/`Label`, `Tooltip`, `Readout` (tabular, fixed width), `Legend`
-(swatch + meaning), `Divider`, `Toast`.
+(swatch + meaning), `Divider`, `Toast`, `Dialog` (focus-trapped modal), `Sheet` (the
+sub-`lg` bottom/side slide-over used where a dialog would be too heavy, e.g. the drawer
+and HUD's "More controls" on narrow screens).
 
 No component may hardcode a hex/oklch colour, a px radius, or a duration — token or
 nothing. If you need a value that doesn't exist, propose it in `INTEGRATION-NOTES.md`;

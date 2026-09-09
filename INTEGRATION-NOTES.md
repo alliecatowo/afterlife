@@ -89,7 +89,7 @@ list, including smaller items (the mobile heartbeat-journey e2e flake, `ArtPanel
 hex-only colour input, `Hud.tsx`'s zero-slack icon row).
 
 **Numbers, as last actually measured (see README.md/ARCHITECTURE.md for the current
-figures — trust those over this file if they ever disagree):** 887 unit tests across 90
+figures — trust those over this file if they ever disagree):** 895 unit tests across 91
 files; end-to-end coverage grew with `e2e/gif-export.spec.ts` (3 specs) and
 `e2e/audio-export.spec.ts` (2 specs) verifying the resurrected export formats against
 real Chromium decoders — see README.md for the current total. One known flake in

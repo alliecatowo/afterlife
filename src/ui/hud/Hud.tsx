@@ -101,8 +101,9 @@ interface MoreToolsItem {
  * row. Rather than re-tuning exact breakpoints for today's count — which is
  * exactly how this HUD regressed twice before (once too wide, once too
  * narrow) — new, less-frequently-used entries land HERE by default. A
- * future agent adding another panel/action should extend `MORE_TOOLS`
- * (below, in `Hud()`) rather than claiming another fixed-width icon slot.
+ * future agent adding another panel/action should add to the inline
+ * `items={[…]}` array passed to `MoreToolsMenu` (below, in `Hud()`) rather
+ * than claiming another fixed-width icon slot.
  */
 function MoreToolsMenu({ items }: { items: MoreToolsItem[] }) {
   return (

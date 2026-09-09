@@ -80,7 +80,7 @@ because it's still useful context for a module's internal conventions.
 | Persist | `src/persist/**` | persist | `store.ts` is the public entry point (localStorage, import/export, versioned doc format); `codec.ts`, `localStorage.ts`, `rle.ts` are internals — reach into them only from inside this module. |
 | Theme | `src/ui/theme/**` | color (theming) | `themes.ts` (5 built-in `ThemeDefinition`s — `observatory` is byte-identical to `tokens.css`), `tokens.ts` (the 21-token `ThemeTokens` shape), `apply.ts` (writes tokens onto `documentElement` at runtime, no rebuild), `validate.ts` (missing-token/bad-colour/accent-collision/contrast checks), `custom.ts` (user-built themes), `store.ts`/`persistence.ts`. Does not touch `src/styles/**` — themes are pure runtime overrides layered on top. |
 | Net | `src/net/**` | multiplayer | Pure protocol/room/transport logic for opt-in lockstep multiplayer — no DOM, no React, no dependency on `@/core/**`. See §12. Paired UI in `src/ui/multiplayer/**` (`ui`-adjacent). Never imported eagerly — see §15. |
-| Export | `src/export/**` | media-export | Offline deterministic video/PNG-sequence export — an independent replay, never the live engine/history/camera. See §13. |
+| Export | `src/export/**` | media-export | Offline deterministic WebM/GIF/PNG-sequence/audio export — an independent replay, never the live engine/history/camera. See §13. |
 | Styles | `src/styles/**` | ui | `tokens.css` (the `@theme` design tokens), `base.css`, `motion.css`. |
 | Site | `site/**` | site | The static guide/wiki, generated at build time — see §16. Not part of the `src/` app; served as its own static tree under `/guide/**`. |
 
@@ -171,8 +171,12 @@ src/
               real Session) · index.ts — see §12. No DOM, no `@/core` dependency; UI lives in
               `ui/multiplayer/**` above.
   export/     index.ts · replay.ts (independent-engine deterministic replay) ·
-              worldFrameSource.ts/hiddenCanvas.ts (a second WorldRenderer on a real, sized,
-              visibility:hidden canvas) · webmRecorder.ts (MediaRecorder + captureStream) ·
+              worldFrameSource.ts/hiddenCanvas.ts/frameFit.ts (a second WorldRenderer on a
+              real, sized, visibility:hidden canvas) · webmRecorder.ts (MediaRecorder +
+              captureStream, optional real audio muxing) · gifExport.ts/gif/ (gifWriter.ts ·
+              lzw.ts · quantize.ts — hand-written animated-GIF encoder) · audio/ (plan.ts ·
+              offlineRender.ts — deterministic offline `OfflineAudioContext` render) ·
+              wav.ts (PCM WAV encode of the offline render) ·
               pngZipExport.ts/zip.ts/crc32.ts (hand-written STORED-entry zip) · limits.ts ·
               estimate.ts · presets.ts · pacing.ts · filename.ts/annotate.ts · errors.ts ·
               types.ts — see §13.
@@ -370,14 +374,22 @@ lets `e2e/utils.ts` assert on exact engine/history state (population inside a bb
 generation bypassing the throttled HUD readout, `screenToWorld`/`worldToScreen`) rather than
 guessing from pixels.
 
-**Actually measured, this pass:** `typecheck` clean; `npm test` — 837 passed, 0 failed,
-across 83 files; `npm run build` succeeds. Real, measured chunk sizes from that build (Vite/
-rolldown's automatic splitting, not one monolithic "app" chunk): `app` 287.5 kB / 89.9 kB
-gzipped + `primitives` 344.3 kB / 109.4 kB gzipped make up the initial JS needed to open the
-app (632 kB / 199 kB gzipped combined); the lazily-loaded Time Sculpture chunk is 1.02 MB /
-284.9 kB gzipped and the lazily-loaded multiplayer chunk is 21.0 kB / 7.1 kB gzipped — neither
-loads until that feature is actually opened, per §15. `npm run e2e` — 115 specs (87 desktop +
-22 mobile + 6 prod-build); last full sequential run had one known flake, `mobile.spec.ts`'s
+**Actually measured, this pass:** `typecheck` clean; `npm test` — 895 passed, 0 failed,
+across 91 files; `npm run build` succeeds. Real, measured chunk sizes from that build
+(Vite/rolldown's automatic splitting): a single `app` chunk, 646.9 kB / 204.2 kB gzipped,
+plus the small `jsx-runtime` (13.6 kB / 5.3 kB gzipped) and `modulepreload-polyfill`
+(0.7 kB / 0.4 kB gzipped) chunks Vite/rolldown always splits out, make up the initial JS
+needed to open the app (661 kB / 210 kB gzipped combined). Rolldown no longer splits a
+separate `primitives` chunk out of `app` the way it once did — if that reappears, the
+combined total is what matters, not the split. The lazily-loaded Time Sculpture chunk is
+1.02 MB / 284.9 kB gzipped and the lazily-loaded multiplayer chunk is 21.0 kB / 7.1 kB
+gzipped — neither loads until that feature is actually opened, per §15. `npm run e2e` —
+126 specs across 27 files (96 desktop + 24 mobile + 6 prod-build); the separate, more
+expensive Art-mode performance/resource-safety suite (`e2e/art-perf.spec.ts`, 6 specs) is
+excluded from that run via the main config's `testIgnore` and lives under its own
+`playwright.art-perf.config.ts` and dev-server port instead (see that config's own doc for
+why — a shared workspace where other agents may run the main suite concurrently). Last
+full sequential run of the main suite had one known flake, `mobile.spec.ts`'s
 heartbeat-journey test (a real, reproducible race between a scrub's chunked replay and a
 mid-flight read of `engine.gen` — `session.ts`/`interact`/`history.ts` territory, not a
 click-timing flake like the historical `tour.spec.ts` one it replaced as "the one known
@@ -469,20 +481,30 @@ internal replay uses — it never touches the live engine, history, or camera.
 `worldFrameSource.ts` drives a second `WorldRenderer` on a real, sized, `visibility:hidden`
 canvas (`hiddenCanvas.ts` — a detached or `display:none` canvas reports a zero layout box,
 which breaks `WorldRenderer.resize()`), reading whatever lens/theme/Art config is live at
-export time. Two outputs: `webmRecorder.ts` (`MediaRecorder` + `canvas.captureStream(0)` +
-manual `track.requestFrame()`, codec-detected, degrading to an honest `ExportUnsupportedError`
-rather than a broken file) and `pngZipExport.ts` (a hand-written STORED-entry `zip.ts`/
-`crc32.ts` — PNG is already compressed, so no second compression pass). Both are cancellable
-via `AbortSignal` and bounded (`limits.ts` stride-samples frame count and caps resolution,
-always surfacing a human-readable reduction note rather than silently truncating).
+export time. Video/frame outputs: `webmRecorder.ts` (`MediaRecorder` + `canvas.captureStream(0)`
++ manual `track.requestFrame()`, codec-detected, degrading to an honest `ExportUnsupportedError`
+rather than a broken file — optionally muxes a real audio track, see below) and
+`pngZipExport.ts` (a hand-written STORED-entry `zip.ts`/`crc32.ts` — PNG is already
+compressed, so no second compression pass). All are cancellable via `AbortSignal` and
+bounded (`limits.ts` stride-samples frame count and caps resolution, always surfacing a
+human-readable reduction note rather than silently truncating).
 
-**Cut from this feature, deliberately, not half-shipped:** animated GIF export, audio export
-(both a deterministic offline render and muxed WebM+audio), and a Time Sculpture turntable
-export were all designed and partially built, then removed rather than shipped without
-verification the available environment couldn't provide (no reference GIF decoder to check
-against; `OfflineAudioContext` unavailable in jsdom/Vitest; the turntable export needs real
-WebGL to verify frame-by-frame). **Exported WebM video is currently silent.** See
-`CONTRIBUTING.md`'s "known rough edges" for exactly what exists to resurrect each one.
+**Shipped, verified against real Chromium decoders (not just this repo's own code):**
+animated GIF export (`gifExport.ts`, `gif/` — hand-written LZW/quantizer, decoded back with
+the browser's real `ImageDecoder` in `e2e/gif-export.spec.ts`) and audio export (`audio/
+offlineRender.ts`'s deterministic `OfflineAudioContext` render, `wav.ts`'s PCM encode, and
+`webmRecorder.ts`'s optional real audio-track muxing into the WebM — asserted against a real
+`OfflineAudioContext` in `e2e/audio-export.spec.ts`). Exported WebM video is **not** silent
+when an audio buffer is supplied. An earlier pass cut both, reasoning that jsdom/Vitest alone
+couldn't verify them (no reference GIF decoder, no `OfflineAudioContext`); that reasoning
+turned out to be avoidable — Playwright + real Chromium was available the whole time.
+
+**Cut from this feature, deliberately, still not shipped:** a Time Sculpture turntable
+export (orbit the existing `TimeSculpture.orbit()` camera, reuse the existing PNG-export
+path per frame) was designed but never verified against real WebGL, and is inherently
+realtime-paced (each frame needs the live scene to actually repaint) rather than a clean
+offline replay like the rest of this feature. See `CONTRIBUTING.md`'s "known rough edges"
+for what exists to pick it up.
 
 ## 14. Theming
 
