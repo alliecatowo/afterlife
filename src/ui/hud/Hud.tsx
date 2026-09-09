@@ -275,15 +275,23 @@ export function Hud() {
   // row's controls sat past the right edge, reachable only by discovering an
   // invisible horizontal scroll. This is the third time this exact row has
   // shipped an unreachable-control regression this way (once pushed off at
-  // 1440 entirely, once the lens strip itself clipped 4 of 8 options) — so
-  // rather than re-tuning one more breakpoint to today's control count (which
-  // is exactly how it regressed the first two times), every `lg:`
-  // compact/full toggle below moved to `2xl` (1536px): a full ~100px of
-  // headroom over the real measured minimum, wide enough to absorb a few more
-  // controls before this needs revisiting, and — critically — the SAME
-  // breakpoint used everywhere in this file, so "compact" and "full" can
-  // never desync into an in-between state with neither the sheet nor a
-  // fitting row. See `e2e/hud-desktop.spec.ts`'s 1024x700/1280x800 coverage.
+  // 1440 entirely, once the lens strip itself clipped 4 of 8 options).
+  //
+  // Fix: every `lg:` (1024px) compact/full toggle below moved to an explicit
+  // `min-[1440px]:` breakpoint instead. 1440x900 is this project's own
+  // `desktop` e2e default (`playwright.config.ts`) and the one width this
+  // row has always been deliberately measured/verified to fit exactly (see
+  // `MoreToolsMenu`'s doc above) — reusing it exactly, rather than jumping to
+  // a rounder Tailwind breakpoint like `2xl`/1536px, keeps every existing
+  // test that assumes the full row is inline at 1440x900 (across several
+  // other spec files, not just this one) genuinely correct instead of
+  // incidentally passing. It does mean 1440 is still a zero-slack fit, same
+  // as before — the NEXT control added to this row still needs its own
+  // width budget considered, same as always — but the actual reported bug,
+  // the 1024-1439px dead zone with neither a fitting row nor the sheet, is
+  // now fully closed: "compact" (sheet-backed) covers everything below 1440,
+  // "full" only ever claims a width already proven to hold it. See
+  // `e2e/hud-desktop.spec.ts`'s 1024x700/1280x800 coverage.
   return (
     <div className="flex h-full items-center gap-1.5 overflow-x-auto px-2 pt-[env(safe-area-inset-top)] sm:gap-3 sm:px-3">
       {liveRegion}
@@ -343,17 +351,24 @@ export function Hud() {
         >
           {playing ? '● running' : '❚❚ paused'}
         </span>
-        {/* Shown from the 640px tablet band up (`sm:inline`), and hidden
-            again once the full desktop row appears (`min-[1440px]:hidden` — see the
-            "BUG" note above this component's `return` for why that's
-            `2xl`/1536px, not `lg`/1024px): this decorative, self-dismissing
-            (`everToggled`) hint is exactly the kind of thing that's fine to
-            drop once the row has genuinely no spare width, but a real
-            control (the lens picker, "Keyboard shortcuts", ...) silently
-            unreachable between 1024px and 1536px is the bug this pass fixed
-            — see `e2e/hud-desktop.spec.ts`. */}
+        {/* Shown ONLY in the 640-1439px band (`sm:max-[1439px]:inline` — a
+            single compound variant, not separate `sm:inline` +
+            `min-[1440px]:hidden` classes: Tailwind's generated stylesheet
+            does not reliably order an arbitrary `min-[1440px]` rule AFTER
+            `sm:` for an already-visible element, so a "hidden -> shown at sm
+            -> hidden again at 1440" split across two rules intermittently
+            left this visible past 1440 instead of hidden — caught by the
+            width regression test below, not by inspection). Hidden once the
+            full desktop row appears (see the "BUG" note above this
+            component's `return` for why that's an explicit 1440px, not
+            `lg`/1024px): this decorative, self-dismissing (`everToggled`)
+            hint is exactly the kind of thing that's fine to drop once the
+            row has genuinely no spare width, but a real control (the lens
+            picker, "Keyboard shortcuts", ...) silently unreachable between
+            1024px and 1440px is the bug this pass fixed — see
+            `e2e/hud-desktop.spec.ts`. */}
         {!everToggled && (
-          <span className="hidden text-micro italic text-ivory-300 sm:inline min-[1440px]:hidden">— pause time anytime</span>
+          <span className="hidden text-micro italic text-ivory-300 sm:max-[1439px]:inline">— pause time anytime</span>
         )}
       </div>
 
@@ -373,7 +388,7 @@ export function Hud() {
 
       {/* The active simulation rule (`RulesPanel.tsx`'s own doc — switching
           rules is a fresh-world operation, and every curated scene/specimen
-          forces Conway back). `2xl`-only, like speed/lens below: at the
+          forces Conway back). 1440px-only, like speed/lens below: at the
           row's already-measured near-zero-slack width (see the "BUG" note
           above this component's `return`) this is the least essential of
           the three readouts for a narrower desktop/tablet window, and the
@@ -390,7 +405,7 @@ export function Hud() {
       </div>
 
       {/* Speed AND lens both move to the mobile HUD's "More" sheet
-          (`HudMoreSheet`) below `2xl` — see that file's doc comment for why:
+          (`HudMoreSheet`) below 1440px — see that file's doc comment for why:
           this row simply has no room for either below the row's real
           measured minimum (~1433px — see the "BUG" note above this
           component's `return`), and the old `md:flex`/`lg:flex` split
@@ -473,17 +488,17 @@ export function Hud() {
 
       <div className="flex-1" />
 
-      {/* Below `2xl` (phone through a 1440-1535px laptop alike): a single
-          "More" button opens `HudMoreSheet` with lens, speed, the Time
-          Sculpture entry, every right-panel tab, mute, presentation mode,
-          and about/shortcuts — the full desktop icon row below never
-          renders at these widths. Originally this was `lg` (1024px): on a
-          390px phone that measured ~993px of unhidden content against the
-          viewport, which meant everything from Time Sculpture onward was
-          reachable only by discovering an unlabelled horizontal scroll, and
-          lens/speed were flatly unreachable. Widening the same fix to `2xl`
-          is what closed the LATER, separate gap at 1024-1535px — see the
-          "BUG" note above this component's `return`. */}
+      {/* Below 1440px (phone through a 1024-1439px tablet/small-laptop
+          alike): a single "More" button opens `HudMoreSheet` with lens,
+          speed, the Time Sculpture entry, every right-panel tab, mute,
+          presentation mode, and about/shortcuts — the full desktop icon row
+          below never renders at these widths. Originally this was `lg`
+          (1024px): on a 390px phone that measured ~993px of unhidden content
+          against the viewport, which meant everything from Time Sculpture
+          onward was reachable only by discovering an unlabelled horizontal
+          scroll, and lens/speed were flatly unreachable. Widening the same
+          fix to an explicit 1440px is what closed the LATER, separate gap at
+          1024-1439px — see the "BUG" note above this component's `return`. */}
       <div className="min-[1440px]:hidden">
         <Tooltip content="More controls">
           <IconButton label="More controls" icon={<MoreIcon />} pressed={false} onClick={() => setMoreOpen(true)} />

@@ -178,3 +178,97 @@ test.describe('HUD "More tools" overflow at 1440x900 (desktop)', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * Regression coverage for the intermediate-width overflow bug: a browser-
+ * driven reachability audit at 1024x700 found 13 top-bar controls (Compare
+ * through "More tools") sitting past the right edge of the viewport, reached
+ * only via this row's `overflow-x-auto` with no visible scrollbar — and the
+ * mobile "More controls" fallback didn't appear either, because it switched
+ * off at the same `lg` (1024px) breakpoint that caused the overflow. The
+ * row's real content needed ~1433px; anything from 1024px up to just under
+ * 1440px got neither a fitting row nor the sheet.
+ *
+ * `Hud.tsx` now switches from the compact "More controls" layout to the full
+ * inline row at an explicit 1440px (this project's own `desktop` viewport,
+ * the one width the row is deliberately measured to fit — see the "BUG" note
+ * in `Hud.tsx` above its `return`), so 1024x700 and 1280x800 both stay in
+ * compact mode. This test asserts the property directly, at BOTH widths: no
+ * control is reachable ONLY by an invisible scroll — every one is genuinely
+ * in-viewport and actionable by ordinary Playwright rules, which fail (not
+ * silently auto-scroll) when a target isn't actually visible on screen.
+ */
+test.describe('HUD reachability at intermediate widths (1024x700, 1280x800)', () => {
+  for (const viewport of [{ width: 1024, height: 700 }, { width: 1280, height: 800 }]) {
+    test(`every HUD control is in-viewport and hittable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await suppressTour(page);
+      await openApp(page);
+      await dismissTitle(page);
+
+      // The row itself must never rely on a hidden horizontal scroll.
+      const hudRow = page.locator('#hud-top > div').first();
+      const { scrollWidth, clientWidth } = await hudRow.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
+      expect(scrollWidth, 'the HUD row must fit its own content at this width').toBeLessThanOrEqual(clientWidth);
+
+      // The always-inline controls, present regardless of breakpoint. The
+      // drawer toggle's accessible name flips between "Open drawer" and
+      // "Close drawer" depending on whether it starts open at this viewport.
+      const drawerToggle = page.getByRole('button', { name: /^(Open|Close) drawer$/ });
+      await expect(drawerToggle, 'the drawer toggle should be visible').toBeVisible();
+      await expect(drawerToggle, 'the drawer toggle should be within the viewport (no scroll needed)').toBeInViewport();
+      const playToggle = page.getByRole('button', { name: /^(Play|Pause)$/ });
+      await expect(playToggle, 'the play/pause toggle should be visible').toBeVisible();
+      await expect(playToggle, 'the play/pause toggle should be within the viewport (no scroll needed)').toBeInViewport();
+      for (const name of ['More controls']) {
+        const control = page.getByRole('button', { name, exact: true });
+        await expect(control, `${name} should be visible`).toBeVisible();
+        await expect(control, `${name} should be within the viewport (no scroll needed)`).toBeInViewport();
+      }
+
+      // The full desktop row must NOT be present at these widths — if it
+      // were, this test would just be re-proving the 1440x900 case above,
+      // not the actual intermediate-width gap the audit found.
+      await expect(page.getByRole('button', { name: 'Compare', exact: true })).toBeHidden();
+
+      // Every control that lives in the "More controls" sheet at this width
+      // must be independently reachable. Scoped to the sheet's own dialog
+      // (not just `getByRole('button', {name})` globally): the full desktop
+      // row's SAME-LABELLED buttons still exist in the DOM at this width
+      // (CSS `hidden`, not unmounted), so an unscoped lookup would hit
+      // Playwright's strict-mode "multiple elements" error the instant the
+      // sheet opens.
+      //
+      // NOT asserted here: `toBeInViewport()` for each entry. The sheet is a
+      // `max-h-[85vh]`, `overflow-y-auto` bottom sheet with a real, visible
+      // scrollbar and a drag handle (`Sheet.tsx`) — at a short 700-800px
+      // viewport height its own content legitimately needs vertical
+      // scrolling to reach every one of ~17 entries, same as the existing,
+      // already-shipped 390x844 mobile sheet (`e2e/mobile.spec.ts` verifies
+      // that one the same way: `.tap()` on an item directly, no in-viewport
+      // check). That is a normal, DISCOVERABLE scroll — a visible scrollbar
+      // and a "drag to see more" affordance — not the invisible, no-hint
+      // horizontal overflow this whole fix targets. `toBeVisible()` plus a
+      // real click (below) is the right bar: every item must actually be
+      // findable in the DOM and clickable via Playwright's own
+      // auto-scroll-the-nearest-scrollable-ancestor actionability, which is
+      // exactly how a real user would reach it too.
+      await page.getByRole('button', { name: 'More controls' }).click();
+      const sheet = page.getByRole('dialog', { name: 'More controls' });
+      for (const name of [
+        'Branches', 'Compare', 'Field guide', 'Experiments', 'Save & export', 'Instrument', 'Settings',
+        'Appearance', 'Rules', 'Acid Art', 'Unmute', 'Presentation mode', 'Cinematic mode', 'About AFTERLIFE',
+        'Logbook', 'Keyboard shortcuts', 'Multiplayer',
+      ]) {
+        const control = sheet.getByRole('button', { name, exact: true });
+        await expect(control, `${name} should be visible in the More controls sheet`).toBeVisible();
+      }
+
+      // Actually use one of the entries that sat furthest down the old,
+      // now-nonexistent "invisible scroll" — confirms this isn't just a
+      // geometry check, the control genuinely works.
+      await sheet.getByRole('button', { name: 'Compare', exact: true }).click();
+      await expect(page.locator('#panel-right')).toContainText('Compare');
+    });
+  }
+});
