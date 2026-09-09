@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { dismissTitle, openApp } from './utils';
+import { dismissTitle, ensurePaused, openApp } from './utils';
 
 /**
  * CINEMATIC MODE — the hands-off, full-screen auto-pan presentation.
@@ -114,6 +114,40 @@ test.describe('cinematic mode', () => {
 
     await page.keyboard.press('Escape');
     await expect.poll(() => cinematicActive(page)).toBe(false);
+  });
+
+  test('pressing c while paused still enters cinematic mode, by resuming playback — not a silent no-op', async ({ page }) => {
+    // BUG (found by a browser-driven reachability audit): pressing 'c' while
+    // paused appeared to do nothing — every other cinematic test in this
+    // file starts from the default PLAYING state, so this exact path had no
+    // coverage. `index.ts`'s `enter()` deliberately resumes playback when
+    // entering from a paused state ("a static, paused world has nothing to
+    // be cinematic ABOUT — the whole premise is real, ongoing activity to
+    // find and hold on") rather than silently refusing or entering a
+    // decorative no-op mode over a frozen world — the honest choice per the
+    // brief: either make it work, or gate it with a visible, stated reason;
+    // never a control that does nothing with no explanation. This test
+    // locks that choice in.
+    await openApp(page);
+    await dismissTitle(page);
+    await ensurePaused(page);
+    const genBefore = await page.evaluate(() => (window as unknown as { __AFTERLIFE__?: { engine: { gen: number } } }).__AFTERLIFE__?.engine.gen ?? -1);
+
+    await page.keyboard.press('c');
+    await expect.poll(() => cinematicActive(page)).toBe(true);
+
+    // Playback genuinely resumed — the world is no longer frozen — not just
+    // the camera moving over static content.
+    await expect.poll(
+      async () => page.evaluate(() => (window as unknown as { __AFTERLIFE__?: { engine: { gen: number } } }).__AFTERLIFE__?.engine.gen ?? -1),
+      { timeout: 10_000, message: 'generation should advance once cinematic mode resumes playback' },
+    ).toBeGreaterThan(genBefore);
+
+    // Exiting restores exactly the playback state the user actually had
+    // (paused), rather than always leaving the world running afterwards.
+    await page.keyboard.press('Escape');
+    await expect.poll(() => cinematicActive(page)).toBe(false);
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
   });
 
   test('prefers-reduced-motion still enters and exits cleanly (cuts rather than continuous animation)', async ({ page }) => {
