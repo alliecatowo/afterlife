@@ -150,6 +150,13 @@ async function mockWebcam(page: Page): Promise<void> {
 // accordingly.
 test.describe('Art mode', () => {
   test('renders glyphs above the legibility threshold with no console errors, and turning it off restores the honest lens exactly', async ({ page }) => {
+    // Art mode's first enable deliberately warms the webfont and pre-rasterises
+    // the glyph atlas before its first real frame (see `renderer.ts`'s
+    // `warmUpArt`). In real Chrome that costs ~26ms; under headless software
+    // rendering it is far slower, so the default 45s budget is unrealistic
+    // here. Measured: this spec passes in ~1min headless. Not a hang — a
+    // genuinely expensive one-shot warm-up on a software rasteriser.
+    test.setTimeout(120_000);
     const errors = collectConsoleErrors(page);
     await suppressTour(page);
     await openApp(page);

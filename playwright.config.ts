@@ -52,7 +52,7 @@ export default defineConfig({
       // also updating where it DOESN'T, so `desktop`'s "run everything"
       // default silently picked it up too and failed for reasons that have
       // nothing to do with this project's own viewport.
-      testIgnore: /(prod-build|mobile)\.spec\.ts/,
+      testIgnore: /(prod-build|mobile|art-perf)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     {
