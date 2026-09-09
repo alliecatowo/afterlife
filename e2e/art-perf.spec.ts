@@ -164,23 +164,41 @@ async function recordedWatchdogTrips(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __watchdogTrips__: string[] }).__watchdogTrips__);
 }
 
-/** Arm ONE deterministic busy-wait stall of `ms` inside the next Art-mode
- *  tint pass (`source-in` `fillRect` on `#world-canvas`) — a controlled
- *  stand-in for the real, environment-dependent stall this harness was
- *  built around. Re-armable: each call installs a fresh one-shot. */
+/**
+ * Arm ONE deterministic busy-wait stall of `ms` inside the next Art-mode
+ * frame's own compositing work — a controlled stand-in for the real,
+ * environment-dependent stall this harness was built around. Re-armable:
+ * each call installs a fresh one-shot.
+ *
+ * Uses `renderer.ts`'s `#testOnlyBeforeGlyphComposite` instrumentation seam
+ * rather than sniffing a specific canvas call shape (the previous version
+ * hooked `CanvasRenderingContext2D.prototype.fillRect`, armed specifically
+ * on `globalCompositeOperation === 'source-in'` on `#world-canvas` — the
+ * exact shape the OLD per-cell tint pass used). That sniff broke when
+ * `#drawGlyphs` was rewritten from "one `drawImage`+`source-in fillRect`
+ * pair per live cell" to "one shared pixel buffer, composited with a single
+ * plain `source-over` `drawImage`" (see that method's doc for the perf
+ * story: real Chrome measured a 900-live-cell scene at ~72ms/frame p95
+ * under the old per-cell approach) — the new final blit is call-shape-
+ * identical to the plain lens's own `#drawZoomedIn`/`#drawZoomedOut` fast
+ * paths, so no canvas-primitive sniff can distinguish "this is Art mode's
+ * own work" from "this is the ambient render loop's honest lens" anymore.
+ * The explicit seam sidesteps that by being unambiguous BY CONSTRUCTION: it
+ * only ever fires from inside `#drawGlyphs`, immediately before that one
+ * real per-frame canvas call.
+ */
 async function armArtFrameStall(page: Page, ms: number): Promise<void> {
   await page.evaluate((stallMs) => {
-    const proto = CanvasRenderingContext2D.prototype;
-    const w = window as unknown as { __originalFillRect__?: typeof proto.fillRect };
-    const original = (w.__originalFillRect__ ??= proto.fillRect);
+    const s = (window as unknown as {
+      __AFTERLIFE__: { renderer: { __testOnlyBeforeGlyphComposite: (() => void) | null } };
+    }).__AFTERLIFE__;
     let armed = true;
-    proto.fillRect = function fillRectSpy(this: CanvasRenderingContext2D, ...args: Parameters<typeof original>) {
-      if (armed && this.globalCompositeOperation === 'source-in' && (this.canvas as HTMLCanvasElement | undefined)?.id === 'world-canvas') {
-        armed = false;
-        const until = performance.now() + stallMs;
-        while (performance.now() < until) { /* deterministic busy-wait stand-in for a real stall */ }
-      }
-      return original.apply(this, args);
+    s.renderer.__testOnlyBeforeGlyphComposite = () => {
+      if (!armed) return;
+      armed = false;
+      s.renderer.__testOnlyBeforeGlyphComposite = null; // one-shot: never fire again after this
+      const until = performance.now() + stallMs;
+      while (performance.now() < until) { /* deterministic busy-wait stand-in for a real stall */ }
     };
   }, ms);
 }
@@ -599,14 +617,27 @@ test.describe('Art mode performance/resource-safety harness (real Chrome, full i
     expect(max, `max post-warm-up frame ${max.toFixed(1)}ms`).toBeLessThan(250);
     expect(p95, `p95 post-warm-up frame ${p95.toFixed(1)}ms`).toBeLessThan(ART_FRAME_BUDGET_MS_REF);
 
-    // No genuine memory growth across a real animated session — heap should
-    // stay flat or fall, matching the real-Chrome finding this test protects
-    // (35.4->28.6MB / 30.8->31.2MB in the original reproduction). Skipped if
+    // No UNBOUNDED memory growth across a real animated session. The original
+    // budget here (5MB) matched the pre-single-blit renderer, which had
+    // essentially no large per-frame allocations (35.4->28.6MB / 30.8->31.2MB
+    // in that reproduction — heap actually fell). `#drawGlyphs`'s single-blit
+    // rewrite (see that method's doc — the fix for this file's own dense-
+    // scene p95 budget just below) deliberately trades that for a REUSED,
+    // grow-only `Uint8ClampedArray` pixel buffer sized to the live cells'
+    // on-screen bounding box: real measurement of this exact 30-zoom-step
+    // sweep (scale 8->29, so the buffer's needed capacity grows several times
+    // over) found 5.4-8.8MB of growth across repeated runs — a real, but
+    // ONE-TIME, bounded convergence to a working-set size (the buffer never
+    // reallocates again once big enough for every size a session's zoom range
+    // actually uses), not a per-frame leak. 25MB comfortably covers that
+    // legitimate cost (this test's worst-case buffer, a ~1740x1740 device-
+    // pixel bbox at this sweep's largest zoom, is ~12MB) while still catching
+    // a genuine regression back toward runaway, unbounded growth. Skipped if
     // `performance.memory` isn't available at all rather than asserting on a
     // 0 that would trivially "pass".
     if (heapBefore > 0 && heapAfter > 0) {
       expect(heapAfter, `heap grew from ${(heapBefore / 1e6).toFixed(1)}MB to ${(heapAfter / 1e6).toFixed(1)}MB`)
-        .toBeLessThan(heapBefore + 5_000_000);
+        .toBeLessThan(heapBefore + 25_000_000);
     }
 
     // The whole point: the watchdog must not have needed to fire to protect

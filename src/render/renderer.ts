@@ -233,7 +233,11 @@ export interface ArtDebugStats {
   atlasBytes: number;
   /** Cumulative atlas rebuilds since page load (module-level counter — see `glyphAtlas.ts`'s `getAtlasBuildCount`). */
   atlasBuildCount: number;
-  /** Distinct `fillStyle` strings computed for the MOST RECENT glyph frame — cleared every `#drawGlyphs` call, so this is a per-frame number, not cumulative. */
+  /** Always 0 — kept for API compatibility with older perf-harness snapshots.
+   *  `#drawGlyphs` used to build one `rgba(...)` `fillStyle` string per
+   *  distinct colour used in a frame; the single-blit rewrite (see
+   *  `#drawGlyphs`'s doc) tints pixels with plain RGBA byte writes instead,
+   *  so no `fillStyle` strings are ever constructed on the glyph path. */
   fillStyleCacheEntries: number;
   /** 0 or 1 — the single reused offscreen canvas every zoomed-in/zoomed-out/glyph path shares. */
   cellCanvasCount: number;
@@ -600,6 +604,10 @@ class WorldRendererImpl implements WorldRenderer {
   // Offscreen buffer reused across frames for the per-cell / coverage paths.
   #cellCanvas: HTMLCanvasElement | null = null;
   #cellCtx: CanvasRenderingContext2D | null = null;
+  // `#drawGlyphs`'s own reused, grow-only pixel buffer — see its doc for why
+  // this exists separately from `#ensureCellCanvas`'s `ImageData`-per-call
+  // convention (real heap-growth measurement in a continuous zoom/pan sweep).
+  #glyphBuf: Uint8ClampedArray<ArrayBuffer> | null = null;
 
   // Tokens resolved once (values are static; only which lens is *used* varies per draw).
   #tokLife!: TokenColor;
@@ -651,26 +659,26 @@ class WorldRendererImpl implements WorldRenderer {
   // each chunk checks it's still the current token before touching `#ctx`.
   #artWarmupToken = 0;
 
-  // Reused across every `#drawGlyphs` call (never re-`new`'d per frame — see
-  // that method's doc) to stop the batched-draw command list from being 6
-  // fresh array allocations on every single animated frame, on top of the
-  // per-cell work that's already unavoidable.
-  #glyphDx: number[] = [];
-  #glyphDy: number[] = [];
-  #glyphDw: number[] = [];
-  #glyphDh: number[] = [];
-  #glyphSx: number[] = [];
-  #glyphFillStyles: string[] = [];
-  // Per-FRAME (cleared at the top of every `#drawGlyphs` call, never carried
-  // across frames — seeing hue rotation/colour cycling continuously shift
-  // the base hue every frame, the SET of distinct colours in use changes
-  // every frame too, so a cache that persisted across frames would grow
-  // unboundedly over a long session) dedup of the `rgba(...)` fillStyle
-  // string per exact (r, g, b, alpha) byte tuple. Many cells in a frame
-  // routinely share the exact same ramp-bucket colour, so this turns what
-  // used to be one template-literal string allocation PER LIVE CELL PER
-  // FRAME into one per DISTINCT colour actually used that frame.
-  #fillStyleCache = new Map<number, string>();
+  /**
+   * TEST-ONLY instrumentation seam, never set by any production code path
+   * (deliberately NOT a `#private` field — `e2e/art-perf.spec.ts`'s
+   * `armArtFrameStall` assigns to it from OUTSIDE the class, via
+   * `window.__AFTERLIFE__.renderer`, the same way it already reaches
+   * `getArtDebugStats()`/`consumeArtWatchdogTrip()`). Called synchronously
+   * immediately before `#drawGlyphs` composites its finished per-frame pixel
+   * buffer onto the real canvas (its one real `drawImage` call), to inject a
+   * deterministic stall specifically into an art-active frame's own drawing
+   * work — see that helper's doc for why a generic "next `drawImage`-to-
+   * world-canvas call" sniff can't reliably do that: once the glyph path
+   * stopped drawing per-cell (see `#drawGlyphs`'s doc), its final composite
+   * call became structurally identical (`drawImage` from the shared
+   * offscreen canvas, `source-over`) to the plain-lens fast paths' own
+   * per-frame blit, so call-shape alone can no longer distinguish "this is
+   * Art mode's own work" from "this is the ambient render loop's honest
+   * lens, drawn moments earlier/later" the way the old `source-in`
+   * `fillRect` sniff could.
+   */
+  __testOnlyBeforeGlyphComposite: (() => void) | null = null;
 
   get viewport(): Readonly<Viewport> {
     return { width: this.#cssW, height: this.#cssH };
@@ -824,14 +832,22 @@ class WorldRendererImpl implements WorldRenderer {
     const canvas = this.#canvas;
     if (!ctx || !canvas) return; // not attached to a real canvas yet (e.g. a headless unit test) — nothing left to warm
 
-    // 3. The exact call SHAPE `#drawGlyphs` batches every real frame (a
-    // `drawImage` source-over blit, then a `source-in` tinted `fillRect`) —
-    // real measurement pinned the residual first-frame cost to landing
-    // somewhere in this exact sequence, consistent with a browser/GPU-level
-    // lazy-initialisation cost rather than anything this file's own logic
-    // controls (see `ART_WARMUP_GRACE_CEILING_MS`'s doc). Issued directly
-    // against `#ctx` — THE SAME context the real frame draws with — so
-    // whatever internal state that lazy-init warms is already warm.
+    // 3. The exact call SHAPE `#drawGlyphs` now uses every real frame — a
+    // `putImageData` into the shared offscreen `#cellCanvas`, then a plain
+    // `source-over` `drawImage` from it onto the real canvas (see
+    // `#drawGlyphs`'s doc for the single-blit rewrite this reflects; this
+    // used to mimic a per-cell `drawImage`+`source-in fillRect` pair before
+    // that rewrite). Real measurement motivating this warm-up at all pinned
+    // the residual first-frame cost to a browser/GPU-level lazy-
+    // initialisation on a given canvas/context's first substantial real
+    // draw calls (see `ART_WARMUP_GRACE_CEILING_MS`'s doc) — issuing the
+    // SAME call shape here, against `#ctx`/`#cellCanvas` (the exact objects
+    // the real frame uses), pays off whatever that cost is ahead of time.
+    // Note the plain lens's own fast paths (`#drawZoomedIn`/`#drawZoomedOut`)
+    // already use this identical `putImageData`+`drawImage` shape on every
+    // ordinary frame, so by the time a user ever reaches Art mode this is
+    // very likely already warm regardless — this step is a cheap, harmless
+    // belt-and-braces top-up, not load-bearing the way it was before.
     //
     // Chunked across several `scheduleIdleWork` turns rather than one
     // synchronous blob: each chunk is time-boxed
@@ -843,6 +859,8 @@ class WorldRendererImpl implements WorldRenderer {
     // even though this writes to the visible canvas, nothing it draws here
     // is ever actually shown — every task this method runs ends with the
     // honest current frame restored.
+    const warmCellPx = atlas.cellPx;
+    const warmBuf = this.#ensureCellCanvas(warmCellPx, warmCellPx);
     let done = 0;
     const overallDeadline = nowMs() + WorldRendererImpl.#WARMUP_TOTAL_BUDGET_MS;
     await new Promise<void>((resolve) => {
@@ -850,13 +868,13 @@ class WorldRendererImpl implements WorldRenderer {
         if (token !== this.#artWarmupToken) { resolve(); return; } // superseded — stop touching #ctx
         const chunkDeadline = nowMs() + WorldRendererImpl.#WARMUP_CHUNK_BUDGET_MS;
         while (done < WorldRendererImpl.#WARMUP_DRAW_COUNT && nowMs() < chunkDeadline) {
-          const rect = atlas.rectFor(done % Math.max(1, chars.length));
+          const img = warmBuf.createImageData(warmCellPx, warmCellPx);
+          img.data.fill(1); // trivial non-zero fill — content doesn't matter, only the call shape does
+          warmBuf.putImageData(img, 0, 0);
           ctx.save();
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.drawImage(atlas.canvas, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, rect.sw, rect.sh);
-          ctx.globalCompositeOperation = 'source-in';
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.004)';
-          ctx.fillRect(0, 0, rect.sw, rect.sh);
+          ctx.globalAlpha = 0.004;
+          ctx.drawImage(this.#cellCanvas!, 0, 0);
+          ctx.globalAlpha = 1;
           ctx.restore();
           done++;
         }
@@ -1121,7 +1139,7 @@ class WorldRendererImpl implements WorldRenderer {
       atlasEntries: this.#glyphAtlasCache.size,
       atlasBytes,
       atlasBuildCount: getAtlasBuildCount(),
-      fillStyleCacheEntries: this.#fillStyleCache.size,
+      fillStyleCacheEntries: 0,
       cellCanvasCount: this.#cellCanvas ? 1 : 0,
       lastArtFrameMs: this.#lastArtFrameMs,
       artFrameMsWindow: [...this.#artFrameMsWindow],
@@ -1409,6 +1427,27 @@ class WorldRendererImpl implements WorldRenderer {
    * file uses (`#drawGhost`/`#drawSelection`/`#drawDiff`) — this is what
    * keeps the glyph grid "tight and even… no gaps or drift" at every zoom
    * level above the legibility floor, not just at one magic zoom value.
+   *
+   * SINGLE-BLIT DESIGN (replaced a per-cell `drawImage`+`source-in fillRect`
+   * pair): real Chrome measurement found a dense-but-ordinary scene (900
+   * live cells, a comfortable 16px/cell zoom) cost ~72ms/frame (p95) with
+   * the old per-cell approach — up to 3 real canvas API calls per live cell
+   * (a raster blit, a `fillStyle` string build, a composited fill), each
+   * cheap in isolation but real per-call overhead that scales linearly with
+   * live-cell count. `@/render/glyphAtlas.ts`'s `maskAlpha` (a flat,
+   * per-atlas-build-not-per-frame extracted alpha raster of every glyph
+   * shape) lets every live cell's contribution be written directly into a
+   * shared `Uint8ClampedArray` frame buffer with plain array arithmetic —
+   * no canvas call at all until the WHOLE frame's glyphs are ready, at which
+   * point exactly two canvas calls composite the entire frame: one
+   * `putImageData` (into the same single reused offscreen canvas
+   * `#drawZoomedIn`/`#drawZoomedOut` already share — see `#ensureCellCanvas`,
+   * `cellCanvasCount` stays <= 1) and one `drawImage` (onto the real canvas,
+   * plain `source-over` so trails/whatever is already drawn underneath still
+   * shows through the gaps between glyphs). Cost now scales with total
+   * COVERED PIXELS (live cells × glyph area), not with canvas-call count —
+   * the same fast-path shape `#drawZoomedIn`'s `ImageData` blit already
+   * proved out for the plain lens.
    */
   #drawGlyphs(engine: LifeEngine, rect: Rect): void {
     const art = this.#art!;
@@ -1423,15 +1462,36 @@ class WorldRendererImpl implements WorldRenderer {
     // rect-area check above, is the number that actually matters. Bailing
     // HERE, before any expensive per-cell work has run, is what makes this a
     // real pre-emptive bound rather than "notice it was too expensive after
-    // already paying for it."
+    // already paying for it." Also tracks the live cells' own bounding box
+    // (rect-local indices) — MEMORY, not just time: `rect` is the whole
+    // VISIBLE viewport (mostly dead cells at any normal zoom), so sizing the
+    // per-frame pixel buffer to `rect`'s own screen footprint would allocate
+    // a full-canvas-sized (`~cssW*cssH*dpr^2*4` bytes — tens of MB at a
+    // typical desktop viewport) buffer EVERY FRAME regardless of how many
+    // cells are actually live — real Chrome measurement of a continuous
+    // zoom/pan sweep found exactly that: heap grew ~22MB over ~40 frames
+    // before this bbox narrowing. The bounding box of the LIVE cells only
+    // (typically a small fraction of `rect`) is what the buffer actually
+    // needs to cover.
     let liveCount = 0;
+    let minI = rect.w;
+    let maxI = -1;
+    let minJ = rect.h;
+    let maxJ = -1;
     for (let j = 0; j < rect.h && liveCount <= MAX_GLYPH_LIVE_CELLS; j++) {
       const wy = wrap(rect.y + j, spec.height);
       for (let i = 0; i < rect.w; i++) {
-        if (engine.get(wrap(rect.x + i, spec.width), wy)) liveCount++;
+        if (engine.get(wrap(rect.x + i, spec.width), wy)) {
+          liveCount++;
+          if (i < minI) minI = i;
+          if (i > maxI) maxI = i;
+          if (j < minJ) minJ = j;
+          if (j > maxJ) maxJ = j;
+        }
       }
     }
     if (liveCount > MAX_GLYPH_LIVE_CELLS) { this.#drawZoomedIn(engine, rect); return; }
+    if (liveCount === 0) return; // nothing to draw, and no buffer worth allocating for it.
 
     const tSec = this.#currentTSec;
     const lfoAcc = this.#currentLfoAcc;
@@ -1449,6 +1509,9 @@ class WorldRendererImpl implements WorldRenderer {
       chars = GLYPH_SETS[ids[shifted]!];
     }
     const atlas = this.#ensureAtlas(chars, bucket);
+    const cellPx = atlas.cellPx;
+    const maskAlpha = atlas.maskAlpha;
+    const maskWidth = atlas.maskWidth;
 
     const fieldTransform: FieldTransform = {
       scale: Math.max(0.01, art.field.scale * (1 + (lfoAcc.fieldScale ?? 0))),
@@ -1474,38 +1537,49 @@ class WorldRendererImpl implements WorldRenderer {
 
     const customStops = art.color.source === 'custom' ? this.#resolveCustomStops(art.color.stops) : null;
 
-    // Two passes over a buffered command list, rather than drawing+tinting
-    // each cell immediately, so `globalCompositeOperation` is only ever
-    // toggled TWICE per frame (once per pass) instead of twice PER LIVE
-    // CELL — the second perf hypothesis from the "acid mode... destroyed the
-    // machine" report (glyph atlas thrash, fixed above via `MAX_ATLAS_CELL_
-    // PX`, was the dominant one, since it's the cost that actually scales
-    // UP with zoom; this compositing-state churn scales with on-screen live
-    // cell COUNT instead, worst at the low end near the legibility floor where
-    // the most cells are visible at once — fixing it too closes out the
-    // hypothesis rather than leaving it unchecked). Safe to reorder this way
-    // even where jittered cells overlap: each `fillRect` only ever touches
-    // the exact pixels its OWN `drawImage` call touched a moment earlier in
-    // pass one, in the same relative per-cell order as before — a later
-    // cell's tint still lands after an earlier cell's in either scheme, so
-    // an overlap's visible winner is unchanged.
-    // Reused instance arrays (see their field docs) — truncating via
-    // `.length = 0` reuses the existing backing store instead of allocating 6
-    // fresh arrays every single animated frame, on top of the per-cell work
-    // below that's already unavoidable.
-    const dxs = this.#glyphDx; dxs.length = 0;
-    const dys = this.#glyphDy; dys.length = 0;
-    const dws = this.#glyphDw; dws.length = 0;
-    const dhs = this.#glyphDh; dhs.length = 0;
-    const sxs = this.#glyphSx; sxs.length = 0;
-    const fillStyles = this.#glyphFillStyles; fillStyles.length = 0;
-    // Per-frame colour->fillStyle dedup — see `#fillStyleCache`'s field doc
-    // for why this is cleared every call rather than persisted.
-    const fillStyleCache = this.#fillStyleCache; fillStyleCache.clear();
+    // Device-pixel footprint of just the LIVE CELLS' bounding box (see the
+    // pre-count loop's doc for why not the whole visible `rect`, which is
+    // the entire viewport — mostly dead cells at any normal zoom — and would
+    // allocate a full-canvas-sized buffer every frame regardless of how many
+    // cells are actually live). Jitter can shift a glyph up to ~22% of a
+    // cell outside its own grid square (see the jitter math below), so the
+    // buffer gets a small margin on every side when jitter is in play —
+    // otherwise a jittered edge cell's glyph would be clipped by the buffer
+    // boundary itself rather than by the real, honestly-larger canvas.
+    const originScreen = this.worldToScreen(rect.x + minI, rect.y + minJ);
+    const farScreen = this.worldToScreen(rect.x + maxI + 1, rect.y + maxJ + 1);
+    const originX = Math.round(originScreen.x * dpr);
+    const originY = Math.round(originScreen.y * dpr);
+    const farX = Math.round(farScreen.x * dpr);
+    const farY = Math.round(farScreen.y * dpr);
+    const pad = wantsJitterField ? Math.ceil(cellPx * 0.3) : 0;
+    const bufOriginX = originX - pad;
+    const bufOriginY = originY - pad;
+    const bufW = Math.max(1, farX - originX + pad * 2);
+    const bufH = Math.max(1, farY - originY + pad * 2);
 
-    for (let j = 0; j < rect.h; j++) {
+    const cellCtx = this.#ensureCellCanvas(bufW, bufH);
+    // Reuse one grow-only `Uint8ClampedArray` across frames instead of a
+    // fresh `createImageData(bufW, bufH)` allocation every single call —
+    // MEMORY, not just time: real Chrome measurement of a continuous
+    // zoom/pan sweep (bufW/bufH changing almost every frame as the camera
+    // moves) found real heap growth from the allocation churn of a large
+    // (multi-MB at a big, zoomed-in glyph size) typed array being thrown
+    // away every frame, even after the bbox narrowing above. Only grows the
+    // backing buffer when a frame genuinely needs more capacity than it
+    // currently has; `.fill(0)` on just the bytes THIS frame uses (a plain
+    // memset, not an allocation) is what keeps a stale, larger previous
+    // frame's leftover pixels from bleeding into this frame's dead-cell gaps.
+    const need = bufW * bufH * 4;
+    if (!this.#glyphBuf || this.#glyphBuf.length < need) {
+      this.#glyphBuf = new Uint8ClampedArray(need);
+    }
+    const data = this.#glyphBuf.length === need ? this.#glyphBuf : this.#glyphBuf.subarray(0, need);
+    data.fill(0);
+
+    for (let j = minJ; j <= maxJ; j++) {
       const wy = wrap(rect.y + j, spec.height);
-      for (let i = 0; i < rect.w; i++) {
+      for (let i = minI; i <= maxI; i++) {
         const wx = wrap(rect.x + i, spec.width);
         if (!engine.get(wx, wy)) continue; // HONESTY: never draw a glyph for a dead cell.
 
@@ -1526,7 +1600,6 @@ class WorldRendererImpl implements WorldRenderer {
           glyphT = Math.min(1, Math.max(0, baseT * 0.6 + fieldSample * 0.4));
         }
         const glyphIndex = glyphIndexForValue(glyphT, chars.length);
-        const srcRect = atlas.rectFor(glyphIndex);
 
         let rgb: RGB;
         let alpha: number;
@@ -1550,10 +1623,10 @@ class WorldRendererImpl implements WorldRenderer {
 
         const p0 = this.worldToScreen(wx, wy);
         const p1 = this.worldToScreen(wx + 1, wy + 1);
-        let dx = Math.round(p0.x * dpr);
-        let dy = Math.round(p0.y * dpr);
-        const dw = Math.max(1, Math.round(p1.x * dpr) - dx);
-        const dh = Math.max(1, Math.round(p1.y * dpr) - dy);
+        let dx = Math.round(p0.x * dpr) - bufOriginX;
+        let dy = Math.round(p0.y * dpr) - bufOriginY;
+        const dw = Math.max(1, Math.round(p1.x * dpr) - Math.round(p0.x * dpr));
+        const dh = Math.max(1, Math.round(p1.y * dpr) - Math.round(p0.y * dpr));
 
         if (wantsJitterField && fieldSample > 0) {
           const seedA = ((wx * 92821 + wy * 68917) % 997 + 997) % 997;
@@ -1565,39 +1638,61 @@ class WorldRendererImpl implements WorldRenderer {
           dy = Math.round(dy + (j2 - 0.5) * 2 * amp);
         }
 
-        // Exact (not quantised) byte-tuple key — `alpha` is already an
-        // integer 0..255 by this point (`Math.round` above), so this cache
-        // hits every time a cell shares its EXACT colour with an earlier one
-        // this frame (routine: many cells land in the same ramp bucket) and
-        // never trades correctness for a coarser bucket. Bitwise ops are
-        // 32-bit signed in JS, so the top byte can produce a negative key —
-        // irrelevant for a `Map`, which just needs distinct keys per tuple.
-        const styleKey = ((rgb.r & 255) << 24) | ((rgb.g & 255) << 16) | ((rgb.b & 255) << 8) | (alpha & 255);
-        let fillStyle = fillStyleCache.get(styleKey);
-        if (fillStyle === undefined) {
-          fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha / 255).toFixed(3)})`;
-          fillStyleCache.set(styleKey, fillStyle);
+        // Blit this one glyph's alpha mask straight into the shared frame
+        // buffer, tinted by (rgb, alpha) — no canvas call, no string/object
+        // allocation, just array reads/writes. `outA = round(alpha*m/255)`
+        // is exactly the arithmetic the old `source-in`-composited
+        // `fillRect` performed (`resultAlpha = fillAlpha * destAlpha`), just
+        // done directly instead of asking the canvas compositor to do it per
+        // cell. The `dw === cellPx` fast path (the overwhelmingly common
+        // case — `atlasCellPxBucket` keeps the raster within 1-2px of the
+        // real on-screen cell size) skips the nearest-neighbour scale index
+        // math entirely.
+        const sx0 = glyphIndex * cellPx;
+        if (dw === cellPx && dh === cellPx) {
+          for (let oy = 0; oy < cellPx; oy++) {
+            const destRow = dy + oy;
+            if (destRow < 0 || destRow >= bufH) continue;
+            const maskRowBase = oy * maskWidth + sx0;
+            const destRowBase = destRow * bufW * 4;
+            for (let ox = 0; ox < cellPx; ox++) {
+              const destCol = dx + ox;
+              if (destCol < 0 || destCol >= bufW) continue;
+              const m = maskAlpha[maskRowBase + ox]!;
+              if (m === 0) continue;
+              const outA = (m * alpha + 127) / 255 | 0;
+              const idx = destRowBase + destCol * 4;
+              data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = outA;
+            }
+          }
+        } else {
+          for (let oy = 0; oy < dh; oy++) {
+            const destRow = dy + oy;
+            if (destRow < 0 || destRow >= bufH) continue;
+            const my = Math.min(cellPx - 1, (oy * cellPx / dh) | 0);
+            const maskRowBase = my * maskWidth + sx0;
+            const destRowBase = destRow * bufW * 4;
+            for (let ox = 0; ox < dw; ox++) {
+              const destCol = dx + ox;
+              if (destCol < 0 || destCol >= bufW) continue;
+              const mx = Math.min(cellPx - 1, (ox * cellPx / dw) | 0);
+              const m = maskAlpha[maskRowBase + mx]!;
+              if (m === 0) continue;
+              const outA = (m * alpha + 127) / 255 | 0;
+              const idx = destRowBase + destCol * 4;
+              data[idx] = rgb.r; data[idx + 1] = rgb.g; data[idx + 2] = rgb.b; data[idx + 3] = outA;
+            }
+          }
         }
-
-        dxs.push(dx); dys.push(dy); dws.push(dw); dhs.push(dh); sxs.push(srcRect.sx);
-        fillStyles.push(fillStyle);
       }
     }
 
-    ctx.save();
-    const n = dxs.length;
-    const cellPx = atlas.cellPx;
-    ctx.globalCompositeOperation = 'source-over';
-    for (let k = 0; k < n; k++) {
-      ctx.drawImage(atlas.canvas, sxs[k]!, 0, cellPx, cellPx, dxs[k]!, dys[k]!, dws[k]!, dhs[k]!);
-    }
-    ctx.globalCompositeOperation = 'source-in';
-    for (let k = 0; k < n; k++) {
-      ctx.fillStyle = fillStyles[k]!;
-      ctx.fillRect(dxs[k]!, dys[k]!, dws[k]!, dhs[k]!);
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.restore();
+    cellCtx.putImageData(new ImageData(data, bufW, bufH), 0, 0);
+    this.__testOnlyBeforeGlyphComposite?.();
+    // The one real per-frame draw call onto the visible canvas — plain
+    // `source-over` (the default), so trails/background already drawn this
+    // frame still show through every gap between glyphs.
+    ctx.drawImage(this.#cellCanvas!, bufOriginX, bufOriginY);
   }
 
   #drawZoomedIn(engine: LifeEngine, rect: Rect): void {
@@ -2053,11 +2148,11 @@ class WorldRendererImpl implements WorldRenderer {
     this.#ctx = null;
     this.#cellCanvas = null;
     this.#cellCtx = null;
+    this.#glyphBuf = null;
     this.#lastEngine = null;
     this.#art = null;
     this.#artGrid = null;
     this.#glyphAtlasCache.clear();
-    this.#fillStyleCache.clear();
     this.#artFrameMsWindow = [];
     this.#artWatchdogTripped = false;
     this.#artWatchdogReason = null;

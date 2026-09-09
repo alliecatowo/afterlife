@@ -185,6 +185,23 @@ export interface GlyphAtlasHandle {
   cellPx: number;
   chars: readonly string[];
   rectFor(index: number): AtlasRect;
+  /**
+   * Raw ALPHA-ONLY raster of the whole atlas strip (row-major, one byte per
+   * pixel, length `maskWidth * cellPx`) — extracted once at build time via a
+   * single `getImageData`, never per cell per frame. Glyphs are rasterised
+   * in flat white (see this file's module doc), so the RGB channels carry no
+   * information; only alpha (glyph shape/anti-aliasing coverage) matters for
+   * `renderer.ts`'s single-blit glyph compositor, which reads this directly
+   * to tint each live cell's glyph shape into a shared frame buffer without
+   * ever touching the canvas API per cell (no `drawImage`/`fillRect` per
+   * live cell — see `#drawGlyphs`'s doc for the perf story this replaced:
+   * up to 3 real canvas calls per live cell, which is what made a dense
+   * scene (900 live cells) cost ~72ms/frame before this).
+   */
+  maskAlpha: Uint8Array;
+  /** Pixel width of the atlas strip `maskAlpha` is indexed against — i.e.
+   *  `chars.length * cellPx` (or the actual canvas width, identical value). */
+  maskWidth: number;
 }
 
 /**
@@ -239,11 +256,20 @@ export function buildGlyphAtlas(chars: readonly string[], cellPx: number): Glyph
     const cy = h / 2;
     ctx.fillText(chars[i]!, cx, cy);
   }
+  // One `getImageData` per atlas build (not per cell/frame — see
+  // `GlyphAtlasHandle.maskAlpha`'s doc), pulling out just the alpha channel
+  // (every RGB byte is already flat white, hence carries no information)
+  // into a compact `Uint8Array` the hot per-frame path can index directly.
+  const alphaSrc = ctx.getImageData(0, 0, w, h).data;
+  const maskAlpha = new Uint8Array(w * h);
+  for (let p = 0, q = 3; p < maskAlpha.length; p++, q += 4) maskAlpha[p] = alphaSrc[q]!;
   return {
     canvas,
     cellPx: px,
     chars,
     rectFor: (index: number) => atlasCellRect(Math.min(chars.length - 1, Math.max(0, index)), px),
+    maskAlpha,
+    maskWidth: w,
   };
 }
 
