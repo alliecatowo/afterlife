@@ -9,7 +9,8 @@ import {
  *
  * WHY THIS FILE EXISTS: a real production report said Art mode "literally
  * crash[ed] the mac it crashed so hard" while rendering nothing visible.
- * `e2e/art.spec.ts` (still `describe.skip`'d — see its own doc) only ever
+ * `e2e/art.spec.ts` (was `describe.skip`'d during the containment period;
+ * re-enabled once the warm-up pass lifted it — see its own doc) only ever
  * asserted "renders without a console error," which cannot fail on resource
  * exhaustion — a real user's fair complaint was exactly that: "you
  * should've caught that." This file is the harness that can.
@@ -92,24 +93,96 @@ interface ArtDebugStats {
 }
 
 type RendererHandle = {
-  setArtConfig(config: unknown): void;
+  setArtConfig(config: unknown, opts?: { warmupGrace?: boolean }): void;
   draw(engine: unknown): void;
   getArtDebugStats(): ArtDebugStats;
   consumeArtWatchdogTrip(): string | null;
   dpr: number;
 };
 
-async function draw(page: Page): Promise<void> {
-  await page.evaluate(() => {
+/** Explicit `draw()`; resolves to the renderer's OWN in-page cost (ms) of
+ *  that call, measured with `performance.now()` around it — never the
+ *  Playwright round-trip wall-clock, which on a loaded CI box (or a shared
+ *  dev machine with other suites running) also includes scheduling delay
+ *  that has nothing to do with what the renderer paid. */
+async function draw(page: Page): Promise<number> {
+  return page.evaluate(() => {
     const s = (window as unknown as { __AFTERLIFE__: { renderer: RendererHandle; engine: unknown } }).__AFTERLIFE__;
+    const t0 = performance.now();
     s.renderer.draw(s.engine);
+    return performance.now() - t0;
   });
 }
 
-async function setArtConfig(page: Page, config: unknown): Promise<void> {
-  await page.evaluate((cfg) => {
-    (window as unknown as { __AFTERLIFE__: { renderer: RendererHandle } }).__AFTERLIFE__.renderer.setArtConfig(cfg);
-  }, config);
+/** Own-property override of THIS renderer's `draw` (shadows the prototype
+ *  method for this instance, so the app's ambient rAF loop and `warmUpArt`'s
+ *  chunk-restoration draws are captured too) that records every draw's
+ *  in-page cost — see `recordedDrawTimes`. */
+async function installDrawTimeRecorder(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const s = (window as unknown as { __AFTERLIFE__: { renderer: { draw: (...a: unknown[]) => void } } }).__AFTERLIFE__;
+    const w = window as unknown as { __drawTimes__: number[] };
+    w.__drawTimes__ = [];
+    const original = s.renderer.draw.bind(s.renderer);
+    s.renderer.draw = (...args: unknown[]) => {
+      const t0 = performance.now();
+      original(...args);
+      w.__drawTimes__.push(performance.now() - t0);
+    };
+  });
+}
+
+async function recordedDrawTimes(page: Page): Promise<number[]> {
+  return page.evaluate(() => (window as unknown as { __drawTimes__: number[] }).__drawTimes__);
+}
+
+async function setArtConfig(page: Page, config: unknown, opts?: { warmupGrace?: boolean }): Promise<void> {
+  await page.evaluate(({ cfg, opts }) => {
+    (window as unknown as { __AFTERLIFE__: { renderer: RendererHandle } }).__AFTERLIFE__.renderer.setArtConfig(cfg, opts);
+  }, { cfg: config, opts });
+}
+
+/** Wrap THIS renderer instance's poll-and-clear `consumeArtWatchdogTrip()`
+ *  so every trip is recorded regardless of who consumes it — the app's own
+ *  rAF `pollWatchdog` in `artMount.ts` races any test that reads the
+ *  poll-and-clear API directly (see the first test's doc). */
+async function installWatchdogTripRecorder(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const s = (window as unknown as { __AFTERLIFE__: { renderer: RendererHandle } }).__AFTERLIFE__;
+    const w = window as unknown as { __watchdogTrips__: string[] };
+    w.__watchdogTrips__ = [];
+    const original = s.renderer.consumeArtWatchdogTrip.bind(s.renderer);
+    s.renderer.consumeArtWatchdogTrip = () => {
+      const reason = original();
+      if (reason) w.__watchdogTrips__.push(reason);
+      return reason;
+    };
+  });
+}
+
+async function recordedWatchdogTrips(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __watchdogTrips__: string[] }).__watchdogTrips__);
+}
+
+/** Arm ONE deterministic busy-wait stall of `ms` inside the next Art-mode
+ *  tint pass (`source-in` `fillRect` on `#world-canvas`) — a controlled
+ *  stand-in for the real, environment-dependent stall this harness was
+ *  built around. Re-armable: each call installs a fresh one-shot. */
+async function armArtFrameStall(page: Page, ms: number): Promise<void> {
+  await page.evaluate((stallMs) => {
+    const proto = CanvasRenderingContext2D.prototype;
+    const w = window as unknown as { __originalFillRect__?: typeof proto.fillRect };
+    const original = (w.__originalFillRect__ ??= proto.fillRect);
+    let armed = true;
+    proto.fillRect = function fillRectSpy(this: CanvasRenderingContext2D, ...args: Parameters<typeof original>) {
+      if (armed && this.globalCompositeOperation === 'source-in' && (this.canvas as HTMLCanvasElement | undefined)?.id === 'world-canvas') {
+        armed = false;
+        const until = performance.now() + stallMs;
+        while (performance.now() < until) { /* deterministic busy-wait stand-in for a real stall */ }
+      }
+      return original.apply(this, args);
+    };
+  }, ms);
 }
 
 async function getDebugStats(page: Page): Promise<ArtDebugStats> {
@@ -146,12 +219,38 @@ function realisticArtConfig(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A cheap, in-page digest (FNV-1a over every RGBA byte) of `#world-canvas`.
+ *  Compared with `toBe`/`not.toBe` — never the raw pixel arrays. Shipping
+ *  ~5M numbers per sample across CDP and then asking `expect`'s pretty-
+ *  printer to diff two of them on a FAILED assertion is a real hazard this
+ *  harness hit: the Playwright worker spun at 100% CPU for 40+ minutes
+ *  formatting the diff, which reads as "the suite hung" rather than
+ *  "assertion failed". Hashing in-page keeps a failure a fast, honest
+ *  failure. */
+async function canvasDigest(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const c = document.getElementById('world-canvas') as HTMLCanvasElement;
+    const data = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < data.length; i++) {
+      h ^= data[i]!;
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return `${h.toString(16)}:${c.width}x${c.height}`;
+  });
+}
+
 async function bootTo(page: Page): Promise<void> {
   await suppressTour(page);
   await openApp(page);
   await dismissTitle(page);
   await ensurePaused(page);
 }
+
+// Real installed Chrome, not bundled Chromium: this harness measures the
+// path a user actually gets. Must be file-level — Playwright forbids
+// `test.use({ channel })` inside a describe group.
+test.use({ channel: 'chrome' });
 
 test.describe('Art mode performance/resource-safety harness', () => {
   test('the frame-time watchdog catches a single catastrophic frame and immediately, permanently stops paying its cost', async ({ page }) => {
@@ -160,6 +259,19 @@ test.describe('Art mode performance/resource-safety harness', () => {
     await bootTo(page);
     await seedDenseArea(page, 40, 40, 20, 20);
     await setCamera(page, { x: 50, y: 50, scale: 16 });
+
+    // Record EVERY watchdog trip no matter who consumes it. `setArtConfig`
+    // marks the renderer dirty, so the app's own rAF render loop
+    // (`session.ts`) usually draws the first art-active frame BEFORE this
+    // test's explicit `draw()` below can — the injected stall then lands in
+    // that ambient frame, and `artMount.ts`'s own rAF `pollWatchdog` wins the
+    // race to `consumeArtWatchdogTrip()` (poll-and-clear) and turns the
+    // trip into the user-facing toast. In real Chrome that race was lost
+    // reliably; the earlier version of this test read the poll-and-clear API
+    // directly and reported "watchdog never tripped" while it had in fact
+    // tripped, disabled Art mode, and toasted. This recorder makes the
+    // assertion independent of which consumer gets there first.
+    await installWatchdogTripRecorder(page);
 
     // Inject ONE deterministic catastrophic frame — a controlled stand-in
     // for the real (environment-dependent, not reliably reproducible on
@@ -173,46 +285,89 @@ test.describe('Art mode performance/resource-safety harness', () => {
     // Armed specifically on the exact call shape Art mode's own tint pass
     // uses (`globalCompositeOperation === 'source-in'` on `#world-canvas`)
     // rather than "the very next `fillRect` call anywhere" — the app's own
-    // ambient render loop (camera/HUD-driven redraws, unrelated to this
-    // test) can and does call `fillRect` for other reasons between this
-    // `page.evaluate` and the explicit `draw()` call below, which armed on
-    // "next call ever" would consume without ever reaching Art mode's code.
-    await page.evaluate(() => {
-      const proto = CanvasRenderingContext2D.prototype;
-      const original = proto.fillRect;
-      let armed = true;
-      proto.fillRect = function fillRectSpy(this: CanvasRenderingContext2D, ...args: Parameters<typeof original>) {
-        if (armed && this.globalCompositeOperation === 'source-in' && (this.canvas as HTMLCanvasElement | undefined)?.id === 'world-canvas') {
-          armed = false;
-          const until = performance.now() + 400; // exceeds ART_FRAME_HARD_CEILING_MS (250ms)
-          while (performance.now() < until) { /* deterministic busy-wait stand-in for a real stall */ }
-        }
-        return original.apply(this, args);
-      };
-    });
+    // ambient render loop can and does call `fillRect` for other reasons,
+    // which armed on "next call ever" would consume without ever reaching
+    // Art mode's code.
+    await armArtFrameStall(page, 400); // exceeds ART_FRAME_HARD_CEILING_MS (250ms)
 
     await setArtConfig(page, realisticArtConfig());
+    await draw(page); // whichever of this or the ambient loop's draw ran first paid the stall
 
-    const t0 = Date.now();
-    await draw(page);
-    const firstDrawMs = Date.now() - t0;
-    expect(firstDrawMs).toBeGreaterThanOrEqual(390); // confirms the injected stall actually happened this frame
-
-    const reason = await consumeWatchdogTrip(page);
-    expect(reason, 'watchdog should have tripped and reported why').not.toBeNull();
-    expect(reason).toMatch(/frame took|averaged/);
+    // The stall genuinely happened inside an art-active frame the watchdog
+    // measured — read the renderer's own measurement, not wall-clock around
+    // an `evaluate` round-trip that could just be queued behind the stall.
+    await expect.poll(() => recordedWatchdogTrips(page), {
+      message: 'watchdog should have tripped and reported why',
+      timeout: 5_000,
+    }).toHaveLength(1);
+    const trips = await recordedWatchdogTrips(page);
+    expect(trips[0]).toMatch(/a single Art-mode frame took (?:[4-9]\d\d|\d{4,})ms \(ceiling 250ms\)/); // >= the 400ms injected, whatever the draw itself cost on top
 
     // The renderer force-disabled Art mode on itself the instant it
     // detected the stall — every SUBSEQUENT draw must be cheap, proving
     // this is a one-frame cost ceiling, not a repeating one.
     for (let i = 0; i < 10; i++) {
-      const dt0 = Date.now();
-      await draw(page);
-      const dt = Date.now() - dt0;
+      const dt = await draw(page);
       expect(dt, `frame ${i} after the watchdog tripped should be cheap`).toBeLessThan(100);
     }
     expect(await consumeWatchdogTrip(page)).toBeNull(); // nothing new tripped — it isn't re-triggering itself
+    expect(await recordedWatchdogTrips(page)).toHaveLength(1);
 
+    // The user is told, honestly, via `artMount.ts`'s poller -> toast — the
+    // full pipeline, not just the renderer-side flag.
+    await expect(page.getByText(/Art mode turned itself off/).first()).toBeVisible({ timeout: 5_000 });
+
+    expect(errors, `console errors: ${errors.join('\n')}`).toEqual([]);
+  });
+
+  test('the one-shot warm-up grace is not a hole: a bounded first frame is forgiven once, an egregious one still trips, and the very next slow frame trips normally', async ({ page }) => {
+    test.setTimeout(45_000);
+    const errors = collectConsoleErrors(page);
+    await bootTo(page);
+    await seedDenseArea(page, 40, 40, 20, 20);
+    await setCamera(page, { x: 50, y: 50, scale: 16 });
+    await installWatchdogTripRecorder(page);
+    await installDrawTimeRecorder(page);
+
+    // 1) Grace armed (exactly what `artMount.ts`'s `enableWithWarmup` does
+    //    after `warmUpArt()` resolves) + a stall over the normal 250ms
+    //    ceiling but under `ART_WARMUP_GRACE_CEILING_MS` (2000ms): forgiven,
+    //    Art mode stays on. This is the intended, documented exemption.
+    await armArtFrameStall(page, 400);
+    await setArtConfig(page, realisticArtConfig(), { warmupGrace: true });
+    await draw(page);
+    await page.waitForTimeout(300); // give `pollWatchdog` (rAF) every chance to consume a trip if one happened
+    expect(await recordedWatchdogTrips(page), 'a bounded warm-up frame must be graced exactly once').toEqual([]);
+    // The stall really was paid inside an art-active frame (whichever of
+    // the ambient loop's draw or ours ran first) ...
+    expect(Math.max(...(await recordedDrawTimes(page)))).toBeGreaterThanOrEqual(390);
+    // ... and that graced frame was kept OUT of the sustained-average window
+    // (later cheap frames may have been pushed since — only the stalled one
+    // must be absent).
+    expect((await getDebugStats(page)).artFrameMsWindow.filter((ms) => ms >= 250), 'the graced frame must not poison the sustained-average window').toEqual([]);
+
+    // 2) The grace is ONE-SHOT: the very next frame over the ceiling trips
+    //    normally, with the normal reason.
+    await armArtFrameStall(page, 400);
+    await draw(page);
+    await expect.poll(() => recordedWatchdogTrips(page), { timeout: 5_000 }).toHaveLength(1);
+    expect((await recordedWatchdogTrips(page))[0]).toMatch(/a single Art-mode frame took \d+ms \(ceiling 250ms\)/);
+
+    // 3) The grace has a hard absolute bail: with grace freshly armed again,
+    //    a genuinely egregious frame (beyond ART_WARMUP_GRACE_CEILING_MS)
+    //    trips the watchdog anyway — a real multi-second hang during warm-up
+    //    cannot hide behind the grace.
+    await armArtFrameStall(page, 2_200);
+    await setArtConfig(page, realisticArtConfig(), { warmupGrace: true });
+    await draw(page);
+    await expect.poll(() => recordedWatchdogTrips(page), { timeout: 8_000 }).toHaveLength(2);
+    expect((await recordedWatchdogTrips(page))[1]).toMatch(/warm-up frame itself took 2\d{3}ms, beyond even the warm-up grace ceiling \(2000ms\)/);
+
+    // And it stays off — subsequent frames are cheap.
+    for (let i = 0; i < 5; i++) {
+      expect(await draw(page), `frame ${i} after the grace-ceiling trip should be cheap`).toBeLessThan(100);
+    }
+    expect(await recordedWatchdogTrips(page)).toHaveLength(2);
     expect(errors, `console errors: ${errors.join('\n')}`).toEqual([]);
   });
 
@@ -312,26 +467,17 @@ test.describe('Art mode performance/resource-safety harness', () => {
     await setCamera(page, { x: 60, y: 50, scale: 16 });
     await draw(page);
 
-    const before = await page.evaluate(() => {
-      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
-      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
-    });
+    const before = await canvasDigest(page);
 
     await setArtConfig(page, realisticArtConfig());
     await draw(page);
-    const during = await page.evaluate(() => {
-      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
-      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
-    });
-    expect(during).not.toEqual(before);
+    const during = await canvasDigest(page);
+    expect(during).not.toBe(before);
 
     await setArtConfig(page, null);
     await draw(page);
-    const after = await page.evaluate(() => {
-      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
-      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
-    });
-    expect(after).toEqual(before);
+    const after = await canvasDigest(page);
+    expect(after).toBe(before);
 
     expect(errors, `console errors: ${errors.join('\n')}`).toEqual([]);
   });
@@ -361,7 +507,6 @@ test.describe('Art mode performance/resource-safety harness', () => {
  * the exact integration containment used to keep unreachable.
  */
 test.describe('Art mode performance/resource-safety harness (real Chrome, full integration)', () => {
-  test.use({ channel: 'chrome' });
 
   test('classic ASCII preset survives 30 zoom steps + 10 pans in real Chrome: bounded post-warm-up frames, stable heap, Art mode stays enabled, canvas visibly changes', async ({ page }) => {
     test.setTimeout(60_000);
@@ -371,10 +516,7 @@ test.describe('Art mode performance/resource-safety harness (real Chrome, full i
     await setCamera(page, { x: 65, y: 55, scale: 16 }); // already above the legibility floor
     await draw(page);
 
-    const before = await page.evaluate(() => {
-      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
-      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
-    });
+    const before = await canvasDigest(page);
 
     // Instrument the REAL `draw()` the app's own render loop calls (an
     // own-property override shadows the prototype method for this instance,
@@ -402,11 +544,8 @@ test.describe('Art mode performance/resource-safety harness (real Chrome, full i
     // real wall-clock room to fully settle before measuring steady state.
     await page.waitForTimeout(3_000);
 
-    const duringEnabled = await page.evaluate(() => {
-      const c = document.getElementById('world-canvas') as HTMLCanvasElement;
-      return Array.from(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data);
-    });
-    expect(duringEnabled, 'canvas must visibly differ once Art mode is on').not.toEqual(before);
+    const duringEnabled = await canvasDigest(page);
+    expect(duringEnabled, 'canvas must visibly differ once Art mode is on').not.toBe(before);
 
     // Everything measured from here on is STEADY-STATE — after the one
     // known, explicitly graced warm-up-adjacent frame (see

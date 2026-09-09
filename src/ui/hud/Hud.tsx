@@ -262,6 +262,28 @@ export function Hud() {
     );
   }
 
+  // BUG (found by a browser-driven reachability audit at 1024x700): this row
+  // used to switch from the compact "single 'More controls' button + sheet"
+  // layout to the full, every-icon-inline desktop row at `lg` (1024px) — but
+  // the full row's own real, measured content width is ~1433px (drawer
+  // toggle through the trailing `MoreToolsMenu` trigger, at the current
+  // control count). Any viewport from 1024px up to just under ~1433px
+  // therefore got the full row AND its overflow (this container is
+  // `overflow-x-auto` with no visible scrollbar), with NO "More controls"
+  // button to fall back on — the mobile-only escape hatch had already
+  // switched off at the same breakpoint that caused the overflow. 13 of the
+  // row's controls sat past the right edge, reachable only by discovering an
+  // invisible horizontal scroll. This is the third time this exact row has
+  // shipped an unreachable-control regression this way (once pushed off at
+  // 1440 entirely, once the lens strip itself clipped 4 of 8 options) — so
+  // rather than re-tuning one more breakpoint to today's control count (which
+  // is exactly how it regressed the first two times), every `lg:`
+  // compact/full toggle below moved to `2xl` (1536px): a full ~100px of
+  // headroom over the real measured minimum, wide enough to absorb a few more
+  // controls before this needs revisiting, and — critically — the SAME
+  // breakpoint used everywhere in this file, so "compact" and "full" can
+  // never desync into an in-between state with neither the sheet nor a
+  // fitting row. See `e2e/hud-desktop.spec.ts`'s 1024x700/1280x800 coverage.
   return (
     <div className="flex h-full items-center gap-1.5 overflow-x-auto px-2 pt-[env(safe-area-inset-top)] sm:gap-3 sm:px-3">
       {liveRegion}
@@ -321,27 +343,17 @@ export function Hud() {
         >
           {playing ? '● running' : '❚❚ paused'}
         </span>
-        {/* Shown only in the 640-1023px tablet band (`sm:inline`), and
-            explicitly hidden again from `lg` (1024px) up (`lg:hidden`), NOT
-            left to show all the way to arbitrarily wide desktops: measuring
-            the real, un-eyeballed content width of the full `lg` row —
-            drawer toggle, transport, gen/pop, speed, the lens control,
-            Time Sculpture, every right-panel tab, mute/presentation/
-            cinematic/about/logbook/shortcuts — comes to ~1493px, already
-            past a 1440px viewport with zero slack. This ~116px decorative,
-            self-dismissing (`everToggled`) hint was exactly the difference
-            between "Keyboard shortcuts" landing on-screen and landing
-            41px past the right edge with no visible affordance — the same
-            "control exists but isn't reachable" bug this whole fix targets,
-            just caused by a different control than the lens picker. It's a
-            pure onboarding nicety with a full keyboard-accessible synonym
-            (the Space-to-pause hint already lives in the Play/Pause
-            button's own tooltip), so losing it exactly where the dense
-            desktop row has no spare width to give is the right trade, not a
-            regression — see `e2e/hud-desktop.spec.ts` for the width
-            assertion this satisfies. */}
+        {/* Shown from the 640px tablet band up (`sm:inline`), and hidden
+            again once the full desktop row appears (`min-[1440px]:hidden` — see the
+            "BUG" note above this component's `return` for why that's
+            `2xl`/1536px, not `lg`/1024px): this decorative, self-dismissing
+            (`everToggled`) hint is exactly the kind of thing that's fine to
+            drop once the row has genuinely no spare width, but a real
+            control (the lens picker, "Keyboard shortcuts", ...) silently
+            unreachable between 1024px and 1536px is the bug this pass fixed
+            — see `e2e/hud-desktop.spec.ts`. */}
         {!everToggled && (
-          <span className="hidden text-micro italic text-ivory-300 sm:inline lg:hidden">— pause time anytime</span>
+          <span className="hidden text-micro italic text-ivory-300 sm:inline min-[1440px]:hidden">— pause time anytime</span>
         )}
       </div>
 
@@ -361,14 +373,15 @@ export function Hud() {
 
       {/* The active simulation rule (`RulesPanel.tsx`'s own doc — switching
           rules is a fresh-world operation, and every curated scene/specimen
-          forces Conway back). `lg`-only, like speed/lens below: at the row's
-          already-measured zero-slack width (see further down) this is the
-          least essential of the three readouts for a narrower desktop/tablet
-          window, and the mobile "More" sheet has no width constraint to
-          begin with (it doesn't show this readout at all — a returning user
-          on a phone can still see the active rule inside the Rules panel
-          itself, which the sheet's "Panels" section reaches). */}
-      <div className="hidden shrink-0 lg:block">
+          forces Conway back). `2xl`-only, like speed/lens below: at the
+          row's already-measured near-zero-slack width (see the "BUG" note
+          above this component's `return`) this is the least essential of
+          the three readouts for a narrower desktop/tablet window, and the
+          mobile "More" sheet has no width constraint to begin with (it
+          doesn't show this readout at all — a returning user on a phone can
+          still see the active rule inside the Rules panel itself, which the
+          sheet's "Panels" section reaches). */}
+      <div className="hidden shrink-0 min-[1440px]:block">
         <Readout
           label="rule"
           value={<span ref={ruleRef} data-testid="hud-rule">{CONWAY_RULE_STRING}</span>}
@@ -377,14 +390,16 @@ export function Hud() {
       </div>
 
       {/* Speed AND lens both move to the mobile HUD's "More" sheet
-          (`HudMoreSheet`) below `lg` — see that file's doc comment for why:
-          this row simply has no room for either below roughly 1024px, and
-          the old `md:flex`/`lg:flex` split still overflowed at in-between
-          widths (a small tablet got speed but not lens, and BOTH still
-          overflowed the row before either kicked in — see
-          INTEGRATION-NOTES.md). One breakpoint, one home for each control. */}
-      <Divider orientation="vertical" className="hidden h-6 lg:block" />
-      <div className="hidden shrink-0 items-center gap-2 lg:flex">
+          (`HudMoreSheet`) below `2xl` — see that file's doc comment for why:
+          this row simply has no room for either below the row's real
+          measured minimum (~1433px — see the "BUG" note above this
+          component's `return`), and the old `md:flex`/`lg:flex` split
+          overflowed at in-between widths (a small tablet got speed but not
+          lens, and BOTH still overflowed the row before either kicked in —
+          see INTEGRATION-NOTES.md). One breakpoint, one home for each
+          control. */}
+      <Divider orientation="vertical" className="hidden h-6 min-[1440px]:block" />
+      <div className="hidden shrink-0 items-center gap-2 min-[1440px]:flex">
         <span className="text-micro uppercase tracking-[0.18em] text-ivory-300">speed</span>
         <Toggle
           aria-label="Playback speed"
@@ -394,8 +409,8 @@ export function Hud() {
         />
       </div>
 
-      <Divider orientation="vertical" className="hidden h-6 lg:block" />
-      <div className="hidden shrink-0 lg:flex">
+      <Divider orientation="vertical" className="hidden h-6 min-[1440px]:block" />
+      <div className="hidden shrink-0 min-[1440px]:flex">
         {/* A `Menu` (Radix DropdownMenu), not a `Toggle` group: at 8 options
             a `Toggle` is ~560px wide with every lens's legend inline —
             wider than fits on a 1440px viewport alongside the rest of the
@@ -458,22 +473,24 @@ export function Hud() {
 
       <div className="flex-1" />
 
-      {/* Mobile/tablet (<lg): a single "More" button opens `HudMoreSheet`
-          with lens, speed, the Time Sculpture entry, every right-panel tab,
-          mute, presentation mode, and about/shortcuts — the full desktop
-          icon row below never renders at these widths (it measured ~993px
-          of unhidden content against a 390px viewport before this fix,
-          which meant everything from Time Sculpture onward was reachable
-          only by discovering an unlabelled horizontal scroll on the HUD
-          strip; lens and speed were flatly unreachable, hidden by
-          `lg:flex`/`md:flex` with no substitute anywhere). */}
-      <div className="lg:hidden">
+      {/* Below `2xl` (phone through a 1440-1535px laptop alike): a single
+          "More" button opens `HudMoreSheet` with lens, speed, the Time
+          Sculpture entry, every right-panel tab, mute, presentation mode,
+          and about/shortcuts — the full desktop icon row below never
+          renders at these widths. Originally this was `lg` (1024px): on a
+          390px phone that measured ~993px of unhidden content against the
+          viewport, which meant everything from Time Sculpture onward was
+          reachable only by discovering an unlabelled horizontal scroll, and
+          lens/speed were flatly unreachable. Widening the same fix to `2xl`
+          is what closed the LATER, separate gap at 1024-1535px — see the
+          "BUG" note above this component's `return`. */}
+      <div className="min-[1440px]:hidden">
         <Tooltip content="More controls">
           <IconButton label="More controls" icon={<MoreIcon />} pressed={false} onClick={() => setMoreOpen(true)} />
         </Tooltip>
       </div>
 
-      <div className="hidden shrink-0 items-center gap-1 lg:flex">
+      <div className="hidden shrink-0 items-center gap-1 min-[1440px]:flex">
         <Tooltip content={sculptureOpen ? 'Return to the living plane' : selection ? 'Open the Time Sculpture for this selection' : 'Select a region on the world to sculpt its history'}>
           <IconButton
             label={sculptureOpen ? 'Close time sculpture' : 'Open time sculpture'}

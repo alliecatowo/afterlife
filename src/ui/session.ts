@@ -43,6 +43,53 @@ export const WORLD_SPEC: WorldSpec = OPENING_SCENE.world;
 
 const AUDIO_PREF_KEY = `${STORAGE_PREFIX}audio`;
 
+// ---- persisted active rule (survives a reload, same convention as the audio
+// preference above and theme/art config) --------------------------------
+// The active rule is documented as part of world identity (the multiplayer
+// room spec and the save format both carry it alongside the cells), so
+// theme/art persisting across a reload while the rule silently reverted to
+// Conway was a real inconsistency, not a missing nice-to-have. Persisted
+// as a bare rulestring (not wrapped in JSON) — simpler than the audio
+// preference's `{muted, volume}` shape since there's only ever one value.
+//
+// FRESH-WORLD SEMANTICS ON RESTORE (the reason this isn't just "call
+// `setRule()` after the normal boot"): a keyframe/recorded edit is only ever
+// valid under the rule it was produced under (see `LifeEngine.setRule`'s
+// doc and `Session.setRule`'s doc). The normal boot path
+// (`loadScene(OPENING_SCENE)`) unconditionally records the curated tableau
+// under Conway — so restoring a persisted non-Conway rule can NEVER be "load
+// the opening scene, then flip the rule", which would leave Conway-recorded
+// history (the tableau's cells, keyframed at gen 0 under B3/S23) sitting
+// under a rule that never produced it. Instead, when a persisted rule
+// differs from Conway, boot skips `loadScene()` entirely and calls
+// `session.setRule()` directly on the untouched, freshly-constructed
+// (already-empty, gen-0, no-history-yet) engine/history pair below — the
+// exact same fresh-world reset an explicit mid-session rule change performs,
+// just run before anything Conway-specific ever gets recorded. The result is
+// a blank world under the restored rule, precisely what a user who leaves
+// AFTERLIFE on a custom rule and reloads should see: the SAME world identity
+// they left, never a Conway tableau wearing a different rule's label.
+const RULE_PREF_KEY = `${STORAGE_PREFIX}rule`;
+
+function loadPersistedRule(): string | null {
+  try {
+    const raw = window.localStorage.getItem(RULE_PREF_KEY);
+    if (!raw) return null;
+    parseRule(raw); // validate — never restore a corrupt/hand-edited value
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function persistRule(rule: string): void {
+  try {
+    window.localStorage.setItem(RULE_PREF_KEY, rule);
+  } catch {
+    // Best-effort only, same discipline as `persistAudioPref` below.
+  }
+}
+
 export interface Session {
   engine: LifeEngine;
   history: TimelineStore;
@@ -247,7 +294,35 @@ export function initSession(): Session {
     }
   }
   useAppStore.subscribe((state, prev) => {
-    if (state.compareWith !== prev.compareWith) void refreshCompare(true);
+    if (state.compareWith === prev.compareWith) return;
+    if (state.compareWith) {
+      // BUG (found by a browser-driven reachability audit): `#compare-canvas`
+      // is `display:none` (0x0) until React commits the class change this
+      // same store update triggers, and the dedicated `ResizeObserver` above
+      // only resizes the canvas once the browser actually delivers that
+      // notification — real, but not synchronized with anything else in this
+      // file. If `compareEngine` (below) happens to resolve and this
+      // session's `frame()` loop paints the very first frame BEFORE that
+      // notification lands, that frame draws onto a canvas still sized from
+      // while it was hidden (`resize()`'s own `Math.max(1, ...)` floor, i.e.
+      // a 1x1 backing store) — a real, if brief (well under one frame in
+      // practice, but observed to occasionally miss the deadline: a slow
+      // paint, a busy main thread, or a browser that batches the observer
+      // callback a frame later than usual), empty-canvas render a snapshot
+      // taken right then would see as "nothing drawn". `frame()`'s dirty-flag
+      // bookkeeping means it self-heals on the NEXT frame once the observer
+      // does fire — but there's no reason to leave that first frame to
+      // chance. Force a resize ourselves, one rAF after the state change (by
+      // which point React's commit — and the resulting layout — has already
+      // happened), as a second, deterministic path to the same call that
+      // doesn't depend on guessing the browser's own scheduling of the
+      // observer notification. `resize()` is idempotent and cheap (a
+      // `getBoundingClientRect()` plus, at most, setting two canvas
+      // attributes), so a redundant call racing (or losing to) the real
+      // ResizeObserver notification costs nothing.
+      requestAnimationFrame(() => compareRenderer.resize());
+    }
+    void refreshCompare(true);
   });
   bus.on('gen:changed', () => { if (readState().compareWith) void refreshCompare(); });
   bus.on('branch:switched', () => { if (readState().compareWith) void refreshCompare(true); });
@@ -603,6 +678,7 @@ export function initSession(): Session {
     // synchronous, bits-untouched mutation (see its doc), safe to call right
     // before the `clear()`/`reset()` below which start the world fresh anyway.
     engine.setRule(CONWAY_RULE_STRING);
+    persistRule(CONWAY_RULE_STRING);
     engine.clear();
     history.reset();
     if (scene.cells.length > 0) {
@@ -662,6 +738,7 @@ export function initSession(): Session {
       // change the rule, THEN clear/reset — never the other way round, so
       // there is never a moment where old-rule bits exist under the new rule.
       engine.setRule(canonical);
+      persistRule(canonical);
       engine.clear();
       history.reset();
       currentScene = null;
@@ -712,9 +789,11 @@ export function initSession(): Session {
       // this stays defensive against a hand-edited file).
       try {
         engine.setRule(doc.rule ?? CONWAY_RULE_STRING);
+        persistRule(doc.rule ?? CONWAY_RULE_STRING);
       } catch {
         bus.emit('toast', { message: `That save names an unsupported rule ("${doc.rule}") — opening as Conway's Life instead.`, tone: 'warn' });
         engine.setRule(CONWAY_RULE_STRING);
+        persistRule(CONWAY_RULE_STRING);
       }
       engine.clear();
       history.reset();
@@ -745,12 +824,31 @@ export function initSession(): Session {
     },
   };
 
-  loadScene(OPENING_SCENE);
+  // BUG (rule identity didn't survive a reload): theme and art config both
+  // persist correctly, but the active rule previously didn't — this always
+  // ran `loadScene(OPENING_SCENE)` regardless, silently reverting a
+  // restored session back to Conway. See the doc above `RULE_PREF_KEY` for
+  // why restoring a persisted non-Conway rule can never go through
+  // `loadScene()` (which always records the tableau under Conway): it must
+  // instead call `setRule()` directly, on `engine`/`history` exactly as
+  // freshly constructed above (empty, gen 0, nothing yet recorded), so the
+  // restored world is coherent under its own rule from the very first
+  // generation rather than a rule stapled onto Conway-recorded history.
+  const persistedRule = loadPersistedRule();
+  if (persistedRule && persistedRule !== CONWAY_RULE_STRING) {
+    session.setRule(persistedRule);
+  } else {
+    loadScene(OPENING_SCENE);
+  }
   // The opening tableau is a live observatory, not a paused diagram — it is
   // already running by the time the title plate fades (see the HUD's "pause
   // time anytime" invitation, and DESIGN's "playable observatory" framing).
   // The verified encounter at generation 123 is reached ~10s after boot at
   // the default 12 gens/sec exactly because this starts moving immediately.
+  // A restored non-Conway rule has no curated tableau to run (the world is
+  // genuinely empty, per the fresh-world reset above) — autoplaying it is
+  // still harmless (stepping an empty grid is a no-op) and keeps this single
+  // code path exactly as simple for both cases.
   bus.emit('playback:play', undefined);
 
   // Dev/test-only introspection hook — never referenced by production code,
