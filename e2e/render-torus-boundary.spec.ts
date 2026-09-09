@@ -132,23 +132,33 @@ test.describe('torus boundary overlay: real pixels, not internal maths', () => {
 
     // World centre (128.5, 80.5) makes `computeVisibleWorldRect` clamp the
     // drawn tile to EXACTLY [0,256] x [0,160] (see the module's own doc on
-    // rounding) — a deterministic, known placement to compare pixels
-    // against. The other two cases pan by large, deliberately non-round
-    // multiples of the world size in BOTH directions (the "long drag" the
-    // user described) — on a torus, the rendered content (and therefore
-    // this overlay) must look byte-identical regardless of how far the
-        // camera has wandered, since `wrap()` makes every multiple-of-period
-    // offset equivalent.
+    // rounding: `floor(128.5 - 128) = 0` exactly) — a deterministic, known
+    // placement to compare pixels against. The other two cases pan by
+    // large, deliberately non-round multiples of the world size in BOTH
+    // directions (the "long drag" the user described) — camera.x = 128.5 +
+    // N*width keeps that same exact-alignment property (`floor(128.5 + N*w
+    // - w/2) === N*w`), just centred on tile copy N instead of copy 0. On a
+    // torus the rendered content (and therefore this overlay) must look
+    // IDENTICAL up to that shift regardless of how far the camera has
+    // wandered, since `wrap()` makes every multiple-of-period offset
+    // equivalent — `originX`/`originY` below is what "identical" actually
+    // means in on-screen terms for each pan.
     const cameras = [
-      { x: 128.5, y: 80.5, scale: 3 },
-      { x: 128.5 + 7 * WORLD.width, y: 80.5 - 4 * WORLD.height, scale: 3 },
-      { x: 128.5 - 11 * WORLD.width, y: 80.5 + 9 * WORLD.height, scale: 3 },
+      { x: 128.5, y: 80.5, scale: 3, originX: 0, originY: 0 },
+      {
+        x: 128.5 + 7 * WORLD.width, y: 80.5 - 4 * WORLD.height, scale: 3,
+        originX: 7 * WORLD.width, originY: -4 * WORLD.height,
+      },
+      {
+        x: 128.5 - 11 * WORLD.width, y: 80.5 + 9 * WORLD.height, scale: 3,
+        originX: -11 * WORLD.width, originY: 9 * WORLD.height,
+      },
     ];
 
     for (const cam of cameras) {
-      await setCamera(page, cam);
-      const tl = await worldToScreenNow(page, 0, 0);
-      const br = await worldToScreenNow(page, WORLD.width, WORLD.height);
+      await setCamera(page, { x: cam.x, y: cam.y, scale: cam.scale });
+      const tl = await worldToScreenNow(page, cam.originX, cam.originY);
+      const br = await worldToScreenNow(page, cam.originX + WORLD.width, cam.originY + WORLD.height);
       const expected = {
         x0: tl.x * dpr, y0: tl.y * dpr, x1: br.x * dpr, y1: br.y * dpr,
       };
