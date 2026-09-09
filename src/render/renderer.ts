@@ -286,42 +286,60 @@ export function projectWorldToScreen(
 }
 
 /**
- * Pure: which copy of the repeating torus the boundary overlay should be
- * drawn around, given the camera's CONTINUOUS (never-wrapped) position. No
- * canvas needed — testable in isolation.
+ * Pure: the world-space x/y coordinates, if any, where the currently-drawn
+ * content actually wraps — i.e. where `wrap()` makes the rendered column/row
+ * jump discontinuously from `spec.width - 1`/`spec.height - 1` back to `0`.
+ * No canvas needed — testable in isolation.
  *
- * BUG (found via user report — "the yellow square... quit matching up as you
- * pan, like half down the middle"): `#drawTorusBoundary` used to stroke a
- * rect fixed at the literal world coordinates `[0, spec.width] x
- * [0, spec.height]` — as if that were the one true edge — while the cell
- * renderers (`#drawZoomedIn`/`#drawZoomedOut`) sample content via `wrap(x,
- * spec.width)` and let the SCREEN position scroll continuously with
- * `camera.x`/`camera.y` (a torus has no single canonical position; it
- * repeats every `spec.width`/`spec.height` cells). The two agreed only while
- * the camera stayed within roughly half a world-size of the origin; pan
- * further and the fixed rect either scrolled off-screen or — worse — ended
- * up stroked across the middle of the currently visible (seamlessly
- * wrapped, edge-less) content, since it no longer corresponded to any real
- * feature of what was on screen.
+ * TWO PRIOR ATTEMPTS at a "torus boundary" overlay both failed the same way:
+ * they recomputed the box's position from `camera` independently of what the
+ * cell paths (`#drawZoomedIn`/`#drawZoomedOut`/`#drawGlyphs`) actually drew,
+ * so the two could — and, per real user reports, DID — disagree after
+ * panning. The first version stroked a rect fixed at literal world coords
+ * `[0, spec.width] x [0, spec.height]`. The second (`torusBoundaryOrigin`,
+ * since removed) picked whichever period-copy of the grid the camera was
+ * nearest to, by rounding `camera.x`/`camera.y` — an improvement, but still
+ * an independent, parallel derivation of "where is the world," guessed from
+ * the camera rather than read from the actual draw.
  *
- * The fix: pick whichever period-copy of the grid the camera is CURRENTLY
- * closest to (rounding, not flooring, so the overlay is never more than
- * half a world-size away from the camera on either axis — it cannot drift
- * arbitrarily far no matter how long you keep panning in one direction),
- * then draw that copy's edges with the exact same `worldToScreen` transform
- * every other overlay uses. This can never diverge from the rendered world
- * by construction: it is derived from the same `camera.x`/`camera.y` the
- * cell path reads on the very same `draw()` call, not a separately-tracked
- * position of its own.
+ * The world is NEVER tiled/repeated on screen — `computeVisibleWorldRect`
+ * always caps the drawn rect to at most one period per axis, so exactly one
+ * `ImageData`/coverage-buffer blit is drawn per frame, at exactly the world
+ * rect `{x, y, w, h}` every cell path already computes once in `draw()`.
+ * That rect, screen-projected, is therefore BY DEFINITION where every live
+ * cell in view actually is — there is nothing left to guess. The only
+ * genuine "boundary" fact left to show is: does the rendered rect's own
+ * span cross a multiple of `spec.width`/`spec.height`? If so, the column/row
+ * just past that world coordinate is `wrap()`-sampled back to `0`, i.e. a
+ * real seam is visible inside the drawn content right now. If the rect
+ * doesn't span a full period (typical zoomed-in case), there's at most one
+ * such seam per axis (never a whole rect's worth) — sometimes none at all,
+ * which is the honest answer when no wrap edge is currently on screen.
+ *
+ * This is why the overlay draws SEAM LINES, not a rectangle: a "bounding
+ * box" implies the world has one canonical position, which a torus doesn't
+ * — only where consecutive on-screen content stops being spatially
+ * contiguous is a real, drawable fact, and that fact comes directly from the
+ * same `rect` the pixels were placed from, not a second calculation.
  */
-export function torusBoundaryOrigin(
-  camera: { x: number; y: number },
+export function computeTorusSeams(
+  rect: Readonly<Rect>,
   spec: { width: number; height: number },
-): { x: number; y: number } {
-  return {
-    x: Math.round(camera.x / spec.width) * spec.width,
-    y: Math.round(camera.y / spec.height) * spec.height,
-  };
+): { xs: number[]; ys: number[] } {
+  const xs: number[] = [];
+  const kStart = Math.ceil(rect.x / spec.width);
+  const kEnd = Math.floor((rect.x + rect.w) / spec.width);
+  // `+ 0` normalises a `-0` result (e.g. `Math.ceil(-0.3) === -0`) to `0` —
+  // mathematically identical, but `-0` reads oddly in a seam-position list
+  // and trips exact-equality assertions that (rightly) distinguish it.
+  for (let k = kStart; k <= kEnd; k++) xs.push(k * spec.width + 0);
+
+  const ys: number[] = [];
+  const jStart = Math.ceil(rect.y / spec.height);
+  const jEnd = Math.floor((rect.y + rect.h) / spec.height);
+  for (let j = jStart; j <= jEnd; j++) ys.push(j * spec.height + 0);
+
+  return { xs, ys };
 }
 
 interface GhostState {
@@ -644,7 +662,7 @@ class WorldRendererImpl implements WorldRenderer {
       this.#drawGrid(rect);
     }
 
-    this.#drawTorusBoundary(spec);
+    this.#drawTorusBoundary(rect, spec);
 
     const diff = overlays && 'diff' in overlays
       ? overlays.diff
@@ -1354,32 +1372,46 @@ class WorldRendererImpl implements WorldRenderer {
     ctx.restore();
   }
 
-  #drawTorusBoundary(spec: { width: number; height: number }): void {
+  /**
+   * Draws a dashed hairline at every world x/y where the content actually
+   * drawn THIS FRAME (`rect` — the exact same value `#drawZoomedIn`/
+   * `#drawZoomedOut`/`#drawGlyphs` just blitted from) wraps. See
+   * `computeTorusSeams`'s doc for why this is seam lines rather than a
+   * bounding rect, and why deriving from `rect` (not `camera` again) is what
+   * makes this impossible to desync from the rendered cells. Draws nothing
+   * at all when no seam is currently on screen — the honest answer, rather
+   * than a stale or guessed box sitting somewhere unrelated to the world.
+   */
+  #drawTorusBoundary(rect: Rect, spec: { width: number; height: number }): void {
+    const { xs, ys } = computeTorusSeams(rect, spec);
+    if (xs.length === 0 && ys.length === 0) return;
+
     const ctx = this.#ctx!;
     const dpr = this.#dpr;
-    // See `torusBoundaryOrigin`'s doc: always the period-copy of the grid
-    // nearest the camera RIGHT NOW, computed from the exact same
-    // `camera.x`/`camera.y` the cell path reads this same `draw()` call —
-    // this is what keeps it from ever drifting out of sync while panning.
-    const origin = torusBoundaryOrigin(this.#camera, spec);
-    const tl = this.worldToScreen(origin.x, origin.y);
-    const br = this.worldToScreen(origin.x + spec.width, origin.y + spec.height);
     ctx.save();
     // A neutral hairline (`--color-line-strong`, "the active edge" per
     // DESIGN.md §1's own table), not `--color-accent-warn` — wrapping is
     // geography, not something destructive or attention-needing, which is
-    // that token's one fixed meaning. The mispositioning above was the real,
-    // reported bug; this is a one-line semantic correction alongside it, not
-    // a restyle.
+    // that token's one fixed meaning.
     ctx.strokeStyle = withAlpha(this.#tokLineStrong, 0.55);
     ctx.lineWidth = 1;
     ctx.setLineDash([4 * dpr, 4 * dpr]);
-    ctx.strokeRect(
-      Math.round(tl.x * dpr) + 0.5,
-      Math.round(tl.y * dpr) + 0.5,
-      Math.round((br.x - tl.x) * dpr),
-      Math.round((br.y - tl.y) * dpr),
-    );
+    ctx.beginPath();
+    for (const x of xs) {
+      const p0 = this.worldToScreen(x, rect.y);
+      const p1 = this.worldToScreen(x, rect.y + rect.h);
+      const sx = Math.round(p0.x * dpr) + 0.5;
+      ctx.moveTo(sx, Math.round(p0.y * dpr));
+      ctx.lineTo(sx, Math.round(p1.y * dpr));
+    }
+    for (const y of ys) {
+      const p0 = this.worldToScreen(rect.x, y);
+      const p1 = this.worldToScreen(rect.x + rect.w, y);
+      const sy = Math.round(p0.y * dpr) + 0.5;
+      ctx.moveTo(Math.round(p0.x * dpr), sy);
+      ctx.lineTo(Math.round(p1.x * dpr), sy);
+    }
+    ctx.stroke();
     ctx.restore();
   }
 

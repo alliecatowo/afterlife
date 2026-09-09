@@ -26,8 +26,9 @@ test.describe('screenshots', () => {
     await dismissTitle(page);
     await waitForGen(page, OPENING_VERIFIED.encounterGen, 25_000);
     await ensurePaused(page);
-    // Frame the encounter tightly for the screenshot — the live beat itself
-    // deliberately only eases position, never zoom (never a cutscene).
+    // Frame the encounter tightly for the screenshot — scene beats deliberately
+    // never move the camera during ordinary play (see `session.ts`'s
+    // `checkBeats` doc), so this test frames it manually instead.
     await page.evaluate((bbox) => {
       (window as unknown as { __AFTERLIFE__: { camera: { fit(r: typeof bbox, pad?: number): void } } }).__AFTERLIFE__.camera.fit(bbox, 60);
     }, OPENING_VERIFIED.encounterBbox);

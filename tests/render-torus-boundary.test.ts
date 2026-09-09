@@ -1,117 +1,121 @@
 import { describe, expect, it } from 'vitest';
-import { projectWorldToScreen, torusBoundaryOrigin } from '@/render/renderer';
+import {
+  computeTorusSeams, computeVisibleWorldRect, projectWorldToScreen,
+} from '@/render/renderer';
 import type { Camera, Viewport } from '@/render/camera';
 
 /**
- * Regression coverage for the real, user-reported bug: the torus-boundary
- * overlay drawn at a FIXED world rect `[0, width] x [0, height]` agreed with
- * the rendered (wrap-sampled, continuously-scrolling) world only near the
- * camera's start position, then drifted out of alignment as the camera
- * panned — eventually landing across the middle of the visible content
- * instead of bracketing it ("the yellow square... quit matching up as you
- * pan"). `torusBoundaryOrigin` is the fix: it derives which period-copy of
- * the grid to draw around straight from the camera's own continuous
- * position, the same one the cell path reads on the same `draw()` call, so
- * the two cannot diverge by construction. A single fixed-position assertion
- * would have passed on the old, buggy code (it only failed after enough
- * panning) — every test below sweeps a wide range of camera positions,
- * including many multiples of the world size and the exact seam, for
- * exactly that reason.
+ * Regression coverage for the real, user-reported bug (reported TWICE): the
+ * torus-boundary overlay ended up "completely not surrounding the actual
+ * canvas after some moving panning zooming" — a real phone screenshot showed
+ * live cells in the upper-middle of the viewport and the dashed box in the
+ * lower-right, overlapping almost nothing.
+ *
+ * BOTH prior fixes shared the same root cause: they derived the overlay's
+ * position from `camera` independently of what the cell paths actually
+ * drew. The first stroked a rect fixed at literal world coords
+ * `[0, width] x [0, height]`. The second (`torusBoundaryOrigin`, deleted —
+ * see git history) picked whichever period-copy of the grid the camera
+ * *rounded* to — a different, but equally independent, guess. Its unit
+ * tests swept camera positions and all passed, because they asserted the
+ * same wrong model the code implemented; they never checked the actual
+ * drawn cell rect at all. That is why this file no longer tests
+ * `torusBoundaryOrigin`-shaped position guesses — a passing test that
+ * encodes broken behaviour is worse than no test.
+ *
+ * The real fix: the world is drawn ONCE per frame (never tiled) as exactly
+ * `computeVisibleWorldRect(camera, viewport, spec)` — every cell path
+ * (`#drawZoomedIn`/`#drawZoomedOut`/`#drawGlyphs`) blits from that exact
+ * rect. So the only honest "boundary" fact is where THAT rect's own span
+ * crosses a multiple of `spec.width`/`spec.height` — i.e. `computeTorusSeams
+ * (rect, spec)`, a pure function of the SAME rect the pixels came from, not
+ * a second, parallel computation from `camera`. These tests check that
+ * derivation directly, and — since a wrap seam is a fact about `rect` and
+ * `spec` only, never about the camera by itself — every case here is phrased
+ * in terms of the rect actually drawn, so there is no way for the assertion
+ * to encode the camera-guessing mistake again by accident.
  */
 
 const spec = { width: 256, height: 160 };
 const viewport: Viewport = { width: 1440, height: 900 };
 
-describe('torusBoundaryOrigin: stays locked to the camera across arbitrary panning', () => {
-  it('never drifts more than half a world-size from the camera, on either axis, at any pan distance', () => {
-    for (let x = -5000; x <= 5000; x += 137) {
-      for (let y = -3000; y <= 3000; y += 211) {
-        const origin = torusBoundaryOrigin({ x, y }, spec);
-        expect(Math.abs(x - origin.x)).toBeLessThanOrEqual(spec.width / 2);
-        expect(Math.abs(y - origin.y)).toBeLessThanOrEqual(spec.height / 2);
+describe('computeTorusSeams: seams are a fact about the drawn rect, never a guess from the camera', () => {
+  it('reports no seam at all when the visible rect sits entirely inside one period (the common, zoomed-in case)', () => {
+    // A rect comfortably inside [0, 256) x [0, 160) on both axes.
+    const rect = { x: 50, y: 30, w: 40, h: 20 };
+    const { xs, ys } = computeTorusSeams(rect, spec);
+    expect(xs).toEqual([]);
+    expect(ys).toEqual([]);
+  });
+
+  it('reports exactly one x-seam when the visible rect straddles a multiple of spec.width', () => {
+    // Rect spans world x in [240, 280) — crosses x=256, the wrap seam.
+    const rect = { x: 240, y: 30, w: 40, h: 20 };
+    const { xs } = computeTorusSeams(rect, spec);
+    expect(xs).toEqual([256]);
+  });
+
+  it('reports the correct seam after panning several world-widths away (arbitrary integer multiples, not just tile 0/1)', () => {
+    // Rect spans world x in [1024 - 20, 1024 + 20) — straddles 4*256=1024,
+    // the kind of long-pan-distance seam a real user drags across.
+    const rect = { x: 4 * spec.width - 20, y: 0, w: 40, h: 20 };
+    const { xs } = computeTorusSeams(rect, spec);
+    expect(xs).toEqual([4 * spec.width]);
+  });
+
+  it('reports both x and y seams simultaneously when the rect straddles both', () => {
+    const rect = { x: 246, y: 155, w: 20, h: 20 };
+    const { xs, ys } = computeTorusSeams(rect, spec);
+    expect(xs).toEqual([256]);
+    expect(ys).toEqual([160]);
+  });
+
+  it('when fully zoomed out (rect capped to exactly one world tile), finds the single interior seam for a non-aligned camera', () => {
+    const camera: Camera = { x: 37, y: 0, scale: 0.5 };
+    const rect = computeVisibleWorldRect(camera, viewport, spec);
+    expect(rect.w).toBe(spec.width); // clamped to one tile, per computeVisibleWorldRect's own contract
+    const { xs } = computeTorusSeams(rect, spec);
+    // rect.x = floor(37 - 256/2) = -91; the only multiple of 256 in
+    // [-91, -91+256) = [-91, 165) is 0.
+    expect(xs).toEqual([0]);
+  });
+
+  it('finds seams on both edges when the fully-zoomed-out rect happens to be exactly period-aligned', () => {
+    // Camera at half the world's width: `computeVisibleWorldRect` centres
+    // the clamped one-tile rect on the camera, so `rect.x = floor(128 - 128)
+    // = 0` — exactly a multiple of `spec.width`, unlike the general case.
+    const camera: Camera = { x: spec.width / 2, y: 0, scale: 0.5 };
+    const rect = computeVisibleWorldRect(camera, viewport, spec);
+    expect(rect.x % spec.width).toBe(0); // confirms the aligned premise this test relies on
+    const { xs } = computeTorusSeams(rect, spec);
+    expect(xs).toEqual([rect.x, rect.x + rect.w]);
+  });
+
+  it('never invents a seam outside the actual drawn span, at a long sweep of pan positions', () => {
+    for (let x = -3000; x <= 3000; x += 173) {
+      const camera: Camera = { x, y: 0, scale: 5 };
+      const rect = computeVisibleWorldRect(camera, viewport, spec);
+      const { xs } = computeTorusSeams(rect, spec);
+      for (const seamX of xs) {
+        expect(seamX).toBeGreaterThanOrEqual(rect.x);
+        expect(seamX).toBeLessThanOrEqual(rect.x + rect.w);
       }
     }
-  });
-
-  it('is always an exact multiple of the world size on each axis (a real copy of the grid, not an arbitrary offset)', () => {
-    for (let x = -1000; x <= 1000; x += 47) {
-      const origin = torusBoundaryOrigin({ x, y: 0 }, spec);
-      expect(Math.abs(origin.x % spec.width)).toBe(0);
-    }
-    for (let y = -1000; y <= 1000; y += 53) {
-      const origin = torusBoundaryOrigin({ x: 0, y }, spec);
-      expect(Math.abs(origin.y % spec.height)).toBe(0);
-    }
-  });
-
-  it('reproduces the OLD fixed-at-[0,width] behaviour near the start position', () => {
-    // 100/60, not the world's exact centre (128/80) — 128 is EXACTLY half of
-    // `spec.width` (256) and 80 is EXACTLY half of `spec.height` (160), an
-    // intentionally ambiguous halfway point covered by its own dedicated
-    // test below.
-    expect(torusBoundaryOrigin({ x: 100, y: 60 }, spec)).toEqual({ x: 0, y: 0 });
-    expect(torusBoundaryOrigin({ x: 0, y: 0 }, spec)).toEqual({ x: 0, y: 0 });
-  });
-
-  it('THE REPORTED BUG: after panning several world-widths away, the old fixed rect would be nowhere near the camera, while the fix stays close', () => {
-    // Three and a half world-widths of panning — the kind of long drag a
-    // real user does exploring the torus. The old code always drew at world
-    // x=0; that is now `3.5 * spec.width` away from the camera, i.e. FAR
-    // outside anything visible on screen (a viewport only ever shows a few
-    // hundred CSS px of world at typical zoom). The fix must stay within
-    // half a world-width, i.e. genuinely nearby, still.
-    const camera = { x: 3.5 * spec.width, y: 0 };
-    const oldFixedOrigin = { x: 0, y: 0 };
-    const distanceOld = Math.abs(camera.x - oldFixedOrigin.x);
-    const fixed = torusBoundaryOrigin(camera, spec);
-    const distanceFixed = Math.abs(camera.x - fixed.x);
-    expect(distanceOld).toBeGreaterThan(spec.width); // the bug: wildly far away
-    expect(distanceFixed).toBeLessThanOrEqual(spec.width / 2); // the fix: always close
-  });
-
-  it('switches copies smoothly at the exact halfway point between two tiles, never leaving a gap', () => {
-    // Just below the halfway point between tile 0 ([0,256]) and tile 1
-    // ([256,512]) still resolves to tile 0; just above resolves to tile 1 —
-    // there is no camera position for which neither is within half a
-    // world-width (continuity: the origin candidates tile every axis with
-    // no gaps).
-    const halfway = spec.width / 2;
-    expect(torusBoundaryOrigin({ x: halfway - 0.01, y: 0 }, spec)).toEqual({ x: 0, y: 0 });
-    expect(torusBoundaryOrigin({ x: halfway + 0.01, y: 0 }, spec)).toEqual({ x: spec.width, y: 0 });
   });
 });
 
-describe('torusBoundaryOrigin: the drawn overlay tracks the SAME transform the cells use, at every zoom/pan', () => {
-  /** The screen-space width/height the boundary rect would be stroked at —
-   *  must equal exactly `spec.width`/`spec.height` cells at the camera's
-   *  current scale, regardless of which period-copy was chosen, since a
-   *  `projectWorldToScreen` call is a pure affine (linear) transform of the
-   *  world coordinate — picking a different (but equally valid) copy must
-   *  never change the ON-SCREEN SIZE of the box it draws, only its position. */
-  it('always spans exactly one world-size in screen pixels, at any pan position and any scale', () => {
-    const scales = [0.5, 3, 8, 26, 40];
-    for (const scale of scales) {
-      for (let x = -2000; x <= 2000; x += 333) {
-        const camera: Camera = { x, y: x * 0.6, scale };
-        const origin = torusBoundaryOrigin(camera, spec);
-        const tl = projectWorldToScreen(camera, viewport, origin.x, origin.y);
-        const br = projectWorldToScreen(camera, viewport, origin.x + spec.width, origin.y + spec.height);
-        expect(br.x - tl.x).toBeCloseTo(spec.width * scale, 6);
-        expect(br.y - tl.y).toBeCloseTo(spec.height * scale, 6);
-      }
-    }
-  });
-
-  it('the camera itself always projects to somewhere within (or at most half a world away from) the drawn box — it can never end up on the wrong side of the whole rectangle', () => {
-    for (let x = -4000; x <= 4000; x += 401) {
-      const camera: Camera = { x, y: 0, scale: 10 };
-      const origin = torusBoundaryOrigin(camera, spec);
-      // The camera's screen position relative to the box's left edge, in
-      // world cells, must stay bounded — this is what "never drifts apart"
-      // means in screen terms, not just in raw world-coordinate terms.
-      const cellsFromLeftEdge = (camera.x - origin.x) / 1;
-      expect(cellsFromLeftEdge).toBeGreaterThanOrEqual(-spec.width / 2);
-      expect(cellsFromLeftEdge).toBeLessThanOrEqual(spec.width / 2);
+describe('computeTorusSeams + projectWorldToScreen: a seam line, once projected, lands inside the rendered content', () => {
+  it('a reported x-seam projects to an on-screen x within the rect\'s own screen span', () => {
+    const camera: Camera = { x: 246, y: 0, scale: 4 };
+    const rect = computeVisibleWorldRect(camera, viewport, spec);
+    const { xs } = computeTorusSeams(rect, spec);
+    expect(xs.length).toBeGreaterThan(0);
+    const leftScreen = projectWorldToScreen(camera, viewport, rect.x, 0).x;
+    const rightScreen = projectWorldToScreen(camera, viewport, rect.x + rect.w, 0).x;
+    for (const seamX of xs) {
+      const sx = projectWorldToScreen(camera, viewport, seamX, 0).x;
+      expect(sx).toBeGreaterThanOrEqual(Math.min(leftScreen, rightScreen) - 1e-6);
+      expect(sx).toBeLessThanOrEqual(Math.max(leftScreen, rightScreen) + 1e-6);
     }
   });
 });

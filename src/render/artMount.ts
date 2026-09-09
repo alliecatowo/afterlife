@@ -77,7 +77,55 @@ function easeToLegibleZoomOnEnable(renderer: WorldRenderer): void {
   camera.follow({ x: current.x, y: current.y }, targetScale);
 }
 
-export function ensureArtUiMounted(renderer: WorldRenderer): void {
+/**
+ * TEMPORARY CONTAINMENT HOTFIX — 2026-09-08.
+ *
+ * Real production report: Art mode was rendering NOTHING visible while
+ * pinning the CPU hard enough to hard-crash the reporter's Mac ("literally
+ * crashing the mac it crashed so hard"). A prior pass believed it had fixed
+ * the performance cliff (atlas raster cap, LRU cache, batched composite
+ * toggles) — that evidently did not hold, so the safe assumption is a
+ * resource-explosion bug still exists somewhere in the glyph/atlas/field
+ * path that hasn't been root-caused yet.
+ *
+ * Rather than ship an unverified fix under crash pressure, this makes Art
+ * mode UNREACHABLE from the renderer's side, unconditionally: returning here
+ * means `useArtStore`'s subscription below (the ONLY code path anywhere
+ * that ever calls `renderer.setArtConfig` — see this module's other
+ * `syncToRenderer` call sites, there are none elsewhere) never runs, so
+ * `WorldRendererImpl`'s `#art` field stays permanently `null` regardless of
+ * what `useArtStore`'s `config.enabled` says — regardless of the trigger,
+ * the `a` shortcut, presets, randomize, import, or a persisted `enabled:
+ * true` from a previous visit. `draw()`'s `artActive` gate (`Boolean(this.
+ * #art?.enabled) && ...`) is therefore always `false`, so `#drawGlyphs` (the
+ * suspected crash path) is categorically unreachable, not just unlikely.
+ * The self-mounted trigger tab and its keyboard shortcut also never mount,
+ * so there is no control on the canvas itself that even suggests Art mode
+ * is available. The `ArtPanel`'s own "Enable Art mode" checkbox (reachable
+ * via the HUD's "More tools" → "Acid Art" menu, a surface owned outside
+ * `src/render/**`) still exists and will locally toggle the store's state,
+ * but — since nothing here ever reads it — that has no effect on the
+ * renderer or the canvas.
+ *
+ * REVERT CONDITION: once the actual resource growth is root-caused (prime
+ * suspects: glyph atlas cache keyed by (chars, bucket) unbounded across a
+ * long session, per-cell allocation in the glyph draw loop, or the
+ * modulation field sampling at full resolution every frame) and a fix is
+ * verified under a real memory/CPU profile — not just "looks fine for a few
+ * seconds" — remove this early return.
+ */
+export function ensureArtUiMounted(_renderer: WorldRenderer): void {
+  return;
+}
+
+// The real implementation, kept intact (not deleted) so lifting this hotfix
+// is "rename this back to `ensureArtUiMounted` and delete the stub above"
+// rather than reconstructing mount/subscribe/shortcut logic from git
+// history. Deliberately unused while the hotfix above is in effect — no
+// lint/typecheck suppression needed, since an unreferenced top-level
+// function is not an error under this project's `tsconfig.json` (no
+// `noUnusedLocals`).
+function ensureArtUiMountedReal(renderer: WorldRenderer): void {
   if (mounted) return;
   if (typeof document === 'undefined' || typeof window === 'undefined') return;
   // Vitest sets `MODE=test`; keep the (already-noisy, canvas-less) jsdom

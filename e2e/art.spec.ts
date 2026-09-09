@@ -129,7 +129,17 @@ async function mockWebcam(page: Page): Promise<void> {
   });
 }
 
-test.describe('Art mode', () => {
+// TEMPORARY CONTAINMENT HOTFIX — 2026-09-08: a real production report showed
+// Art mode rendering nothing visible while hard-crashing the reporter's
+// machine. `@/render/artMount.ts`'s `ensureArtUiMounted` now unconditionally
+// returns (see that function's doc), so the trigger tab/shortcut never mount
+// and `renderer.setArtConfig` is never called from anywhere — every
+// assertion below (glyphs rendering, the trigger being reachable, its
+// keyboard shortcut) is testing a path that is now deliberately dead until
+// the underlying resource-growth bug is root-caused and fixed. Skipped
+// rather than deleted so re-enabling Art mode is "delete this skip" once
+// that happens, not "rewrite this suite from scratch".
+test.describe.skip('Art mode', () => {
   test('renders glyphs above the legibility threshold with no console errors, and turning it off restores the honest lens exactly', async ({ page }) => {
     const errors = collectConsoleErrors(page);
     await suppressTour(page);

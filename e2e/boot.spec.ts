@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { collectConsoleErrors, dismissTitle, openApp, realGen, regionPopulation, waitForGen } from './utils';
+import { cameraState, collectConsoleErrors, dismissTitle, openApp, realGen, regionPopulation, waitForGen } from './utils';
 import { OPENING_VERIFIED } from '../src/content/scenes';
 
 test.describe('boot', () => {
@@ -52,5 +52,24 @@ test.describe('boot', () => {
     // The encounter genuinely changes what's alive in the bounding box.
     expect(after).not.toBe(before);
     expect(after).toBeGreaterThan(0);
+  });
+
+  // Real user report: "the 'first contact' things auto panning the camera's
+  // focus around by default when not in cinematic mode" — a scene beat must
+  // never move the camera during ordinary play (see `session.ts`'s
+  // `checkBeats` doc). `OPENING_SCENE`'s `camera-ease` beat fires at gen 108
+  // and its `annotate` beat fires at gen 123 (`OPENING_VERIFIED.encounterGen`)
+  // — running well past both must leave the camera untouched while the
+  // quiet "First contact." annotation still appears.
+  test('scene beats never move the camera; the annotation still fires', async ({ page }) => {
+    await openApp(page);
+    await dismissTitle(page);
+
+    const before = await cameraState(page);
+    await waitForGen(page, OPENING_VERIFIED.encounterGen, 25_000);
+    const after = await cameraState(page);
+
+    expect(after).toEqual(before);
+    await expect(page.getByText('First contact.')).toBeVisible();
   });
 });

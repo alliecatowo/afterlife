@@ -24,9 +24,13 @@ export interface CameraSpec {
 }
 
 /**
- * A subtle scripted moment. Beats are quiet by design: a camera ease toward
- * a rect, or a small world-anchored annotation. Never a modal, never a
- * cutscene — see ARCHITECTURE.md's "world dominates" rule.
+ * A subtle scripted moment. Beats are quiet by design and NEVER move the
+ * camera during ordinary play — see `@/ui/session.ts`'s `checkBeats` doc:
+ * a real user report was that auto-panning the camera around during normal
+ * (non-cinematic) use hijacks a view the user was actively looking at.
+ * `camera-ease` (the name is historical) surfaces only an anticipatory
+ * toast; `annotate` shows a small world-anchored label. Never a modal,
+ * never a cutscene — see ARCHITECTURE.md's "world dominates" rule.
  */
 export type SceneBeat =
   | { kind: 'camera-ease'; atGen: number; toward: Rect; label: string }

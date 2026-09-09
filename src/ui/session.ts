@@ -336,12 +336,22 @@ export function initSession(): Session {
     reframe.observe(worldCanvas);
   }
 
-  // ---- scene beats: quiet camera eases / world-anchored annotations ------
+  // ---- scene beats: quiet toasts / world-anchored annotations ------------
   // Never a modal, never a cutscene — see `@/content/scenes`' `SceneBeat` doc
-  // and DESIGN.md's "world dominates" rule.
+  // and DESIGN.md's "world dominates" rule. Real user report: scene beats
+  // auto-panning the camera during ordinary (non-cinematic) play reads as
+  // the app hijacking a view the user was actively looking at — camera
+  // motion must be something the user asked for, not something a beat does
+  // to them. So `camera-ease` NEVER calls `camera.follow()`/moves the camera
+  // here, in any mode — it only surfaces the same anticipatory toast it
+  // always did. Cinematic mode is a fully separate, independent camera
+  // driver (`@/ui/cinematic/director.ts`, its own `follow()` calls on its
+  // own subject-picking schedule) and is completely unaffected by this: it
+  // never read these beats to begin with. `annotate` is unchanged — a quiet
+  // world-anchored label is exactly the "draws attention without taking
+  // control" behaviour this file wants to keep.
   let currentScene: SceneDef | null = null;
   const firedBeats = new Set<number>();
-  let followReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   let annotationTimer: ReturnType<typeof setTimeout> | null = null;
 
   function checkBeats(gen: number): void {
@@ -350,10 +360,6 @@ export function initSession(): Session {
       if (firedBeats.has(i) || beat.atGen !== gen) return;
       firedBeats.add(i);
       if (beat.kind === 'camera-ease') {
-        const rect = beat.toward;
-        camera.follow({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
-        if (followReleaseTimer) clearTimeout(followReleaseTimer);
-        followReleaseTimer = setTimeout(() => camera.releaseFollow(), 3200);
         bus.emit('toast', { message: beat.label, tone: 'info', ms: 4200 });
       } else {
         bus.emit('scene:annotate', { at: beat.at, label: beat.label });
@@ -612,7 +618,6 @@ export function initSession(): Session {
     useAppStore.getState().setActiveBranch(history.activeBranch);
     currentScene = scene;
     firedBeats.clear();
-    if (followReleaseTimer) { clearTimeout(followReleaseTimer); followReleaseTimer = null; }
     if (annotationTimer) { clearTimeout(annotationTimer); annotationTimer = null; }
     bus.emit('scene:annotate', null);
     emitGen();

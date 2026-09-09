@@ -143,6 +143,14 @@ export async function realGen(page: Page): Promise<number> {
   return page.evaluate(() => (window as unknown as { __AFTERLIFE__?: { engine: { gen: number } } }).__AFTERLIFE__?.engine.gen ?? -1);
 }
 
+/** The live camera's exact position/zoom, via the dev-only introspection hook. */
+export async function cameraState(page: Page): Promise<{ x: number; y: number; scale: number }> {
+  return page.evaluate(() => {
+    const cam = (window as unknown as { __AFTERLIFE__: { camera: { camera: { x: number; y: number; scale: number } } } }).__AFTERLIFE__.camera.camera;
+    return { x: cam.x, y: cam.y, scale: cam.scale };
+  });
+}
+
 /** CSS-pixel canvas coordinates for a world cell, via the live camera/renderer. */
 export async function worldToScreen(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
   return page.evaluate(
