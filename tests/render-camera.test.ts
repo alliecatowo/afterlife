@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import { clampScale, createCamera, MAX_SCALE, MIN_SCALE, smoothDamp, zoomAt } from '@/render/camera';
 import { projectScreenToWorld, projectWorldToScreen } from '@/render/renderer';

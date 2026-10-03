@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * `MultiplayerPanel` exercised as a presentational component against
  * `useMultiplayerStore` — network behaviour itself is covered end to end in

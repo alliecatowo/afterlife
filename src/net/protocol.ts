@@ -382,3 +382,98 @@ export function generateRoomCode(random: () => number = Math.random): string {
   for (let i = 0; i < 6; i++) out += alphabet[Math.floor(random() * alphabet.length)];
   return out;
 }
+
+/** Hard caps on remote input so a hostile or buggy peer cannot make a room
+ *  allocate or loop without bound. */
+export const MAX_CELLS_PER_EDIT = 4096;
+export const MAX_RESYNC_EDITS = 8192;
+const MAX_STRING_LEN = 256;
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+function isStr(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= MAX_STRING_LEN;
+}
+function isGen(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
+
+/** Shape-check a remote edit, including that every cell lies inside the
+ *  room's world. Returns a fresh, trimmed copy (unknown fields dropped). */
+function validateStampedEdit(v: unknown, world: { width: number; height: number }): StampedEdit | null {
+  if (!isObj(v) || !isStr(v.peerId) || !isGen(v.seq) || !isGen(v.originGen) || !isGen(v.targetGen)) return null;
+  const op = v.op;
+  if (!isObj(op) || op.kind !== 'set' || !Array.isArray(op.cells) || op.cells.length > MAX_CELLS_PER_EDIT) return null;
+  const cells: NetEditOp['cells'] = [];
+  for (const c of op.cells) {
+    if (!isObj(c) || typeof c.alive !== 'boolean') return null;
+    const { x, y } = c;
+    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isInteger(x) || !Number.isInteger(y)) return null;
+    if (x < 0 || y < 0 || x >= world.width || y >= world.height) return null;
+    cells.push({ x, y, alive: c.alive });
+  }
+  return { peerId: v.peerId, seq: v.seq, originGen: v.originGen, targetGen: v.targetGen, op: { kind: 'set', cells } };
+}
+
+/**
+ * Validate an untrusted value received from a transport and return a clean
+ * `WireMessage`, or `null` if it is malformed. Remote peers are never trusted:
+ * `JSON.parse(...) as WireMessage` proves nothing about the shape.
+ */
+export function validateWireMessage(raw: unknown, world: { width: number; height: number }): WireMessage | null {
+  if (!isObj(raw) || typeof raw.type !== 'string') return null;
+  switch (raw.type) {
+    case 'hello': {
+      const r = raw.room;
+      if (!isStr(raw.peerId) || !isStr(raw.name) || !isStr(raw.color) || !isGen(raw.gen) || !isObj(r)) return null;
+      const w = r.world;
+      if (!isStr(r.code) || !isObj(w) || typeof w.width !== 'number' || typeof w.height !== 'number') return null;
+      if (w.boundary !== 'torus' || !isStr(w.rule) || typeof r.seed !== 'number' || !isGen(r.startGen)) return null;
+      if (typeof r.createdAt !== 'number') return null;
+      return {
+        type: 'hello', peerId: raw.peerId, name: raw.name, color: raw.color, gen: raw.gen,
+        room: {
+          code: r.code,
+          world: { width: w.width, height: w.height, boundary: 'torus', rule: w.rule },
+          seed: r.seed, startGen: r.startGen, createdAt: r.createdAt,
+        },
+      };
+    }
+    case 'welcome': {
+      if (!isStr(raw.peerId) || !Array.isArray(raw.peers) || raw.peers.length > 64) return null;
+      const peers: Array<{ peerId: PeerId; name: string; color: string }> = [];
+      for (const p of raw.peers) {
+        if (!isObj(p) || !isStr(p.peerId) || !isStr(p.name) || !isStr(p.color)) return null;
+        peers.push({ peerId: p.peerId, name: p.name, color: p.color });
+      }
+      return { type: 'welcome', peerId: raw.peerId, peers };
+    }
+    case 'heartbeat':
+      return isStr(raw.peerId) && isGen(raw.gen) ? { type: 'heartbeat', peerId: raw.peerId, gen: raw.gen } : null;
+    case 'edit': {
+      const edit = validateStampedEdit(raw.edit, world);
+      return edit ? { type: 'edit', edit } : null;
+    }
+    case 'hash':
+      return isStr(raw.peerId) && isGen(raw.gen) && isStr(raw.hash)
+        ? { type: 'hash', peerId: raw.peerId, gen: raw.gen, hash: raw.hash }
+        : null;
+    case 'resyncRequest':
+      return isStr(raw.peerId) && Number.isSafeInteger(raw.sinceGen) && (raw.sinceGen as number) >= -1 ? { type: 'resyncRequest', peerId: raw.peerId, sinceGen: raw.sinceGen as number } : null;
+    case 'resyncData': {
+      if (!isStr(raw.peerId) || !isGen(raw.toGen) || !Array.isArray(raw.edits) || raw.edits.length > MAX_RESYNC_EDITS) return null;
+      const edits: StampedEdit[] = [];
+      for (const e of raw.edits) {
+        const edit = validateStampedEdit(e, world);
+        if (!edit) return null;
+        edits.push(edit);
+      }
+      return { type: 'resyncData', peerId: raw.peerId, edits, toGen: raw.toGen };
+    }
+    case 'leave':
+      return isStr(raw.peerId) ? { type: 'leave', peerId: raw.peerId } : null;
+    default:
+      return null;
+  }
+}

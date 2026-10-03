@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Rect, StampPattern, StampTransform } from '@/core/types';
 import { IDENTITY_TRANSFORM } from '@/core/types';

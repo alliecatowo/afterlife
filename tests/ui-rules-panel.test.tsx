@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * `RulesPanel` exercised as a presentational component against a mocked
  * `@/ui/session` — `Session.setRule`'s actual fresh-world behaviour is

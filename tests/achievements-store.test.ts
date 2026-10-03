@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CATALOGUE_SIZE, SURVIVAL_GENERATIONS, TRAVELLER_OBSERVATIONS } from '@/content/achievements';
 

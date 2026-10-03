@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveTourTarget, resolveTourTargetElement } from '@/ui/tutorial/targeting';
 import * as sessionModule from '@/ui/session';

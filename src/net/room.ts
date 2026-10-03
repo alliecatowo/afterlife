@@ -22,6 +22,7 @@ import {
   type RoomSpec,
   type StampedEdit,
   type WireMessage,
+  validateWireMessage,
 } from './protocol';
 import type { Disposable, Transport, TransportStatus } from './transport';
 
@@ -191,7 +192,10 @@ export class LockstepRoom {
     this.emit({ type: 'stall', blocking: blocking.length > 0 ? blocking : null });
   }
 
-  private handleMessage(msg: WireMessage): void {
+  private handleMessage(raw: WireMessage): void {
+    // Peers are untrusted: re-validate shape and cell bounds before acting.
+    const msg = validateWireMessage(raw, this.spec.world);
+    if (!msg) return;
     switch (msg.type) {
       case 'hello': {
         if (msg.peerId === this.localPeerId) return;
