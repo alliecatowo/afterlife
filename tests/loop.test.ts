@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { createSimLoop, DEFAULT_SPEED, MAX_CATCHUP_STEPS, MAX_SPEED, MIN_SPEED } from '@/core/loop';
 

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * The absolute constraint: offline, account-free, zero-network stays the
  * DEFAULT. Someone who never touches multiplayer must not be able to tell

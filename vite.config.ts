@@ -71,7 +71,9 @@ export default defineConfig({
     },
   },
   test: {
-    environment: 'jsdom',
+    environment: 'node',
+    // Node by default; DOM-dependent files opt in with a `// @vitest-environment jsdom`
+    // docblock on line 1 (jsdom setup costs about a second per file).
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     css: false,
   },

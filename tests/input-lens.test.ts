@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CameraController, Viewport } from '@/render/camera';
 import type { ExportImageOptions, WorldRenderer } from '@/render/renderer';

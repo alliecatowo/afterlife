@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { STORAGE_PREFIX } from '@/persist/store';
 import { TOUR_STEPS } from '@/content/tour';

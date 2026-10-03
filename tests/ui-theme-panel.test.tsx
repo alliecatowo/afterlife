@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * `ThemePanel` against the REAL theme store (small and pure enough not to
  * need mocking, same call as `tests/theme-store.test.ts` for the store

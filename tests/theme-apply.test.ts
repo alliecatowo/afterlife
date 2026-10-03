@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, afterEach } from 'vitest';
 import { applyThemeTokens, clearThemeTokens, setThemeAttribute } from '@/ui/theme/apply';
 import { ALL_THEME_TOKENS } from '@/ui/theme/tokens';

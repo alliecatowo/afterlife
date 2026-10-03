@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Regression test for the tour's "corner flash" bug: advancing between
  * steps used to fully remount the coach mark's card (`key={stepKey}`), and

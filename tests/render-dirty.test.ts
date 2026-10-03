@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { createRenderer } from '@/render/renderer';
 import { IDENTITY_TRANSFORM, type StampPattern } from '@/core/types';
