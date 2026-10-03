@@ -2,6 +2,12 @@
 
 **Every future leaves a trace.**
 
+<p align="center">
+  <a href="https://alliecatowo.github.io/afterlife/"><img src="docs/media/afterlife-1440.png" alt="AFTERLIFE running a lineage-coloured world: specimen drawer on the left, timeline ribbon along the bottom" width="900"></a>
+</p>
+
+**Live: <https://alliecatowo.github.io/afterlife/>**
+
 AFTERLIFE is a playable observatory for tiny universes. Underneath, it is Conway's
 Game of Life — B3/S23, the rule everyone already knows — but the surface is built
 around a different question than most implementations ask. Not "can it run fast,"
