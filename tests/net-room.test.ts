@@ -217,3 +217,21 @@ describe('LockstepRoom over a real BroadcastChannelTransport', () => {
     expect(a.peerList()).toEqual([]);
   });
 });
+
+describe('stale peer eviction', () => {
+  it('drops a peer that goes silent so it cannot stall the room', async () => {
+    const code = `room-${Math.random()}`;
+    const spec = makeSpec(code);
+    const a = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'alice', localName: 'A', localColor: 'x', heartbeatMs: 10, peerTimeoutMs: 80 }));
+    // bob never heartbeats after hello (huge interval), like a crashed tab.
+    const b = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'bob', localName: 'B', localColor: 'y', heartbeatMs: 1_000_000 }));
+    a.join(0);
+    b.join(0);
+    await wait(40);
+    expect(a.peerList()).toHaveLength(1);
+    a.reportGen(0);
+    await wait(150);
+    expect(a.peerList()).toHaveLength(0);
+    expect(a.canAdvanceTo(11)).toBe(true);
+  });
+});

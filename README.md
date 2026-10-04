@@ -12,7 +12,7 @@ AFTERLIFE is a playable observatory for tiny universes. Underneath, it is Conway
 Game of Life — B3/S23, the rule everyone already knows — but the surface is built
 around a different question than most implementations ask. Not "can it run fast,"
 but: what happens if you touch one cell? Where did this shape come from, and where
-is it going? What did the world look like ten thousand generations ago, and what
+is it going? What did the world look like a few minutes ago (the last 4,096 generations stay scrubbable), and what
 would it look like now if you'd drawn one extra cell back then?
 
 So the whole app is organized around time as a substance you can handle. A ribbon

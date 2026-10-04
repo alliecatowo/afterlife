@@ -168,10 +168,19 @@ export class MediaFieldSource {
   /** Start the webcam. MUST only be called from a real user gesture (a
    *  click handler) — `getUserMedia` requires it, and this codebase's own
    *  rule (see module doc) is that capture never starts itself. */
+  /** Bumped by every start/stop so a stale permission prompt can't resurrect a stream. */
+  #webcamToken = 0;
+
   async startWebcam(): Promise<void> {
     this.stop();
+    const token = ++this.#webcamToken;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+      if (token !== this.#webcamToken) {
+        // Stopped, disposed or restarted while the prompt was open.
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
       this.#stream = stream;
       const video = document.createElement('video');
       video.srcObject = stream;
@@ -203,6 +212,7 @@ export class MediaFieldSource {
    *  OS/browser chrome), releases the video element and any object URL, and
    *  removes the `pagehide` listener. Safe to call repeatedly / when idle. */
   stop(): void {
+    this.#webcamToken++;
     if (this.#rafHandle !== null) { cancelAnimationFrame(this.#rafHandle); this.#rafHandle = null; }
     if (this.#stream) { for (const track of this.#stream.getTracks()) track.stop(); this.#stream = null; }
     if (this.#video) {
