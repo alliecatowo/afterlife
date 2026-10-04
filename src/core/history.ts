@@ -175,8 +175,20 @@ export interface TimelineStore {
    */
   settled(): Promise<void>;
 
-  /** All recorded entries for the active branch within the window, ascending. */
-  entries(): readonly HistoryEntry[];
+  /** All recorded entries for a branch (default: the active one) within the window, ascending. Empty for an unknown id. */
+  entries(id?: BranchId): readonly HistoryEntry[];
+
+  /** Highest generation reached on a branch (default: the active one). */
+  branchMaxGen(id?: BranchId): Generation;
+
+  /**
+   * Re-create a previously saved non-active branch from its flattened
+   * `entries` (as returned by `entries(id)`), keeping its id and metadata.
+   * Only valid on a window that has not slid (`windowStart === 0`); returns
+   * false (and does nothing) otherwise, or when `meta.id` already exists.
+   * Does not switch to it.
+   */
+  restoreBranch(meta: BranchMeta, entries: readonly HistoryEntry[], maxGen: Generation): boolean;
 
   /**
    * Fork a new branch off the active branch at `gen`, immediately applying
@@ -541,8 +553,46 @@ class TimelineStoreImpl implements TimelineStore {
     }
   }
 
-  entries(): readonly HistoryEntry[] {
-    const b = this.activeBranchRecord();
+  branchMaxGen(id?: BranchId): Generation {
+    const b = id === undefined ? this.activeBranchRecord() : this.branchMap.get(id);
+    return b?.maxGen ?? 0;
+  }
+
+  restoreBranch(meta: BranchMeta, entries: readonly HistoryEntry[], maxGen: Generation): boolean {
+    if (this.branchMap.has(meta.id)) return false;
+    const active = this.activeBranchRecord();
+    if (active.windowStart !== 0) return false;
+    // Fresh empty gen-0 keyframe (same recipe as reset()), never a copy of a
+    // live branch's keyframe: a sibling's fast-path edits may be baked into that.
+    const scratch = this.engine.clone();
+    scratch.restore({ gen: 0, bits: new Uint8Array(scratch.snapshot().bits.length) });
+    const map = new Map<Generation, EditOp[]>();
+    let top = meta.fromGen;
+    for (const { gen, edits } of entries) {
+      if (edits.length === 0) continue;
+      map.set(gen, [...(map.get(gen) ?? []), ...edits]);
+      if (gen > top) top = gen;
+    }
+    const rec: BranchRecord = {
+      meta: { ...meta },
+      entries: map,
+      keyframes: new Map([[0, scratch.snapshot()]]),
+      colorKeyframes: new Map([[0, scratch.snapshotColors()]]),
+      maxGen: Math.max(maxGen, top),
+      windowStart: 0,
+      renamed: true,
+      lastAccessed: ++this.clock,
+    };
+    this.branchMap.set(meta.id, rec);
+    this.branchOrder.push(meta.id);
+    const n = /^branch-(\d+)$/.exec(meta.id);
+    if (n) this.branchCounter = Math.max(this.branchCounter, Number(n[1]));
+    return true;
+  }
+
+  entries(id?: BranchId): readonly HistoryEntry[] {
+    const b = id === undefined ? this.activeBranchRecord() : this.branchMap.get(id);
+    if (!b) return [];
     return [...b.entries.entries()]
       .filter(([g]) => g >= b.windowStart)
       .sort((x, y) => x[0] - y[0])

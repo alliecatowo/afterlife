@@ -199,7 +199,15 @@ original future keeps playing untouched on its own branch, your edited future
 plays on a new one, and a compare view diffs them cell-for-cell. Up to 8 branches
 are kept at once; if a ninth is needed, the least-recently-used one is evicted —
 unless it's been renamed or is the one you're standing on, which are never
-auto-evicted.
+auto-evicted. Your forks and your Field Guide are kept in autosaves and
+exported experiment files, so reopening a world brings back every alternate
+future (a very long session whose history window has slid saves just the
+branch you were on).
+
+**Sharing.** "Copy share link" (Save panel) puts the pattern and its rule in the
+URL hash (`#w=...`), so anyone opening the link lands on the same world. The
+selection is shared if you have one, otherwise the whole world; very large
+patterns are refused and should be exported as RLE or JSON instead.
 
 **The Field Guide and experiments.** A recognition pass identifies known
 specimens (still lifes, oscillators, spaceships, guns) as they appear and logs
@@ -376,7 +384,7 @@ walkthrough is in [`docs/VERIFICATION-SUMMARY.md`](./docs/VERIFICATION-SUMMARY.m
   arrival orders, produce bit-identical worlds. `tests/net-guard.test.tsx`
   proves solo play imports zero of this code and constructs zero transports
   unless a user explicitly asks for multiplayer.
-- **895 unit tests** across 91 files (`npm test` prints the current real count —
+- **900+ unit tests** across 90+ files (`npm test` prints the current real count —
   trust that over this number), plus **126 Playwright end-to-end tests across 27
   spec files** (96 `desktop` at 1440x900, 24 `mobile` at 390x844 touch-enabled, 6
   `prod-build` against a real production build served with `vite preview`);

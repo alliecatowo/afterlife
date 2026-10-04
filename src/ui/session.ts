@@ -29,7 +29,8 @@ import { createInput, type InputController } from '@/interact/input';
 import { createSculpture, type TimeSculpture } from '@/sculpture/sculpture';
 import { createSoundscape, type Soundscape } from '@/audio/audio';
 import { createPersistStore, EXPERIMENT_FORMAT_VERSION, STORAGE_PREFIX, type PersistStore } from '@/persist/store';
-import type { ExperimentDoc } from '@/persist/store';
+import type { ExperimentDoc, ParsedPattern } from '@/persist/store';
+import { parseShareHash } from '@/persist/store';
 import { scan, type ScanResult } from '@/content/recognition';
 import { initCinematic, type CinematicController } from '@/ui/cinematic';
 import { getPattern } from '@/content/patterns';
@@ -137,11 +138,13 @@ export interface Session {
   setRule(rule: string): boolean;
   /** Recognise structures within `rect` right now. Synchronous, bounded. */
   scanRegion(rect: Rect): ScanResult;
-  /** Serialise the active branch's full recorded history into a portable document. */
+  /** Serialise the full recorded history (every branch, plus the Field Guide) into a portable document. */
   buildExperimentDoc(title: string): ExperimentDoc;
   /** Restore a document built by `buildExperimentDoc` (or migrated from disk).
    *  Rejects (via a toast) if its world shape doesn't match `WORLD_SPEC`. */
   applyExperimentDoc(doc: ExperimentDoc): boolean;
+  /** Open a world from a share link (see `@/persist/share`): fresh world under the link's rule with the pattern centred. */
+  openSharedWorld(pattern: ParsedPattern): boolean;
 }
 
 /** Longest replay (in generations) an opened save may demand before it is clamped. */
@@ -154,6 +157,16 @@ let session: Session | null = null;
 /** Non-reactive accessor for anything that needs the live session (panels, etc.). */
 export function getSession(): Session | null {
   return session;
+}
+
+/** Lets the Field Guide (which imports this module) ride along in saves without a circular import. */
+export interface DocExtras {
+  get(): unknown[];
+  apply(items: unknown[]): void;
+}
+let extras: DocExtras | null = null;
+export function registerDocExtras(e: DocExtras): void {
+  extras = e;
 }
 
 // ---- multiplayer hook (see src/net/** and docs/MULTIPLAYER.md) -----------
@@ -776,6 +789,21 @@ export function initSession(): Session {
         for (let i = 0; i < snap.bits.length; i++) if (snap.bits[i]) cells.push(i);
         baseline = { gen: snap.gen, cells };
       }
+      // Forks: every branch is saved with its flattened edits, so reopening
+      // keeps the alternate futures. A slid window can't be shared by sibling
+      // branches (they'd need their own baselines), so a very long session
+      // saves only the active branch, as the root.
+      const allBranches = !baseline;
+      const branches: ExperimentDoc['branches'] = allBranches
+        ? history.branches.map((b) => ({ ...b }))
+        : [{ id: 'root', name: activeMeta?.name ?? 'Original', parent: null, fromGen: 0, createdAt: activeMeta?.createdAt ?? Date.now() }];
+      const edits: ExperimentDoc['edits'] = {};
+      const branchMaxGen: Record<string, number> = {};
+      for (const b of branches) {
+        const src = allBranches ? b.id : history.activeBranch;
+        edits[b.id] = history.entries(src).map((e) => ({ gen: e.gen, ops: e.edits }));
+        branchMaxGen[b.id] = history.branchMaxGen(src);
+      }
       return {
         ...(baseline ? { baseline } : {}),
         version: EXPERIMENT_FORMAT_VERSION,
@@ -785,17 +813,44 @@ export function initSession(): Session {
         rule: engine.rule,
         seed: 0,
         density: 0,
-        activeBranch: 'root',
-        branches: [{ id: 'root', name: activeMeta?.name ?? 'Original', parent: null, fromGen: 0, createdAt: activeMeta?.createdAt ?? Date.now() }],
-        edits: { root: history.entries().map((e) => ({ gen: e.gen, ops: e.edits })) },
+        activeBranch: allBranches ? history.activeBranch : 'root',
+        branches,
+        branchMaxGen,
+        edits,
         view: { x: camera.camera.x, y: camera.camera.y, scale: camera.camera.scale, gen: engine.gen },
         lens: readState().lens,
         bookmarks: [],
         discoveries: [],
+        ...(extras ? { fieldGuide: extras.get() } : {}),
       };
     },
     applyExperimentDoc(doc) {
       return applyDoc(doc);
+    },
+    openSharedWorld(pattern) {
+      if (!session!.setRule(pattern.rule)) return false;
+      const ox = Math.floor((WORLD_SPEC.width - pattern.w) / 2);
+      const oy = Math.floor((WORLD_SPEC.height - pattern.h) / 2);
+      const cells: Array<{ x: number; y: number; alive: boolean }> = [];
+      for (let y = 0; y < pattern.h; y++) {
+        for (let x = 0; x < pattern.w; x++) {
+          if (pattern.cells[y * pattern.w + x] === 1) cells.push({ x: ox + x, y: oy + y, alive: true });
+        }
+      }
+      if (cells.length > 0) history.record(0, [{ kind: 'set', cells }]);
+      const vp = renderer.viewport;
+      const fit = Math.min(vp.width / (pattern.w + 12), vp.height / (pattern.h + 12));
+      applyCuratedCamera({
+        centerX: ox + pattern.w / 2,
+        centerY: oy + pattern.h / 2,
+        pxPerCell: Math.max(4, Math.min(24, fit || 12)),
+        note: '',
+      } as CameraSpec);
+      autosaveDirty = true;
+      emitGen();
+      bus.emit('toast', { message: 'Opened a shared world.', tone: 'success' });
+      bus.emit('playback:play', undefined);
+      return true;
     },
   };
 
@@ -824,7 +879,12 @@ export function initSession(): Session {
       history.reset();
       currentScene = null;
       firedBeats.clear();
-      const rootEdits = doc.edits[doc.activeBranch] ?? doc.edits.root ?? [];
+      // A multi-branch save (see buildExperimentDoc) loads the root first, then
+      // re-creates each fork, then switches to the branch that was active.
+      const rootMeta = doc.branches.find((b) => b.id === 'root' && b.parent === null);
+      const multi = !!rootMeta && !doc.baseline && doc.branches.length > 1 && doc.branches.some((b) => b.id === doc.activeBranch);
+      const loadId = multi ? 'root' : doc.activeBranch;
+      const rootEdits = doc.edits[loadId] ?? doc.edits.root ?? [];
       const entries = rootEdits.map((e) => ({ gen: e.gen, edits: e.ops }));
       const maxEditGen = entries.reduce((m, e) => Math.max(m, e.gen), 0);
       let baselineSnap: { gen: number; bits: Uint8Array } | undefined;
@@ -834,7 +894,9 @@ export function initSession(): Session {
         baselineSnap = { gen: doc.baseline.gen, bits };
       }
       const startGen = baselineSnap?.gen ?? 0;
-      let targetGen = Math.max(doc.view?.gen ?? maxEditGen, maxEditGen);
+      const viewGen = doc.view?.gen ?? maxEditGen;
+      const loadViewGen = multi && doc.activeBranch !== 'root' ? (doc.branchMaxGen?.root ?? maxEditGen) : viewGen;
+      let targetGen = Math.max(loadViewGen, maxEditGen);
       targetGen = Math.max(targetGen, startGen);
       if (targetGen - startGen > MAX_REPLAY_SPAN) {
         targetGen = startGen + MAX_REPLAY_SPAN;
@@ -845,7 +907,20 @@ export function initSession(): Session {
       // explicit edit, never the ordinary steps in between, so replaying just
       // the edits via `record()` would leave the branch's bookkeeping stuck
       // at the last EDITED generation rather than wherever it was saved from.
-      history.loadEntries(entries, targetGen, baselineSnap).then(() => {
+      history.loadEntries(entries, targetGen, baselineSnap).then(async () => {
+        if (multi) {
+          for (const meta of doc.branches) {
+            if (meta.id === 'root') continue;
+            const list = (doc.edits[meta.id] ?? []).map((e) => ({ gen: e.gen, edits: e.ops }));
+            const top = Math.min(doc.branchMaxGen?.[meta.id] ?? 0, MAX_REPLAY_SPAN);
+            history.restoreBranch(meta, list, top);
+          }
+          if (doc.activeBranch !== 'root') {
+            const want = Math.min(viewGen, history.branchMaxGen(doc.activeBranch), MAX_REPLAY_SPAN);
+            await history.switchBranch(doc.activeBranch, want);
+          }
+        }
+        extras?.apply(doc.fieldGuide ?? []);
         if (doc.view) camera.set({ x: doc.view.x, y: doc.view.y, scale: doc.view.scale });
         if (doc.lens) {
           useAppStore.getState().setLens(doc.lens);
@@ -874,7 +949,9 @@ export function initSession(): Session {
   // restored world is coherent under its own rule from the very first
   // generation rather than a rule stapled onto Conway-recorded history.
   // A visitor who edited the world last time gets it back (autosave, below).
-  const working = persist.load();
+  // A share link (#w=...) wins over the visitor's own autosave: they asked for it.
+  const sharedPattern = typeof window !== 'undefined' ? parseShareHash(window.location.hash) : null;
+  const working = sharedPattern ? null : persist.load();
   let restoring = false;
   if (working) {
     restoring = applyDoc(working, () => {
@@ -885,6 +962,10 @@ export function initSession(): Session {
   const persistedRule = loadPersistedRule();
   if (restoring) {
     // applyDoc owns the rest of boot (it plays once the replay finishes).
+  } else if (sharedPattern) {
+    // Falls back to the opening scene if the link names a rule we can't run.
+    if (!session!.openSharedWorld(sharedPattern)) loadScene(OPENING_SCENE);
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
   } else if (persistedRule && persistedRule !== CONWAY_RULE_STRING) {
     session.setRule(persistedRule);
   } else {
@@ -899,7 +980,16 @@ export function initSession(): Session {
   // genuinely empty, per the fresh-world reset above) — autoplaying it is
   // still harmless (stepping an empty grid is a no-op) and keeps this single
   // code path exactly as simple for both cases.
-  if (!restoring) bus.emit('playback:play', undefined);
+  if (!restoring && !sharedPattern) bus.emit('playback:play', undefined);
+  // Pasting a share link into an already-open tab only changes the hash.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('hashchange', () => {
+      const p = parseShareHash(window.location.hash);
+      if (!p) return;
+      session!.openSharedWorld(p);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    });
+  }
 
   // ---- autosave: only once the visitor has changed the world ----------------
   // Opening-scene watchers never write anything. After the first edit (or an

@@ -8,7 +8,7 @@
  *
  * Mounted lazily from `App.tsx` via `@/ui/hud/multiplayerLazy`'s dynamic
  * `import()` — see that module's doc for why: `App.tsx`/`src/ui/hud/**` must
- * never statically import this feature (`tests/net-guard.test.ts`'s
+ * never statically import this feature (`tests/net-guard.test.tsx`'s
  * import-graph guard), so nothing here loads until the user explicitly asks
  * for it from a HUD entry point.
  *

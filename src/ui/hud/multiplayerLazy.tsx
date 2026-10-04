@@ -4,7 +4,7 @@
  * `INTEGRATION-NOTES.md`'s "multiplayer foundation" entry). `<MultiplayerRoot/>`
  * is fully functional but was never wired into the running app because
  * `App.tsx`/`src/ui/hud/**` must never statically import `@/net` or
- * `@/ui/multiplayer` — see `tests/net-guard.test.ts`'s import-graph guard.
+ * `@/ui/multiplayer` — see `tests/net-guard.test.tsx`'s import-graph guard.
  *
  * That guard exists to prove a real product guarantee, not just a lint rule:
  * solo play stays account-free and network-free — no connection attempt, no
@@ -23,7 +23,7 @@
  * renders nothing at all until `requestMultiplayer()` has been called at
  * least once, so the multiplayer code (and its `@/net` dependency) is never
  * even fetched, let alone executed, for a user who never touches this
- * feature. `tests/net-guard.test.ts` proves both halves: the static
+ * feature. `tests/net-guard.test.tsx` proves both halves: the static
  * import-graph check on this file's own source, and a behavioural check
  * that mounting `<MultiplayerLazyHost/>` and NOT calling `requestMultiplayer()`
  * does no network-adjacent work.

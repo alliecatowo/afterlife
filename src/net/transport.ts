@@ -20,7 +20,7 @@
  *
  * Neither transport is ever constructed unless a caller explicitly creates
  * one (from `src/ui/multiplayer/**` in response to "Host" or "Join") — see
- * `tests/ui-multiplayer-guard.test.ts` for the assertion that nothing here
+ * `tests/net-guard.test.tsx` for the assertion that nothing here
  * runs by default.
  */
 import type { WireMessage } from './protocol';

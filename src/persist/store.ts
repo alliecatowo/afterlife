@@ -22,6 +22,8 @@ export { PersistQuotaError, STORAGE_PREFIX, createPersistStore, humanBytes } fro
 export type { ParsedPattern } from './rle';
 export { UnsupportedRuleError, checkRule, fromRLE, toRLE } from './rle';
 
+export { MAX_SHARE_HASH, ShareTooLargeError, encodeShareHash, parseShareHash } from './share';
+
 import { decodeDoc, encodeDoc, migrateToCurrent, type ExperimentDoc } from './codec';
 
 /**
@@ -35,8 +37,8 @@ export function exportExperiment(doc: ExperimentDoc): string {
 
 /**
  * Parse + validate a portable experiment file. Throws a descriptive `Error`
- * (or `UnsupportedRuleError`-style specificity for RLE — experiment JSON has
- * no rule field, the app only ever simulates B3/S23) on invalid JSON, an
+ * on invalid JSON, an unsupported `rule` (v3 documents carry a canonical B/S
+ * rulestring; v1/v2 files migrate to B3/S23), an
  * unknown/future schema version, or a structurally invalid document. Never
  * returns a partially-valid document.
  */

@@ -80,3 +80,15 @@ export function capAudioDuration(durationSeconds: number, maxSeconds = MAX_AUDIO
     note: `Requested ${durationSeconds.toFixed(1)}s of audio exceeds the ${maxSeconds}s offline-render cap — truncated to ${maxSeconds}s.`,
   };
 }
+
+/**
+ * Clamp a requested generation range into the retained history window
+ * `[windowStart, maxGen]`. BOTH ends are clamped, so a request wholly outside
+ * the window collapses to one retained frame instead of an inverted range.
+ */
+export function clampGenRange(from: number, to: number, windowStart: number, maxGen: number): { from: number; to: number } {
+  return {
+    from: Math.min(Math.max(from, windowStart), maxGen),
+    to: Math.max(Math.min(to, maxGen), windowStart),
+  };
+}

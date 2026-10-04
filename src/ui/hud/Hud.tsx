@@ -22,7 +22,7 @@ import {
 } from '@/ui/icons';
 import { HudMoreSheet } from './HudMoreSheet';
 // Loads `@/net`/`@/ui/multiplayer` only once the user taps the "Multiplayer"
-// entry below — see that module's doc and `tests/net-guard.test.ts`. This
+// entry below — see that module's doc and `tests/net-guard.test.tsx`. This
 // file must never statically import either `@/net` or `@/ui/multiplayer`.
 import { requestMultiplayer } from './multiplayerLazy';
 // The guided tour lives in `@/ui/tutorial/**` (a separate agent's territory) —

@@ -23,6 +23,7 @@
  * outlive the tab.
  */
 import { useAppStore } from '@/ui/store';
+import { MAX_SPEED, MIN_SPEED } from '@/core/loop';
 import { useAudioSettingsStore } from './settingsStore';
 import { useCaptureStore, type CaptureMode } from './captureStore';
 import {
@@ -35,8 +36,6 @@ const FFT_SIZE = 1024;
 const LEVEL_SMOOTHING_ALPHA = 0.35;
 const CENTROID_SMOOTHING_ALPHA = 0.2;
 const REACTIVITY_AMOUNT = 0.6;
-const MIN_SPEED = 0.5;
-const MAX_SPEED = 90;
 
 let ctx: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;

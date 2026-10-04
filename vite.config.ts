@@ -54,7 +54,7 @@ export default defineConfig({
   server: { port: 5173 },
   build: {
     target: 'es2022',
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       input: {
         app: page('index.html'),

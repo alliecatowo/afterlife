@@ -33,7 +33,7 @@ real browsers; run it before a PR, not on every save.
 
 ## The test story
 
-**Unit tests (Vitest, jsdom):** 837 tests across 83 files as of this writing (`npm
+**Unit tests (Vitest, jsdom):** over 900 tests across 90+ files as of this writing (`npm
 test` prints the real count — always trust that over any number in a doc, including
 this one). Pure logic (`src/core/**`, `src/render/color.ts`'s ramps, `src/audio/**`
 except `audio.ts`/`capture.ts`, `src/net/protocol.ts`, `src/ui/theme/**`'s validator)
