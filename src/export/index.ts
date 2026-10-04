@@ -18,6 +18,7 @@ import { useArtStore } from '@/render/artStore';
 import { readAudioSettings } from '@/audio/settingsStore';
 import type { Rect } from '@/core/types';
 import { computeFramePlan } from './pacing';
+import { clampGenRange } from './limits';
 import {
   capDimensions, capFramePlan, MAX_DIMENSION, MAX_GIF_DIMENSION, MAX_GIF_FRAMES,
   MAX_PNG_SEQUENCE_FRAMES, MAX_VIDEO_FRAMES,
@@ -101,8 +102,7 @@ function preparePlan(req: ExportRequest, maxFrames: number, maxDimension: number
   const windowStart = session.history.windowStart;
   const maxGen = session.history.maxGen;
   if (fromGen < windowStart || toGen > maxGen) {
-    const clampedFrom = Math.max(fromGen, windowStart);
-    const clampedTo = Math.min(toGen, maxGen);
+    const { from: clampedFrom, to: clampedTo } = clampGenRange(fromGen, toGen, windowStart, maxGen);
     notes.push(
       `Requested generations [${fromGen}, ${toGen}] reach outside the retained history window `
       + `[${windowStart}, ${maxGen}] — clamped to what's actually still available.`,

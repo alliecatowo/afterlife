@@ -11,7 +11,7 @@ import { useRef, useState } from 'react';
 import { getSession, WORLD_SPEC } from '@/ui/session';
 import { useAppStore } from '@/ui/store';
 import { bus } from '@/ui/bus';
-import { exportExperiment, fromRLE, importExperiment, PersistQuotaError, toRLE } from '@/persist/store';
+import { encodeShareHash, exportExperiment, fromRLE, importExperiment, PersistQuotaError, toRLE } from '@/persist/store';
 import { Button, Divider, Field } from '@/ui/primitives';
 import { DownloadIcon, UploadIcon } from '@/ui/icons';
 import { ExportPanel } from './ExportPanel';
@@ -89,6 +89,21 @@ export function PersistPanel() {
     // Write the WORLD'S ACTUAL rule (never a hardcoded Conway) — see
     // `@/persist/rle.ts`'s honesty-upgrade doc.
     download(`${effectiveTitle().replace(/\s+/g, '-').toLowerCase()}.rle`, toRLE(cells, rect, effectiveTitle(), { rule: session.engine.rule }), 'text/plain');
+  };
+
+  const copyShareLink = (): void => {
+    if (!session) return;
+    const rect = selection ?? { x: 0, y: 0, w: WORLD_SPEC.width, h: WORLD_SPEC.height };
+    try {
+      const hash = encodeShareHash(session.engine.region(rect), rect, session.engine.rule);
+      const url = `${window.location.origin}${window.location.pathname}${hash}`;
+      void navigator.clipboard.writeText(url).then(
+        () => bus.emit('toast', { message: 'Link copied — it reopens this pattern and rule.', tone: 'success' }),
+        () => { window.prompt('Copy this link', url); },
+      );
+    } catch (err) {
+      bus.emit('toast', { message: (err as Error).message, tone: 'warn' });
+    }
   };
 
   const importRle = (file: File): void => {
@@ -196,6 +211,7 @@ export function PersistPanel() {
             : 'Exports the whole world — draw a selection to narrow it.'}
         </p>
         <div className="flex flex-wrap gap-1.5">
+          <Button size="sm" variant="ghost" onClick={copyShareLink}>Copy share link</Button>
           <Button size="sm" variant="ghost" onClick={exportRle}><DownloadIcon /> Export RLE</Button>
           <Button size="sm" variant="ghost" onClick={() => rleInputRef.current?.click()}><UploadIcon /> Import RLE</Button>
           <input

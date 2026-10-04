@@ -15,15 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build
+  test:
+    name: Typecheck and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: 3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Node
+        uses: 820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+
+  build:
+    name: Build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: 3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: 820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
@@ -38,10 +57,10 @@ jobs:
         run: touch dist/.nojekyll
 
       - name: Setup Pages
-        uses: actions/configure-pages@v6
+        uses: 45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: dist
 
@@ -52,7 +71,33 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: 368f82528645a54fb793d4d04e342629a3f51346 # v5
+
+  smoke:
+    name: Post-deploy smoke check
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the live site
+        env:
+          BASE: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          BASE="${BASE%/}/"
+          fetch() { curl -fsS --retry 6 --retry-delay 10 --retry-all-errors "$1"; }
+          html="$(fetch "$BASE")"
+          echo "$html" | grep -q 'id="root"' || { echo "app root missing"; exit 1; }
+          echo "$html" | grep -q 'og:image' || { echo "og meta missing"; exit 1; }
+          asset="$(echo "$html" | grep -oE 'assets/[^"]+\.js' | head -1)"
+          [ -n "$asset" ] || { echo "no app bundle referenced"; exit 1; }
+          fetch "${BASE}${asset}" > /dev/null
+          fetch "${BASE}guide/" | grep -qi 'afterlife'
+          fetch "${BASE}guide/assets/og.png" > /dev/null
+          fetch "${BASE}robots.txt" | grep -qi 'sitemap'
+          fetch "${BASE}sitemap.xml" | grep -q '<urlset'
+          echo "smoke ok: $BASE"

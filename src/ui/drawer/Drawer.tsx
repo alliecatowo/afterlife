@@ -76,7 +76,7 @@ export function Drawer() {
         </label>
       </Panel>
 
-      <Panel title="Patterns" className="min-h-0 flex-1 overflow-y-auto">
+      <Panel title="Patterns" className="min-h-0 flex-1 overflow-y-auto lg:pb-14">
         {PATTERNS.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-6 text-center">
             <p className="display-face-tight text-lg text-ivory-200">The library is quiet.</p>

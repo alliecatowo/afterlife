@@ -75,7 +75,14 @@ export interface ExperimentDoc {
    * oldest edits no longer exist. `edits` then only cover `gen` onward.
    */
   baseline?: { gen: Generation; cells: number[] };
+  /** Highest generation reached on each branch id (inactive branches would otherwise reopen at their last edit). */
+  branchMaxGen?: Record<string, Generation>;
+  /** The Field Guide's discovery log (`@/content/discoveries#Discovery[]`), opaque to this module beyond a size cap. */
+  fieldGuide?: unknown[];
 }
+
+/** Most Field Guide entries a document may carry. */
+export const MAX_FIELD_GUIDE = 500;
 
 /** Pack absolute cell edits into one integer per cell (see module doc). */
 export function packCells(cells: EditOp['cells'], width: number, height: number): number[] {
@@ -127,6 +134,8 @@ interface PersistedDocV3 extends Omit<PersistedDocV2, 'version'> {
   version: 3;
   rule: string;
   baseline?: { gen: Generation; cells: number[] };
+  branchMaxGen?: Record<string, Generation>;
+  fieldGuide?: unknown[];
 }
 
 /** The original scaffolded shape (unpacked edits, no activeBranch/lens/bookmarks/discoveries). */
@@ -292,7 +301,25 @@ function checkRuleField(raw: Record<string, unknown>): void {
   }
 }
 
+function checkExtras(raw: Record<string, unknown>): void {
+  if (raw.branchMaxGen !== undefined) {
+    const m = raw.branchMaxGen;
+    if (!isPlainObject(m)) fail('"branchMaxGen" must be an object');
+    for (const v of Object.values(m)) {
+      if (!Number.isInteger(v) || (v as number) < 0 || (v as number) > MAX_DOC_GEN) fail(`"branchMaxGen" values must be integers in [0, ${MAX_DOC_GEN}]`);
+    }
+  }
+  if (raw.fieldGuide !== undefined) {
+    if (!Array.isArray(raw.fieldGuide)) fail('"fieldGuide" must be an array');
+    if (raw.fieldGuide.length > MAX_FIELD_GUIDE) fail(`"fieldGuide" may hold at most ${MAX_FIELD_GUIDE} entries`);
+    for (const d of raw.fieldGuide) {
+      if (!isPlainObject(d) || typeof d.id !== 'string' || !Array.isArray(d.trail) || d.trail.length === 0) fail('"fieldGuide" entries need an id and a non-empty trail');
+    }
+  }
+}
+
 function validateV3(raw: Record<string, unknown>): PersistedDocV3 {
+  checkExtras(raw);
   checkCommon(raw);
   checkV2Edits(raw.edits);
   checkBounds(raw);
@@ -383,6 +410,8 @@ export function decodeDoc(p: PersistedDocV3): ExperimentDoc {
     discoveries: p.discoveries ?? [],
     notes: p.notes,
     ...(p.baseline ? { baseline: p.baseline } : {}),
+    ...(p.branchMaxGen ? { branchMaxGen: p.branchMaxGen } : {}),
+    ...(p.fieldGuide ? { fieldGuide: p.fieldGuide } : {}),
   };
 }
 
@@ -432,5 +461,7 @@ export function encodeDoc(doc: ExperimentDoc): PersistedDocV3 {
   if (doc.lens) out.lens = doc.lens;
   if (doc.notes !== undefined) out.notes = doc.notes;
   if (doc.baseline) out.baseline = doc.baseline;
+  if (doc.branchMaxGen) out.branchMaxGen = doc.branchMaxGen;
+  if (doc.fieldGuide) out.fieldGuide = doc.fieldGuide;
   return out;
 }

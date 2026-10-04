@@ -56,3 +56,15 @@ describe('export limits: capAudioDuration', () => {
     expect(result.value).toBe(300);
   });
 });
+
+import { clampGenRange } from '@/export/limits';
+describe('clampGenRange', () => {
+  it('keeps an in-window range, clamps a partial one', () => {
+    expect(clampGenRange(10, 20, 0, 100)).toEqual({ from: 10, to: 20 });
+    expect(clampGenRange(0, 500, 50, 100)).toEqual({ from: 50, to: 100 });
+  });
+  it('never inverts when the request is wholly outside the window', () => {
+    expect(clampGenRange(0, 10, 50, 100)).toEqual({ from: 50, to: 50 });
+    expect(clampGenRange(200, 300, 50, 100)).toEqual({ from: 100, to: 100 });
+  });
+});

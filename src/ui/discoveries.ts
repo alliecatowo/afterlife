@@ -24,7 +24,7 @@ import {
 } from '@/content/discoveries';
 import type { RecognizedCluster } from '@/content/recognition';
 import { bus } from '@/ui/bus';
-import { getSession } from '@/ui/session';
+import { getSession, registerDocExtras } from '@/ui/session';
 import type { DiscoveryEvent, Rect } from '@/core/types';
 
 function kindFor(cluster: RecognizedCluster): DiscoveryEvent['kind'] {
@@ -120,6 +120,11 @@ export const useDiscoveries = create<DiscoveriesState>((set, get) => ({
     set({ items: [] });
   },
 }));
+
+registerDocExtras({
+  get: () => useDiscoveries.getState().items,
+  apply: (items) => useDiscoveries.setState({ items: items as Discovery[] }),
+});
 
 export function fieldGuideEntries(): FieldGuideEntry[] {
   return useDiscoveries.getState().items.map(toFieldGuideEntry);

@@ -4,7 +4,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "AFTERLIFE — a playable observatory for tiny universes. Every future leaves a trace.",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "AFTERLIFE \u2014 a playable observatory for tiny universes. Every future leaves a trace.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && node site/scripts/build-pages.mjs && vite build",
