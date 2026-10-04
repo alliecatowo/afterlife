@@ -269,13 +269,13 @@ export class StallTracker {
 
   constructor(private readonly bufferGens: number = LATENCY_BUFFER_GENS) {}
 
-  upsert(peerId: PeerId, gen: number, now: number = Date.now()): void {
+  upsert(peerId: PeerId, gen: number, now: number = Date.now(), force = false): void {
     const existing = this.peers.get(peerId);
     // Watermarks are monotonic — an out-of-order/duplicate heartbeat must
     // never move one backwards (that would let a since-passed generation
     // look "unsafe" again, or worse, let a stale watermark undercut a real
     // one that already arrived).
-    if (existing && gen < existing.gen) return;
+    if (!force && existing && gen < existing.gen) return;
     this.peers.set(peerId, { peerId, gen, updatedAt: now });
   }
 
@@ -366,7 +366,7 @@ export class DesyncMonitor {
 export type WireMessage =
   | { type: 'hello'; peerId: PeerId; name: string; color: string; gen: number; room: RoomSpec }
   | { type: 'welcome'; peerId: PeerId; peers: Array<{ peerId: PeerId; name: string; color: string }> }
-  | { type: 'heartbeat'; peerId: PeerId; gen: number }
+  | { type: 'heartbeat'; peerId: PeerId; gen: number; /** The sender rewound to `gen` (resync): accept a lower watermark. */ reset?: boolean }
   | { type: 'edit'; edit: StampedEdit }
   | { type: 'hash'; peerId: PeerId; gen: number; hash: string }
   | { type: 'resyncRequest'; peerId: PeerId; sinceGen: number }
@@ -387,6 +387,8 @@ export function generateRoomCode(random: () => number = Math.random): string {
  *  allocate or loop without bound. */
 export const MAX_CELLS_PER_EDIT = 4096;
 export const MAX_RESYNC_EDITS = 8192;
+/** Largest `toGen` a resync may ask a receiver to replay to. */
+export const MAX_RESYNC_GEN = 250_000;
 const MAX_STRING_LEN = 256;
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -450,7 +452,9 @@ export function validateWireMessage(raw: unknown, world: { width: number; height
       return { type: 'welcome', peerId: raw.peerId, peers };
     }
     case 'heartbeat':
-      return isStr(raw.peerId) && isGen(raw.gen) ? { type: 'heartbeat', peerId: raw.peerId, gen: raw.gen } : null;
+      return isStr(raw.peerId) && isGen(raw.gen)
+        ? { type: 'heartbeat', peerId: raw.peerId, gen: raw.gen, ...(raw.reset === true ? { reset: true } : {}) }
+        : null;
     case 'edit': {
       const edit = validateStampedEdit(raw.edit, world);
       return edit ? { type: 'edit', edit } : null;
@@ -462,11 +466,11 @@ export function validateWireMessage(raw: unknown, world: { width: number; height
     case 'resyncRequest':
       return isStr(raw.peerId) && Number.isSafeInteger(raw.sinceGen) && (raw.sinceGen as number) >= -1 ? { type: 'resyncRequest', peerId: raw.peerId, sinceGen: raw.sinceGen as number } : null;
     case 'resyncData': {
-      if (!isStr(raw.peerId) || !isGen(raw.toGen) || !Array.isArray(raw.edits) || raw.edits.length > MAX_RESYNC_EDITS) return null;
+      if (!isStr(raw.peerId) || !isGen(raw.toGen) || raw.toGen > MAX_RESYNC_GEN || !Array.isArray(raw.edits) || raw.edits.length > MAX_RESYNC_EDITS) return null;
       const edits: StampedEdit[] = [];
       for (const e of raw.edits) {
         const edit = validateStampedEdit(e, world);
-        if (!edit) return null;
+        if (!edit || edit.targetGen > MAX_RESYNC_GEN + LATENCY_BUFFER_GENS) return null;
         edits.push(edit);
       }
       return { type: 'resyncData', peerId: raw.peerId, edits, toGen: raw.toGen };

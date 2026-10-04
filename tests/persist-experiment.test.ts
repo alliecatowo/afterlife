@@ -217,3 +217,24 @@ describe('schema migration', () => {
     expect(doc.title).toBe('pre-rule save');
   });
 });
+
+describe('untrusted import bounds', () => {
+  function withPatch(patch: Record<string, unknown>): string {
+    const base = JSON.parse(exportExperiment(buildDoc())) as Record<string, unknown>;
+    return JSON.stringify({ ...base, ...patch });
+  }
+  it('rejects an absurd view.gen', () => {
+    expect(() => importExperiment(withPatch({ view: { x: 0, y: 0, scale: 1, gen: 1e12 } }))).toThrow(/view\.gen/);
+  });
+  it('rejects an unknown lens and non-finite view numbers', () => {
+    expect(() => importExperiment(withPatch({ lens: 'rm -rf' }))).toThrow(/lens/);
+    expect(() => importExperiment(withPatch({ view: { x: null, y: 0, scale: 1, gen: 1 } }))).toThrow(/view\.x/);
+  });
+  it('rejects a far-future edit generation', () => {
+    expect(() => importExperiment(withPatch({ edits: { root: [{ g: 1e12, c: [1] }] } }))).toThrow(/generation/);
+  });
+  it('round-trips a baseline', () => {
+    const doc = { ...buildDoc(), baseline: { gen: 5000, cells: [1, 2, 3] } };
+    expect(importExperiment(exportExperiment(doc)).baseline).toEqual({ gen: 5000, cells: [1, 2, 3] });
+  });
+});

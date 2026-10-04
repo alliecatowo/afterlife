@@ -230,7 +230,16 @@ export interface TimelineStore {
    * stuck at the last edited generation instead of wherever it was actually
    * saved from. Leaves `engine` at `toGen`.
    */
-  loadEntries(entries: readonly HistoryEntry[], toGen: Generation): Promise<void>;
+  loadEntries(entries: readonly HistoryEntry[], toGen: Generation, baseline?: Snapshot): Promise<void>;
+
+  /**
+   * The world as it stood at `windowStart`, or `null` while the window still
+   * starts at generation 0 (the gen-0 edits are then in `entries()`). Once the
+   * window has slid, every older edit has been dropped, so a persisted
+   * document needs this snapshot to reproduce the world; pass it back to
+   * `loadEntries` as `baseline`.
+   */
+  baseline(): Snapshot | null;
 }
 
 export interface TimelineOptions {
@@ -681,10 +690,26 @@ class TimelineStoreImpl implements TimelineStore {
     return scratch;
   }
 
-  async loadEntries(entries: readonly HistoryEntry[], toGen: Generation): Promise<void> {
+  baseline(): Snapshot | null {
     const b = this.activeBranchRecord();
+    if (b.windowStart <= 0) return null;
+    const snap = b.keyframes.get(b.windowStart);
+    return snap ? { gen: snap.gen, bits: snap.bits.slice() } : null;
+  }
+
+  async loadEntries(entries: readonly HistoryEntry[], toGen: Generation, baseline?: Snapshot): Promise<void> {
+    const b = this.activeBranchRecord();
+    if (baseline && baseline.gen > 0) {
+      this.engine.restore(baseline);
+      b.keyframes = new Map([[baseline.gen, this.engine.snapshot()]]);
+      b.colorKeyframes = new Map([[baseline.gen, this.engine.snapshotColors()]]);
+      b.entries = new Map();
+      b.windowStart = baseline.gen;
+      b.maxGen = baseline.gen;
+    }
     for (const { gen, edits } of entries) {
       if (edits.length === 0) continue;
+      if (gen < b.windowStart) continue;
       const existing = b.entries.get(gen) ?? [];
       b.entries.set(gen, [...existing, ...edits]);
     }

@@ -320,3 +320,35 @@ describe('keyframes', () => {
     expect(engine.snapshot().bits).toEqual(atBoundary);
   });
 });
+
+describe('baseline persistence once the window has slid', () => {
+  it('entries() + baseline() reproduce the world even after gen-0 edits are pruned', async () => {
+    const glider: EditOp = {
+      kind: 'set',
+      cells: [{ x: 1, y: 0, alive: true }, { x: 2, y: 1, alive: true }, { x: 0, y: 2, alive: true }, { x: 1, y: 2, alive: true }, { x: 2, y: 2, alive: true }],
+    };
+    const engine = createEngine({ width: 24, height: 24 });
+    const history = createTimelineStore({ engine, keyframeInterval: 16, historyWindow: 64 });
+    await driveForward(engine, history, 0, new Map([[0, [glider]]]));
+    await driveForward(engine, history, 300, new Map());
+    expect(history.windowStart).toBeGreaterThan(0);
+    expect(history.entries()).toEqual([]);
+    const baseline = history.baseline();
+    expect(baseline).not.toBeNull();
+
+    const truth = engine.snapshot().bits.slice();
+
+    const engine2 = createEngine({ width: 24, height: 24 });
+    const history2 = createTimelineStore({ engine: engine2, keyframeInterval: 16, historyWindow: 64 });
+    history2.reset();
+    await history2.loadEntries(history.entries(), 300, baseline!);
+    expect(engine2.gen).toBe(300);
+    expect(Array.from(engine2.snapshot().bits)).toEqual(Array.from(truth));
+    expect(history2.windowStart).toBe(baseline!.gen);
+  });
+
+  it('baseline() is null while the window still starts at gen 0', () => {
+    const engine = createEngine({ width: 8, height: 8 });
+    expect(createTimelineStore({ engine }).baseline()).toBeNull();
+  });
+});

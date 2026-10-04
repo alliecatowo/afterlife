@@ -157,6 +157,51 @@ describe('LockstepRoom over a real BroadcastChannelTransport', () => {
     }
   });
 
+  it('ignores an unsolicited resyncData (no request outstanding)', async () => {
+    const code = `room-${Math.random()}`;
+    const spec = makeSpec(code);
+    const a = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'alice', localName: 'Alice', localColor: 'x' }));
+    const b = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'bob', localName: 'Bob', localColor: 'y' }));
+    a.join(0);
+    b.join(0);
+    await wait(30);
+    const events: RoomEvent[] = [];
+    b.on((e) => events.push(e));
+    const evil = new BroadcastChannelTransport(code);
+    evil.connect();
+    evil.send({ type: 'resyncData', peerId: 'mallory', edits: [], toGen: 5 });
+    // Even a known peer may not push a resync nobody asked for.
+    new BroadcastChannelTransport(code).send({ type: 'resyncData', peerId: 'alice', edits: [], toGen: 5 });
+    await wait(30);
+    evil.disconnect();
+    expect(events.find((e) => e.type === 'resync')).toBeUndefined();
+  });
+
+  it('a joiner that was ahead of the room accepts the host\'s edits after resync', async () => {
+    const code = `room-${Math.random()}`;
+    const spec = makeSpec(code);
+    const host = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'host', localName: 'H', localColor: 'x' }));
+    const joiner = track(createLockstepRoom({ transport: new BroadcastChannelTransport(code), room: spec, localPeerId: 'joiner', localName: 'J', localColor: 'y' }));
+    host.join(100);
+    host.reportGen(100);
+    // The joiner has already simulated well past the room.
+    joiner.join(600);
+    for (let g = 590; g <= 600; g++) joiner.takeDueEdits(g);
+    joiner.requestResync(-1);
+    await wait(50);
+    host.submitEdit({ kind: 'set', cells: [{ x: 1, y: 1, alive: true }] }, 100);
+    await wait(30);
+    // After the resync the joiner is rewound to the host's generation...
+    const rejected: RoomEvent[] = [];
+    joiner.on((e) => { if (e.type === 'rejectedEdit') rejected.push(e); });
+    // ...so the host's edit (targeting ~112) is accepted, not rejected as late.
+    expect(joiner.takeDueEdits(112)).toHaveLength(1);
+    expect(rejected).toHaveLength(0);
+    // And the host now sees the joiner at the rewound generation.
+    expect(host.canAdvanceTo(100 + 11)).toBe(true);
+    expect(host.canAdvanceTo(100 + 12)).toBe(false);
+  });
+
   it('leaving a room stops delivering messages and clears peer state', async () => {
     const code = `room-${Math.random()}`;
     const spec = makeSpec(code);
