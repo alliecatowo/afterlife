@@ -26,6 +26,9 @@ import {
 } from './protocol';
 import type { Disposable, Transport, TransportStatus } from './transport';
 
+/** How long (ms) after `requestResync` a peer's `resyncData` answer is accepted. */
+const RESYNC_WAIT_MS = 15_000;
+
 export interface PeerInfo {
   peerId: PeerId;
   name: string;
@@ -67,8 +70,12 @@ export class LockstepRoom {
   readonly localPeerId: PeerId;
 
   private readonly transport: Transport;
-  private readonly log = new EditLog();
-  private readonly stall: StallTracker;
+  private log = new EditLog();
+  private stall: StallTracker;
+  /** Deadline (ms epoch) until which an unsolicited-looking `resyncData` is accepted; 0 = none requested. */
+  private resyncExpectedUntil = 0;
+  /** Next outgoing heartbeat tells peers we rewound (see `resyncData`). */
+  private resetPending = false;
   private readonly desync = new DesyncMonitor();
   private readonly peers = new Map<PeerId, PeerInfo>();
   private readonly listeners = new Set<(e: RoomEvent) => void>();
@@ -115,7 +122,7 @@ export class LockstepRoom {
     });
     const heartbeatMs = this.opts.heartbeatMs ?? 1500;
     this.heartbeatTimer = setInterval(() => {
-      this.transport.send({ type: 'heartbeat', peerId: this.localPeerId, gen: this.lastReportedGen });
+      this.sendHeartbeat(this.lastReportedGen);
     }, heartbeatMs);
     this.emit({ type: 'status', status: this.transport.status });
   }
@@ -147,7 +154,7 @@ export class LockstepRoom {
   reportGen(gen: number): void {
     this.lastReportedGen = gen;
     this.stall.upsert(this.localPeerId, gen);
-    this.transport.send({ type: 'heartbeat', peerId: this.localPeerId, gen });
+    this.sendHeartbeat(gen);
     this.log.prune();
     this.recomputeStall();
   }
@@ -183,7 +190,18 @@ export class LockstepRoom {
   /** Ask every peer for their authoritative edit log since `sinceGen` —
    *  the "offer resync" recovery path after a reported desync. */
   requestResync(sinceGen: number): void {
+    this.resyncExpectedUntil = Date.now() + RESYNC_WAIT_MS;
     this.transport.send({ type: 'resyncRequest', peerId: this.localPeerId, sinceGen });
+  }
+
+  private sendHeartbeat(gen: number): void {
+    const reset = this.resetPending;
+    this.resetPending = false;
+    this.transport.send(
+      reset
+        ? { type: 'heartbeat', peerId: this.localPeerId, gen, reset: true }
+        : { type: 'heartbeat', peerId: this.localPeerId, gen },
+    );
   }
 
   private recomputeStall(): void {
@@ -226,11 +244,11 @@ export class LockstepRoom {
         if (msg.peerId === this.localPeerId) return;
         const existing = this.peers.get(msg.peerId);
         if (existing) {
-          existing.gen = Math.max(existing.gen, msg.gen);
+          existing.gen = msg.reset ? msg.gen : Math.max(existing.gen, msg.gen);
           existing.lastSeen = Date.now();
           this.emit({ type: 'peers', peers: this.peerList() });
         }
-        this.stall.upsert(msg.peerId, msg.gen);
+        this.stall.upsert(msg.peerId, msg.gen, Date.now(), msg.reset === true);
         this.recomputeStall();
         break;
       }
@@ -258,7 +276,24 @@ export class LockstepRoom {
       }
       case 'resyncData': {
         if (msg.peerId === this.localPeerId) return;
+        // Only act on an answer to OUR request, from a peer we know: an
+        // unsolicited resyncData would otherwise wipe the local world.
+        if (Date.now() > this.resyncExpectedUntil || !this.peers.has(msg.peerId)) return;
+        this.resyncExpectedUntil = 0;
+        // The local world is about to be rebuilt at `toGen`: rebuild the edit
+        // log and watermarks with it. Keeping the old ones (a joiner that was
+        // ahead of the room) would reject the host's edits as late and leave
+        // the host believing we are still at our old, higher generation.
+        this.log = new EditLog();
         for (const e of msg.edits) this.log.add(e);
+        this.log.markApplied(msg.toGen);
+        this.lastReportedGen = msg.toGen;
+        this.stall = new StallTracker();
+        for (const p of this.peers.values()) this.stall.upsert(p.peerId, p.gen);
+        this.stall.upsert(this.localPeerId, msg.toGen);
+        this.resetPending = true;
+        this.sendHeartbeat(msg.toGen);
+        this.recomputeStall();
         this.emit({ type: 'resync', edits: [...msg.edits].sort(compareStampedEdits), toGen: msg.toGen, fromPeer: msg.peerId });
         break;
       }

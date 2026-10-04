@@ -49,6 +49,10 @@ interface IndexEntry {
 export interface PersistStore {
   /** Debounced write of the working document to localStorage. */
   save(doc: ExperimentDoc): void;
+  /** Write any debounced working document immediately (call on pagehide). */
+  flush(): void;
+  /** Forget the working document (and cancel any pending write). */
+  clearWorking(): void;
   /** Read the working document back; null if absent or corrupt. */
   load(): ExperimentDoc | null;
   /** Named slots the user can keep. */
@@ -248,6 +252,25 @@ class LocalPersistStore implements PersistStore {
       this.storage.setItem(WORKING_KEY, json);
     } catch (err) {
       this.handleWriteError(err, 'the working experiment');
+    }
+  }
+
+  flush(): void {
+    if (this.timer != null) clearTimeout(this.timer);
+    this.timer = null;
+    const pending = this.pendingDoc;
+    this.pendingDoc = null;
+    if (pending) this.writeWorking(pending);
+  }
+
+  clearWorking(): void {
+    if (this.timer != null) clearTimeout(this.timer);
+    this.timer = null;
+    this.pendingDoc = null;
+    try {
+      this.storage.removeItem(WORKING_KEY);
+    } catch {
+      // ignore
     }
   }
 

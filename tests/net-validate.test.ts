@@ -67,4 +67,9 @@ describe('validateWireMessage', () => {
     expect(validateWireMessage({ type: 'welcome', peerId: 'p', peers: [{ peerId: 'q', name: 'n', color: 'c' }] }, world)).not.toBeNull();
     expect(validateWireMessage({ type: 'welcome', peerId: 'p', peers: [{ peerId: 'q' }] }, world)).toBeNull();
   });
+
+  it('rejects a resyncData with an absurd toGen or far-future edit', () => {
+    expect(validateWireMessage({ type: 'resyncData', peerId: 'p', toGen: Number.MAX_SAFE_INTEGER, edits: [] }, world)).toBeNull();
+    expect(validateWireMessage({ type: 'resyncData', peerId: 'p', toGen: 5, edits: [] }, world)).not.toBeNull();
+  });
 });

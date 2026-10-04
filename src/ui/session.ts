@@ -144,6 +144,11 @@ export interface Session {
   applyExperimentDoc(doc: ExperimentDoc): boolean;
 }
 
+/** Longest replay (in generations) an opened save may demand before it is clamped. */
+const MAX_REPLAY_SPAN = 100_000;
+/** How often (ms) a world the visitor has edited is written to the working slot. */
+const AUTOSAVE_INTERVAL_MS = 15_000;
+
 let session: Session | null = null;
 
 /** Non-reactive accessor for anything that needs the live session (panels, etc.). */
@@ -226,6 +231,7 @@ export function initSession(): Session {
   // only ever READS `engine`/`input`; it never mutates cell state.
   const soundscape = createSoundscape({ engine, input });
   const persist = createPersistStore();
+  let autosaveDirty = false;
   // See `@/ui/cinematic`'s doc: an "auto-pan, hold-on-what's-interesting"
   // full-screen mode, layered on top of the existing camera/presentation
   // machinery rather than a new chrome-hiding mechanism of its own.
@@ -681,6 +687,8 @@ export function initSession(): Session {
     persistRule(CONWAY_RULE_STRING);
     engine.clear();
     history.reset();
+    autosaveDirty = false;
+    persist.clearWorking();
     if (scene.cells.length > 0) {
       history.record(0, [{ kind: 'set', cells: scene.cells.map((c) => ({ x: c.x, y: c.y, alive: true })) }]);
     }
@@ -741,6 +749,8 @@ export function initSession(): Session {
       persistRule(canonical);
       engine.clear();
       history.reset();
+      autosaveDirty = false;
+      persist.clearWorking();
       currentScene = null;
       firedBeats.clear();
       useAppStore.getState().setSelection(null);
@@ -757,7 +767,17 @@ export function initSession(): Session {
     },
     buildExperimentDoc(title) {
       const activeMeta = history.branches.find((b) => b.id === history.activeBranch);
+      // Once the history window has slid, the oldest edits (including the
+      // opening scene) are gone: persist the world at windowStart instead.
+      const snap = history.baseline();
+      let baseline: ExperimentDoc['baseline'];
+      if (snap) {
+        const cells: number[] = [];
+        for (let i = 0; i < snap.bits.length; i++) if (snap.bits[i]) cells.push(i);
+        baseline = { gen: snap.gen, cells };
+      }
       return {
+        ...(baseline ? { baseline } : {}),
         version: EXPERIMENT_FORMAT_VERSION,
         title,
         createdAt: Date.now(),
@@ -775,6 +795,11 @@ export function initSession(): Session {
       };
     },
     applyExperimentDoc(doc) {
+      return applyDoc(doc);
+    },
+  };
+
+  function applyDoc(doc: ExperimentDoc, onDone?: () => void): boolean {
       if (doc.spec.width !== WORLD_SPEC.width || doc.spec.height !== WORLD_SPEC.height || doc.spec.boundary !== WORLD_SPEC.boundary) {
         bus.emit('toast', { message: `That save is a ${doc.spec.width}x${doc.spec.height} world — this build only runs ${WORLD_SPEC.width}x${WORLD_SPEC.height}.`, tone: 'warn' });
         return false;
@@ -802,13 +827,25 @@ export function initSession(): Session {
       const rootEdits = doc.edits[doc.activeBranch] ?? doc.edits.root ?? [];
       const entries = rootEdits.map((e) => ({ gen: e.gen, edits: e.ops }));
       const maxEditGen = entries.reduce((m, e) => Math.max(m, e.gen), 0);
-      const targetGen = doc.view?.gen ?? maxEditGen;
+      let baselineSnap: { gen: number; bits: Uint8Array } | undefined;
+      if (doc.baseline && doc.baseline.gen > 0) {
+        const bits = new Uint8Array(doc.spec.width * doc.spec.height);
+        for (const idx of doc.baseline.cells) if (idx >= 0 && idx < bits.length) bits[idx] = 1;
+        baselineSnap = { gen: doc.baseline.gen, bits };
+      }
+      const startGen = baselineSnap?.gen ?? 0;
+      let targetGen = Math.max(doc.view?.gen ?? maxEditGen, maxEditGen);
+      targetGen = Math.max(targetGen, startGen);
+      if (targetGen - startGen > MAX_REPLAY_SPAN) {
+        targetGen = startGen + MAX_REPLAY_SPAN;
+        bus.emit('toast', { message: `That save is very long — opened at generation ${targetGen.toLocaleString()} instead.`, tone: 'warn' });
+      }
       // `loadEntries` also re-simulates the plain (edit-free) steps up to
       // `targetGen` — a document's edits only cover generations that had an
       // explicit edit, never the ordinary steps in between, so replaying just
       // the edits via `record()` would leave the branch's bookkeeping stuck
       // at the last EDITED generation rather than wherever it was saved from.
-      history.loadEntries(entries, Math.max(targetGen, maxEditGen)).then(() => {
+      history.loadEntries(entries, targetGen, baselineSnap).then(() => {
         if (doc.view) camera.set({ x: doc.view.x, y: doc.view.y, scale: doc.view.scale });
         if (doc.lens) {
           useAppStore.getState().setLens(doc.lens);
@@ -817,12 +854,14 @@ export function initSession(): Session {
         syncBranches();
         useAppStore.getState().setActiveBranch(history.activeBranch);
         emitGen();
+        autosaveDirty = true;
+        onDone?.();
       }).catch(() => {
         bus.emit('toast', { message: 'Could not replay that save to its saved moment.', tone: 'warn' });
+        onDone?.();
       });
       return true;
-    },
-  };
+  }
 
   // BUG (rule identity didn't survive a reload): theme and art config both
   // persist correctly, but the active rule previously didn't — this always
@@ -834,8 +873,19 @@ export function initSession(): Session {
   // freshly constructed above (empty, gen 0, nothing yet recorded), so the
   // restored world is coherent under its own rule from the very first
   // generation rather than a rule stapled onto Conway-recorded history.
+  // A visitor who edited the world last time gets it back (autosave, below).
+  const working = persist.load();
+  let restoring = false;
+  if (working) {
+    restoring = applyDoc(working, () => {
+      bus.emit('toast', { message: 'Welcome back — your last world is restored.', tone: 'info' });
+      bus.emit('playback:play', undefined);
+    });
+  }
   const persistedRule = loadPersistedRule();
-  if (persistedRule && persistedRule !== CONWAY_RULE_STRING) {
+  if (restoring) {
+    // applyDoc owns the rest of boot (it plays once the replay finishes).
+  } else if (persistedRule && persistedRule !== CONWAY_RULE_STRING) {
     session.setRule(persistedRule);
   } else {
     loadScene(OPENING_SCENE);
@@ -849,7 +899,36 @@ export function initSession(): Session {
   // genuinely empty, per the fresh-world reset above) — autoplaying it is
   // still harmless (stepping an empty grid is a no-op) and keeps this single
   // code path exactly as simple for both cases.
-  bus.emit('playback:play', undefined);
+  if (!restoring) bus.emit('playback:play', undefined);
+
+  // ---- autosave: only once the visitor has changed the world ----------------
+  // Opening-scene watchers never write anything. After the first edit (or an
+  // opened save) the working slot is refreshed on a timer, shortly after each
+  // edit, and when the tab is hidden or closed.
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function autosaveNow(): void {
+    if (!autosaveDirty || multiplayerGate) return;
+    persist.save(session!.buildExperimentDoc('Autosave'));
+  }
+  function markDirty(): void {
+    if (multiplayerGate) return;
+    autosaveDirty = true;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(autosaveNow, 2000);
+  }
+  bus.on('edit:committed', markDirty);
+  bus.on('branch:created', markDirty);
+  if (typeof window !== 'undefined') {
+    window.setInterval(autosaveNow, AUTOSAVE_INTERVAL_MS);
+    const flushOnLeave = (): void => {
+      autosaveNow();
+      persist.flush();
+    };
+    window.addEventListener('pagehide', flushOnLeave);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushOnLeave();
+    });
+  }
 
   // Dev/test-only introspection hook — never referenced by production code,
   // and dead-code-eliminated from a production build since `import.meta.env.DEV`

@@ -246,3 +246,15 @@ describe('RLE round-trip', () => {
     expect(() => toRLE(cells, { w: 1, h: 1 }, undefined, { rule: 'B3/S23/3' })).toThrow();
   });
 });
+
+describe('fromRLE untrusted-input limits', () => {
+  it('clamps huge run lengths instead of looping', () => {
+    const t = Date.now();
+    const p = fromRLE('x = 3, y = 1\n99999999999o!');
+    expect(Date.now() - t).toBeLessThan(500);
+    expect(Array.from(p.cells)).toEqual([1, 1, 1]);
+  });
+  it('rejects absurd declared dimensions', () => {
+    expect(() => fromRLE('x = 1000000, y = 1000000\no!')).toThrow(/larger than/);
+  });
+});

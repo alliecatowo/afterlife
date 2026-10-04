@@ -70,6 +70,9 @@ export function checkRule(raw: string): string {
   }
 }
 
+/** Largest width/height an imported RLE may declare. */
+export const MAX_RLE_DIM = 4096;
+
 /** Parse the already-dewhitespaced body into a row-major `Uint8Array`. */
 function parseBody(body: string, width: number, height: number): Uint8Array {
   const out = new Uint8Array(Math.max(0, width * height));
@@ -78,15 +81,18 @@ function parseBody(body: string, width: number, height: number): Uint8Array {
   const re = /(\d*)([bo$])/g;
   let match: RegExpExecArray | null;
   while (y < height && (match = re.exec(body))) {
-    const count = match[1] ? parseInt(match[1], 10) : 1;
+    // Clamp absurd run lengths so `99999999999o` can't spin the tab.
+    const count = Math.min(match[1] ? parseInt(match[1], 10) : 1, MAX_RLE_DIM * 2);
     const tag = match[2];
     if (tag === 'b') {
       x += count;
     } else if (tag === 'o') {
-      for (let i = 0; i < count; i++) {
-        if (x >= 0 && x < width && y >= 0 && y < height) out[y * width + x] = 1;
-        x++;
+      // Only the in-bounds part of the run can set cells.
+      const end = Math.min(x + count, width);
+      for (let i = Math.max(x, 0); i < end; i++) {
+        if (y >= 0 && y < height) out[y * width + i] = 1;
       }
+      x += count;
     } else {
       y += count;
       x = 0;
@@ -152,6 +158,9 @@ export function fromRLE(rle: string): ParsedPattern {
   }
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) {
     throw new Error(`fromRLE: invalid dimensions x=${width}, y=${height}`);
+  }
+  if (width > MAX_RLE_DIM || height > MAX_RLE_DIM) {
+    throw new Error(`fromRLE: pattern is ${width}x${height}, larger than the supported ${MAX_RLE_DIM}x${MAX_RLE_DIM}`);
   }
   // Tolerate an omitted rule= clause — LifeWiki convention assumes B3/S23.
   const rule = ruleRaw ? checkRule(ruleRaw) : CONWAY_RULE_STRING;

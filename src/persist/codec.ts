@@ -24,6 +24,9 @@ import type {
 import { wrap } from '@/core/engine';
 import { CONWAY_RULE_STRING, parseRule } from '@/core/rule';
 
+/** Largest generation number a document may reference (view, edits, baseline). Guards import against absurd values. */
+export const MAX_DOC_GEN = 10_000_000;
+
 /** A saved point of interest, e.g. "found a period-30 puffer here". */
 export interface Bookmark {
   id: string;
@@ -66,6 +69,12 @@ export interface ExperimentDoc {
   bookmarks: Bookmark[];
   discoveries: DiscoveryEvent[];
   notes?: string;
+  /**
+   * The world at generation `gen` (live cells as packed indices, see
+   * `packCells`), present once the history window has slid past gen 0 so the
+   * oldest edits no longer exist. `edits` then only cover `gen` onward.
+   */
+  baseline?: { gen: Generation; cells: number[] };
 }
 
 /** Pack absolute cell edits into one integer per cell (see module doc). */
@@ -117,6 +126,7 @@ interface PersistedDocV2 {
 interface PersistedDocV3 extends Omit<PersistedDocV2, 'version'> {
   version: 3;
   rule: string;
+  baseline?: { gen: Generation; cells: number[] };
 }
 
 /** The original scaffolded shape (unpacked edits, no activeBranch/lens/bookmarks/discoveries). */
@@ -202,6 +212,51 @@ function checkV2Edits(edits: unknown): asserts edits is PersistedDocV2['edits'] 
   }
 }
 
+const RENDER_LENSES: readonly string[] = ['life', 'age', 'activity', 'lineage', 'immigration', 'quadlife', 'velocity', 'neighbors'];
+
+function checkIntArray(v: unknown, limit: number, where: string): void {
+  if (!Array.isArray(v)) fail(`${where} must be an array`);
+  for (const n of v) {
+    if (!Number.isInteger(n) || Math.abs(n as number) > limit) fail(`${where} has an out-of-range cell index`);
+  }
+}
+
+/** Bound untrusted numeric fields (view, baseline, edit generations) so import can't pin the CPU. */
+function checkBounds(raw: Record<string, unknown>): void {
+  const spec = raw.spec as WorldSpec;
+  const cellLimit = spec.width * spec.height;
+  if (raw.view !== undefined) {
+    const v = raw.view;
+    if (!isPlainObject(v)) fail('"view" must be an object');
+    for (const k of ['x', 'y', 'scale'] as const) {
+      if (typeof v[k] !== 'number' || !Number.isFinite(v[k] as number)) fail(`"view.${k}" must be a finite number`);
+    }
+    if ((v.scale as number) <= 0) fail('"view.scale" must be positive');
+    if (!Number.isInteger(v.gen) || (v.gen as number) < 0 || (v.gen as number) > MAX_DOC_GEN) {
+      fail(`"view.gen" must be an integer in [0, ${MAX_DOC_GEN}]`);
+    }
+  }
+  if (raw.lens !== undefined && (typeof raw.lens !== 'string' || !RENDER_LENSES.includes(raw.lens))) {
+    fail('"lens" is not a known render lens');
+  }
+  const edits = raw.edits as Record<string, Array<Record<string, unknown>>>;
+  for (const [branchId, list] of Object.entries(edits)) {
+    for (const entry of list) {
+      const g = (entry.g ?? entry.gen) as number;
+      if (g > MAX_DOC_GEN) fail(`edits["${branchId}"] references generation ${g}, beyond the supported ${MAX_DOC_GEN}`);
+      if (Array.isArray(entry.c)) checkIntArray(entry.c, cellLimit, `edits["${branchId}"] entry at gen ${g}`);
+    }
+  }
+  if (raw.baseline !== undefined) {
+    const b = raw.baseline;
+    if (!isPlainObject(b)) fail('"baseline" must be an object');
+    if (!Number.isInteger(b.gen) || (b.gen as number) <= 0 || (b.gen as number) > MAX_DOC_GEN) {
+      fail(`"baseline.gen" must be an integer in [1, ${MAX_DOC_GEN}]`);
+    }
+    checkIntArray(b.cells, cellLimit, '"baseline.cells"');
+  }
+}
+
 function checkCommon(raw: Record<string, unknown>): void {
   if (typeof raw.title !== 'string') fail('"title" must be a string');
   if (typeof raw.createdAt !== 'number') fail('"createdAt" must be a number');
@@ -214,12 +269,14 @@ function checkCommon(raw: Record<string, unknown>): void {
 function validateV1(raw: Record<string, unknown>): PersistedDocV1 {
   checkCommon(raw);
   checkV1Edits(raw.edits);
+  checkBounds(raw);
   return raw as unknown as PersistedDocV1;
 }
 
 function validateV2(raw: Record<string, unknown>): PersistedDocV2 {
   checkCommon(raw);
   checkV2Edits(raw.edits);
+  checkBounds(raw);
   if (typeof raw.activeBranch !== 'string') fail('"activeBranch" must be a string');
   if (raw.bookmarks !== undefined && !Array.isArray(raw.bookmarks)) fail('"bookmarks" must be an array');
   if (raw.discoveries !== undefined && !Array.isArray(raw.discoveries)) fail('"discoveries" must be an array');
@@ -238,6 +295,7 @@ function checkRuleField(raw: Record<string, unknown>): void {
 function validateV3(raw: Record<string, unknown>): PersistedDocV3 {
   checkCommon(raw);
   checkV2Edits(raw.edits);
+  checkBounds(raw);
   if (typeof raw.activeBranch !== 'string') fail('"activeBranch" must be a string');
   if (raw.bookmarks !== undefined && !Array.isArray(raw.bookmarks)) fail('"bookmarks" must be an array');
   if (raw.discoveries !== undefined && !Array.isArray(raw.discoveries)) fail('"discoveries" must be an array');
@@ -324,6 +382,7 @@ export function decodeDoc(p: PersistedDocV3): ExperimentDoc {
     bookmarks: p.bookmarks ?? [],
     discoveries: p.discoveries ?? [],
     notes: p.notes,
+    ...(p.baseline ? { baseline: p.baseline } : {}),
   };
 }
 
@@ -372,5 +431,6 @@ export function encodeDoc(doc: ExperimentDoc): PersistedDocV3 {
   if (doc.view) out.view = doc.view;
   if (doc.lens) out.lens = doc.lens;
   if (doc.notes !== undefined) out.notes = doc.notes;
+  if (doc.baseline) out.baseline = doc.baseline;
   return out;
 }
