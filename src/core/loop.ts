@@ -77,19 +77,26 @@ export function createSimLoop(step: () => void): SimLoop {
 
     const stepDuration = 1 / speed;
     let steps = 0;
-    while (accumulator >= stepDuration && steps < MAX_CATCHUP_STEPS) {
-      step();
-      accumulator -= stepDuration;
-      steps++;
-    }
-    if (steps === MAX_CATCHUP_STEPS) {
-      // We hit the catch-up ceiling (e.g. tab was backgrounded) — drop the
-      // backlog instead of spiralling through it on the next frames.
+    // A throwing step or frame callback must never end the rAF chain (the HUD
+    // would say RUNNING over a frozen world): report it and keep ticking.
+    try {
+      while (accumulator >= stepDuration && steps < MAX_CATCHUP_STEPS) {
+        step();
+        accumulator -= stepDuration;
+        steps++;
+      }
+      if (steps === MAX_CATCHUP_STEPS) {
+        // We hit the catch-up ceiling (e.g. tab was backgrounded) — drop the
+        // backlog instead of spiralling through it on the next frames.
+        accumulator = 0;
+      }
+      runFrameCallbacks();
+    } catch (err) {
       accumulator = 0;
+      console.error('[afterlife] simulation tick failed', err);
+    } finally {
+      if (running) handle = raf(tick);
     }
-
-    runFrameCallbacks();
-    handle = raf(tick);
   }
 
   const loop: SimLoop = {

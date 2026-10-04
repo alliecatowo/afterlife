@@ -118,4 +118,21 @@ describe('createSimLoop', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps ticking after a step throws', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let calls = 0;
+    const loop = createSimLoop(() => {
+      calls++;
+      if (calls === 1) throw new Error('boom');
+    });
+    loop.setSpeed(60);
+    loop.start();
+    await waitFrames(30);
+    loop.stop();
+    expect(calls).toBeGreaterThan(1);
+    expect(loop.running).toBe(false);
+    errSpy.mockRestore();
+    loop.dispose();
+  });
 });

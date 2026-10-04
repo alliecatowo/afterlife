@@ -132,6 +132,8 @@ function RoomView() {
     void navigator.clipboard?.writeText(roomCode).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    }, () => {
+      // Clipboard permission denied: the code is still visible to copy by hand.
     });
   };
 

@@ -52,6 +52,8 @@ const onsetDetector = new OnsetDetector();
 /** Baselines captured at `start()` time — reactivity modulates AROUND these
  * and `stop()` restores them exactly, so turning capture off always leaves
  * the panel's manual sliders exactly where the user last set them. */
+/** Bumped by every start/stop so a stale permission prompt can't start a capture after stop(). */
+let captureToken = 0;
 let baseline: { density: number; filterMinHz: number; filterMaxHz: number; speed: number } | null = null;
 
 function teardownMediaGraph(): void {
@@ -168,9 +170,15 @@ export async function startSystemCapture(): Promise<void> {
     useCaptureStore.setState({ state: 'unsupported', errorMessage: 'This browser cannot capture system/tab audio (getDisplayMedia is unavailable).' });
     return;
   }
+  stop();
+  const token = ++captureToken;
   useCaptureStore.setState({ state: 'requesting', errorMessage: null });
   try {
     const raw = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    if (token !== captureToken) {
+      for (const t of raw.getTracks()) t.stop();
+      return;
+    }
     const videoTracks = raw.getVideoTracks();
     for (const t of videoTracks) { t.stop(); raw.removeTrack(t); }
     if (raw.getAudioTracks().length === 0) {
@@ -192,9 +200,15 @@ export async function startMicCapture(): Promise<void> {
     useCaptureStore.setState({ state: 'unsupported', errorMessage: 'This browser cannot capture microphone audio.' });
     return;
   }
+  stop();
+  const token = ++captureToken;
   useCaptureStore.setState({ state: 'requesting', errorMessage: null });
   try {
     const raw = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (token !== captureToken) {
+      for (const t of raw.getTracks()) t.stop();
+      return;
+    }
     startAnalysis(raw, 'mic');
   } catch (err) {
     useCaptureStore.setState({ state: 'error', errorMessage: describeCaptureError(err) });
@@ -212,6 +226,7 @@ function describeCaptureError(err: unknown): string {
  * and restore whatever the manual sliders were set to before reactivity
  * took over. Idempotent — safe to call when nothing is active. */
 export function stop(): void {
+  captureToken++;
   const wasActive = useCaptureStore.getState().state === 'active';
   teardownMediaGraph();
   if (wasActive) restoreBaseline();

@@ -28,6 +28,8 @@ import type { Disposable, Transport, TransportStatus } from './transport';
 
 /** How long (ms) after `requestResync` a peer's `resyncData` answer is accepted. */
 const RESYNC_WAIT_MS = 15_000;
+/** A peer silent for this long (heartbeats are every 1.5 s) is considered gone. */
+const PEER_TIMEOUT_MS = 10_000;
 
 export interface PeerInfo {
   peerId: PeerId;
@@ -58,6 +60,8 @@ export interface LockstepRoomOptions {
    *  hasn't advanced (e.g. the local simulation is paused). Keeps peers from
    *  wrongly reporting a healthy-but-idle peer as dropped. */
   heartbeatMs?: number;
+  /** Evict a peer silent for this long (default 10 s). */
+  peerTimeoutMs?: number;
 }
 
 /**
@@ -76,6 +80,7 @@ export class LockstepRoom {
   private resyncExpectedUntil = 0;
   /** Next outgoing heartbeat tells peers we rewound (see `resyncData`). */
   private resetPending = false;
+  private onPageHide: (() => void) | null = null;
   private readonly desync = new DesyncMonitor();
   private readonly peers = new Map<PeerId, PeerInfo>();
   private readonly listeners = new Set<(e: RoomEvent) => void>();
@@ -123,7 +128,13 @@ export class LockstepRoom {
     const heartbeatMs = this.opts.heartbeatMs ?? 1500;
     this.heartbeatTimer = setInterval(() => {
       this.sendHeartbeat(this.lastReportedGen);
+      this.evictStalePeers();
     }, heartbeatMs);
+    // A closed tab may never get to say goodbye through `leave()`.
+    if (typeof window !== 'undefined') {
+      this.onPageHide = () => this.leave();
+      window.addEventListener('pagehide', this.onPageHide);
+    }
     this.emit({ type: 'status', status: this.transport.status });
   }
 
@@ -133,6 +144,8 @@ export class LockstepRoom {
   leave(): void {
     if (!this.joined) return;
     this.joined = false;
+    if (this.onPageHide && typeof window !== 'undefined') window.removeEventListener('pagehide', this.onPageHide);
+    this.onPageHide = null;
     this.transport.send({ type: 'leave', peerId: this.localPeerId });
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
@@ -192,6 +205,22 @@ export class LockstepRoom {
   requestResync(sinceGen: number): void {
     this.resyncExpectedUntil = Date.now() + RESYNC_WAIT_MS;
     this.transport.send({ type: 'resyncRequest', peerId: this.localPeerId, sinceGen });
+  }
+
+  /** Drop peers that have gone silent (crashed or closed tab) so they cannot stall the room forever. */
+  private evictStalePeers(now: number = Date.now()): void {
+    let evicted = false;
+    for (const p of [...this.peers.values()]) {
+      if (now - p.lastSeen > (this.opts.peerTimeoutMs ?? PEER_TIMEOUT_MS)) {
+        this.peers.delete(p.peerId);
+        this.stall.remove(p.peerId);
+        evicted = true;
+      }
+    }
+    if (evicted) {
+      this.emit({ type: 'peers', peers: this.peerList() });
+      this.recomputeStall();
+    }
   }
 
   private sendHeartbeat(gen: number): void {
