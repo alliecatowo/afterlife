@@ -32,7 +32,7 @@
     "@radix-ui/react-visually-hidden": "^1.2.11",
     "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.2",
-    "motion": "^14.13.0",
+    "motion": "^14.14.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "three": "^0.187.0",
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
-    "@playwright/test": "^1.65.0",
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/vite": "^4.3.5",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^26.6.6",
@@ -53,6 +53,6 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   }
 }
